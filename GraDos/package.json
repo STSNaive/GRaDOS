@@ -1,15 +1,47 @@
 {
   "name": "grados-mcp-server",
   "version": "1.0.0",
-  "description": "An MCP server for federated academic paper search and full-text extraction, designed for phd-pro.",
+  "description": "MCP server for federated academic paper search and full-text extraction across Scopus, Web of Science, Springer, Crossref, PubMed, Sci-Hub, and Unpaywall.",
   "main": "dist/index.js",
   "bin": {
     "grados-mcp": "./dist/index.js"
   },
+  "files": [
+    "dist/",
+    "mcp-config.example.json",
+    "marker-worker/worker.py",
+    "marker-worker/runtime_env.py",
+    "marker-worker/prewarm.py",
+    "marker-worker/pyproject.toml",
+    "marker-worker/.python-version",
+    "install-marker.ps1",
+    "scihub-mirrors.txt"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "academic",
+    "papers",
+    "research",
+    "scopus",
+    "pubmed",
+    "crossref",
+    "web-of-science",
+    "springer",
+    "sci-hub",
+    "pdf",
+    "full-text",
+    "literature-review"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/STSna/phd-pro.git"
   },
   "author": "",
   "license": "MIT",

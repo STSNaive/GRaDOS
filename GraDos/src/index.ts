@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -1031,6 +1032,23 @@ ${finalExtractedText}`
         isError: true
     };
 });
+
+// --- CLI: --init flag to bootstrap mcp-config.json ---
+if (process.argv.includes("--init")) {
+    const exampleSrc = path.join(__dirname, "..", "mcp-config.example.json");
+    const destPath = path.join(process.cwd(), "mcp-config.json");
+
+    if (fs.existsSync(destPath)) {
+        console.log("mcp-config.json already exists in this directory. No changes made.");
+    } else if (!fs.existsSync(exampleSrc)) {
+        console.error("Could not find mcp-config.example.json in the package. Please create mcp-config.json manually.");
+    } else {
+        fs.copyFileSync(exampleSrc, destPath);
+        console.log(`Created mcp-config.json in ${process.cwd()}`);
+        console.log("Edit this file to add your API keys and configure GraDOS.");
+    }
+    process.exit(0);
+}
 
 // Start Server
 async function main() {
