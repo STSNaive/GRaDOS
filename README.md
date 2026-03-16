@@ -71,11 +71,16 @@ cp mcp-config.example.json mcp-config.json
 }
 ```
 
-**Codex** — add to your `codex` CLI config:
+**Codex** — add to `~/.codex/config.toml`:
 
-```bash
-codex --mcp-server "npx grados"
+```toml
+[mcp_servers.grados]
+command = "npx"
+args = ["-y", "grados"]
+cwd = "/path/to/directory/containing/mcp-config.json"
 ```
+
+Or via CLI: `codex mcp add grados -- npx -y grados`
 
 ### Optional: Install Marker (high-quality local PDF parsing)
 
