@@ -4,31 +4,31 @@ dist/
 
 # Environment & secrets
 .env
-GraDos/mcp-config.json
+mcp-config.json
 
 # Marker worker
-GraDos/marker-worker/.venv/
-GraDos/marker-worker/.cache/
-GraDos/marker-worker/__pycache__/
-GraDos/marker-worker/local.env
-GraDos/marker-worker/smoke.pdf
+marker-worker/.venv/
+marker-worker/.cache/
+marker-worker/__pycache__/
+marker-worker/local.env
+marker-worker/smoke.pdf
 
 # Downloads
-GraDos/downloads/
+downloads/
 
 # Local tools
-GraDos/.tools/
+.tools/
 
 # Sci-Hub mirrors (auto-updated at runtime)
-GraDos/scihub-mirrors.txt
+scihub-mirrors.txt
 
 # Build/debug/test output
-GraDos/node-out.txt
-GraDos/temp_*.html
-GraDos/test-results.txt
+node-out.txt
+temp_*.html
+test-results.txt
 
 # Lock files (large, auto-generated)
-GraDos/marker-worker/uv.lock
+marker-worker/uv.lock
 
 # IDE
 .vscode/

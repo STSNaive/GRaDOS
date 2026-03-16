@@ -39,7 +39,7 @@ if (config?.apiKeys) {
 
 // Warn if academic etiquette email is still the default placeholder
 if (!config.academicEtiquetteEmail || config.academicEtiquetteEmail === "admin@example.com") {
-    console.error("[GraDOS] WARNING: academicEtiquetteEmail is not configured. Crossref/Unpaywall may throttle requests. Set a real email in mcp-config.json.");
+    console.error("[GRaDOS] WARNING: academicEtiquetteEmail is not configured. Crossref/Unpaywall may throttle requests. Set a real email in mcp-config.json.");
 }
 
 // Helpers to get API keys (Config file overrides .env)
@@ -48,7 +48,7 @@ const getApiKey = (keyName: string) => config?.apiKeys?.[keyName] || process.env
 // Initialize Server
 const server = new Server(
     {
-        name: "GraDOS",
+        name: "GRaDOS",
         version: "1.0.0",
     },
     {
@@ -148,7 +148,7 @@ async function searchCrossref(query: string, limit: number): Promise<PaperMetada
             },
             headers: {
                 // Etiquette for Crossref API, but still maintaining stealth
-                "User-Agent": `GraDOS/1.0 (mailto:${etiquetteEmail}) Mozilla/5.0 Chrome/120.0.0.0` 
+                "User-Agent": `GRaDOS/1.0 (mailto:${etiquetteEmail}) Mozilla/5.0 Chrome/120.0.0.0` 
             }
         });
 
@@ -1045,7 +1045,7 @@ if (process.argv.includes("--init")) {
     } else {
         fs.copyFileSync(exampleSrc, destPath);
         console.log(`Created mcp-config.json in ${process.cwd()}`);
-        console.log("Edit this file to add your API keys and configure GraDOS.");
+        console.log("Edit this file to add your API keys and configure GRaDOS.");
     }
     process.exit(0);
 }
@@ -1054,7 +1054,7 @@ if (process.argv.includes("--init")) {
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("GraDOS MCP Node.js server running on stdio");
+    console.error("GRaDOS MCP Node.js server running on stdio");
 }
 
 main().catch(console.error);

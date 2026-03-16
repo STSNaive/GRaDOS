@@ -1,8 +1,8 @@
-# GraDOS (`phd-pro`)
+# GRaDOS
 
-**Graduate Literature and Document Operating System**
+**Graduate Research and Document Operating System**
 
-GraDOS is an MCP server that gives AI agents (Claude, Codex, etc.) the ability to search academic databases, download full-text papers through paywalls, and synthesize citation-grounded answers. It is designed for campus network environments where institutional access provides database permissions.
+GRaDOS is an MCP server that gives AI agents (Claude, Codex, etc.) the ability to search academic databases, download full-text papers through paywalls, and synthesize citation-grounded answers. It is designed for campus network environments where institutional access provides database permissions.
 
 ## Architecture
 
@@ -46,8 +46,8 @@ grados-mcp --init
 ### Option B: From source
 
 ```bash
-git clone https://github.com/STSna/phd-pro.git
-cd phd-pro/GraDos
+git clone https://github.com/STSna/GRaDOS.git
+cd GRaDOS
 npm install
 npm run build
 
@@ -90,7 +90,6 @@ cp mcp-config.example.json mcp-config.json
 Marker uses deep learning models to convert PDFs to Markdown with much better accuracy than the built-in parser. Requires Python 3.12.
 
 ```powershell
-cd GraDos
 .\install-marker.ps1              # Auto-detect CPU/GPU
 .\install-marker.ps1 -Torch cuda  # Force GPU (CUDA)
 .\install-marker.ps1 -Torch cpu   # Force CPU
@@ -112,11 +111,11 @@ All configuration lives in a single file: `mcp-config.json`. Run `grados-mcp --i
 
 Crossref and PubMed require no API keys. Sci-Hub and Unpaywall require no keys either.
 
-**No API keys are strictly required** -- GraDOS will use whichever services are configured and skip the rest. At minimum, Crossref + PubMed + Sci-Hub work with zero configuration.
+**No API keys are strictly required** -- GRaDOS will use whichever services are configured and skip the rest. At minimum, Crossref + PubMed + Sci-Hub work with zero configuration.
 
 ### Search Priority
 
-The `search.order` array controls which databases are queried first. GraDOS searches in order and stops as soon as it has enough unique results:
+The `search.order` array controls which databases are queried first. GRaDOS searches in order and stops as soon as it has enough unique results:
 
 ```json
 {
@@ -142,7 +141,7 @@ The `extract.fetchStrategy.order` controls the full-text extraction priority:
 
 ## SKILL.md
 
-The `skills/GraDOS/SKILL.md` file is a structured prompt that teaches the AI agent the 5-step research protocol. Copy it into your agent's skill/prompt directory to enable the full workflow.
+The `skills/GRaDOS/SKILL.md` file is a structured prompt that teaches the AI agent the 5-step research protocol. Copy it into your agent's skill/prompt directory to enable the full workflow.
 
 ## License
 
