@@ -57,7 +57,7 @@ cp mcp-config.example.json mcp-config.json
 
 ### Configure your MCP client
 
-**Claude Desktop** (`claude_desktop_config.json`):
+**Claude Desktop / Claude Code** — add to your MCP config (`claude_desktop_config.json` or `.claude/settings.json`):
 
 ```json
 {
@@ -71,18 +71,10 @@ cp mcp-config.example.json mcp-config.json
 }
 ```
 
-**Claude Code** (`.claude/settings.json`):
+**Codex** — add to your `codex` CLI config:
 
-```json
-{
-  "mcpServers": {
-    "grados": {
-      "command": "npx",
-      "args": ["grados"],
-      "cwd": "/path/to/directory/containing/mcp-config.json"
-    }
-  }
-}
+```bash
+codex --mcp-server "npx grados"
 ```
 
 ### Optional: Install Marker (high-quality local PDF parsing)
