@@ -34,10 +34,10 @@ SKILL.md (5-step academic protocol)
 ### Option A: npm (recommended)
 
 ```bash
-npm install -g grados-mcp-server
+npm install -g grados
 
 # Generate config file in your working directory
-grados-mcp --init
+grados --init
 
 # Edit the config with your API keys
 # (see mcp-config.example.json for all options)
@@ -64,7 +64,7 @@ cp mcp-config.example.json mcp-config.json
   "mcpServers": {
     "grados": {
       "command": "npx",
-      "args": ["grados-mcp-server"],
+      "args": ["grados"],
       "cwd": "/path/to/directory/containing/mcp-config.json"
     }
   }
@@ -78,7 +78,7 @@ cp mcp-config.example.json mcp-config.json
   "mcpServers": {
     "grados": {
       "command": "npx",
-      "args": ["grados-mcp-server"],
+      "args": ["grados"],
       "cwd": "/path/to/directory/containing/mcp-config.json"
     }
   }
@@ -98,7 +98,7 @@ cd marker-worker
 
 ## Configuration
 
-All configuration lives in a single file: `mcp-config.json`. Run `grados-mcp --init` to generate one from the template.
+All configuration lives in a single file: `mcp-config.json`. Run `grados --init` to generate one from the template.
 
 ### API Keys
 
