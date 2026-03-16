@@ -46,7 +46,7 @@ grados-mcp --init
 ### Option B: From source
 
 ```bash
-git clone https://github.com/STSna/GRaDOS.git
+git clone https://github.com/STSNaive/GRaDOS.git
 cd GRaDOS
 npm install
 npm run build
