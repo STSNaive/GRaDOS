@@ -799,44 +799,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             "PubMed": searchPubMed
         };
 
-        // SEQUENTIAL SEARCH STRATEGY
-        let allPapers: PaperMetadata[] = [];
-        
+        // WATERFALL SEARCH: search sources in priority order, deduplicate incrementally, stop when we have enough
+        const uniquePapersMap = new Map<string, PaperMetadata>();
+
         for (const serviceName of searchOrder) {
-            // Check if service is enabled in config
             if (searchEnabled[serviceName] === false) continue;
-            
+
             const searchFunc = serviceMap[serviceName];
-            if (searchFunc) {
-                console.error(`Searching ${serviceName} sequentially...`); // stdio goes to stderr
-                try {
-                    const results = await searchFunc(query, limit);
-                    allPapers = allPapers.concat(results);
-                    
-                    // Optional Early Exit: If we found enough distinct papers, we can stop the sequence early
-                    if (allPapers.length >= limit * 2) { 
-                        // Stop if we have twice the limit to ensure good deduplication, optionally configure this.
-                        break; 
+            if (!searchFunc) continue;
+
+            console.error(`Searching ${serviceName}...`);
+            try {
+                const results = await searchFunc(query, limit);
+                // Incrementally deduplicate by DOI (prefer entries with abstracts)
+                for (const paper of results) {
+                    const lowerDoi = paper.doi.toLowerCase();
+                    if (!uniquePapersMap.has(lowerDoi) || (!uniquePapersMap.get(lowerDoi)?.abstract && paper.abstract)) {
+                        uniquePapersMap.set(lowerDoi, paper);
                     }
-                } catch (err) {
-                    console.error(`Error searching ${serviceName}:`, err);
-                    // Continue to the next service in the sequence
                 }
+                console.error(`${serviceName} returned ${results.length} results. Unique total: ${uniquePapersMap.size}.`);
+
+                // Stop as soon as we have enough unique papers
+                if (uniquePapersMap.size >= limit) {
+                    console.error(`Reached limit (${limit} unique). Skipping remaining sources.`);
+                    break;
+                }
+            } catch (err) {
+                console.error(`Error searching ${serviceName}:`, err);
             }
         }
 
-        // Deduplicate by DOI (case-insensitive)
-        const uniquePapersMap = new Map<string, PaperMetadata>();
-        for (const paper of allPapers) {
-             const lowerDoi = paper.doi.toLowerCase();
-             // Prefer entries that have an abstract if there's a collision
-             if (!uniquePapersMap.has(lowerDoi) || (!uniquePapersMap.get(lowerDoi)?.abstract && paper.abstract)) {
-                 uniquePapersMap.set(lowerDoi, paper);
-             }
-        }
-        
         let finalResults = Array.from(uniquePapersMap.values());
-        
+
         // Trim to limit
         if (finalResults.length > limit) {
              finalResults = finalResults.slice(0, limit);
