@@ -13,11 +13,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$MarkerRoot = Join-Path $ProjectRoot "marker-worker"
+# Script now lives inside marker-worker/, so its parent IS the marker root.
+$MarkerRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CacheRoot = Join-Path $MarkerRoot ".cache"
 $UvCacheDir = Join-Path $CacheRoot "uv"
-$LocalToolsDir = Join-Path $ProjectRoot ".tools"
+$LocalToolsDir = Join-Path $MarkerRoot ".tools"
 $LocalUvDir = Join-Path $LocalToolsDir "uv"
 $LocalUvExe = Join-Path $LocalUvDir "uv.exe"
 $VenvPython = Join-Path $MarkerRoot ".venv\Scripts\python.exe"

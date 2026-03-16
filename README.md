@@ -90,9 +90,10 @@ cp mcp-config.example.json mcp-config.json
 Marker uses deep learning models to convert PDFs to Markdown with much better accuracy than the built-in parser. Requires Python 3.12.
 
 ```powershell
-.\install-marker.ps1              # Auto-detect CPU/GPU
-.\install-marker.ps1 -Torch cuda  # Force GPU (CUDA)
-.\install-marker.ps1 -Torch cpu   # Force CPU
+cd marker-worker
+.\install.ps1              # Auto-detect CPU/GPU
+.\install.ps1 -Torch cuda  # Force GPU (CUDA)
+.\install.ps1 -Torch cpu   # Force CPU
 ```
 
 ## Configuration

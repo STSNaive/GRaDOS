@@ -14,8 +14,7 @@
     "marker-worker/prewarm.py",
     "marker-worker/pyproject.toml",
     "marker-worker/.python-version",
-    "install-marker.ps1",
-    "scihub-mirrors.txt"
+    "marker-worker/install.ps1"
   ],
   "scripts": {
     "build": "tsc",
