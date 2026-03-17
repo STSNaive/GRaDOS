@@ -5,6 +5,7 @@ dist/
 # Secrets & user config
 .env
 mcp-config.json
+manifest.json
 
 # Marker worker runtime
 marker-worker/.venv/
