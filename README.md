@@ -1,4 +1,4 @@
-# GRaDOS 📚🔬🤖
+# GRaDOS
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
@@ -8,7 +8,7 @@ The enrichment-grade MCP server for academic paper search and full-text extracti
 
 GRaDOS gives AI agents (Claude, Codex, etc.) the ability to search academic databases, download full-text papers through paywalls, and synthesize citation-grounded answers. It is designed for campus network environments where institutional access provides database permissions.
 
-## Architecture
+## Architecture 🧭
 
 GRaDOS is designed to sit inside an agent workflow:
 
@@ -30,9 +30,9 @@ GRaDOS is designed to sit inside an agent workflow:
 | mcp-local-rag | `ingest_file` | Index a paper's Markdown file into the local RAG database. |
 | mcp-local-rag | `list_files` | List all indexed papers with status. |
 
-## Installation
+## Installation 🚀
 
-### Option A: npm (recommended)
+### Option A: npm (recommended) 📦
 
 ```bash
 npm install -g grados
@@ -44,7 +44,7 @@ grados --init
 # (see mcp-config.example.json for all options)
 ```
 
-### Option B: From source
+### Option B: From source 🛠️
 
 ```bash
 git clone https://github.com/STSNaive/GRaDOS.git
@@ -56,7 +56,7 @@ cp mcp-config.example.json mcp-config.json
 # Edit mcp-config.json with your API keys
 ```
 
-### Configure your MCP client
+### Configure your MCP client 🔌
 
 **Claude Code:**
 
@@ -95,7 +95,7 @@ args = ["-y", "grados"]
 cwd = "/path/to/directory/containing/mcp-config.json"
 ```
 
-### What `cwd` means
+#### Tip: What `cwd` means 💡
 
 `cwd` is the runtime working directory where GRaDOS starts. In the current implementation it is used for:
 
@@ -119,7 +119,7 @@ If you want papers to be saved in a different directory, keep `cwd` pointed at t
 
 If you use relative paths instead, they are resolved from `cwd`.
 
-### Optional: Install Marker (high-quality local PDF parsing)
+### Optional: Install Marker (high-quality local PDF parsing) 🧠
 
 Marker uses deep learning models to convert PDFs to Markdown with much better accuracy than the built-in parser (`pdf-parse`). It is the recommended parser for production use.
 
@@ -174,7 +174,7 @@ If Marker is active, the log will show:
 Marker successfully converted PDF to Markdown.
 ```
 
-### Integrated Paper Knowledge Base
+### Integrated Paper Knowledge Base 🗂️
 
 GRaDOS pairs well with `mcp-local-rag`: GRaDOS fetches and parses papers, while `mcp-local-rag` indexes the saved Markdown for semantic and keyword retrieval.
 
@@ -205,7 +205,7 @@ fetched_at: "2026-03-17T12:00:00.000Z"
 
 > **Note:** `mcp-local-rag` does not auto-scan directories. Papers must be explicitly ingested via the `ingest_file` tool. The included `SKILL.md` workflow can handle this automatically.
 
-### Optional: Install mcp-local-rag (local paper library with RAG)
+### Optional: Install mcp-local-rag (local paper library with RAG) 🔎
 
 [mcp-local-rag](https://github.com/shinpr/mcp-local-rag) provides a local paper library with semantic search. GRaDOS automatically saves parsed Markdown files to a `papers/` directory that `mcp-local-rag` can index and make searchable. No Python is required - it is pure Node.js, just like GRaDOS.
 
@@ -260,7 +260,7 @@ env = { BASE_DIR = "/absolute/path/to/papers" }
 
 The storage split and ingest/query flow are described above in **Integrated Paper Knowledge Base**. The additional thing to remember here is that `mcp-local-rag` does **not** auto-scan directories - the agent still needs to call `ingest_file` for each new Markdown file.
 
-### Optional: Zotero web library integration
+### Optional: Zotero web library integration 📚
 
 GRaDOS can automatically save cited papers to your [Zotero](https://www.zotero.org/) web library after each research session. No desktop client is required - it uses the Zotero Web API directly.
 
@@ -285,11 +285,11 @@ GRaDOS can automatically save cited papers to your [Zotero](https://www.zotero.o
 
 Papers are saved as `journalArticle` items with title, DOI, authors, abstract, journal, year, URL, and tags. The research query topic is automatically added as a tag to keep your library organised by theme.
 
-## Configuration
+## Configuration ⚙️
 
 All configuration lives in a single file: `mcp-config.json`. Run `grados --init` to generate one from the template.
 
-### API Keys
+### API Keys 🔑
 
 | Key | Source | Required | Free |
 |---|---|---|---|
@@ -304,7 +304,7 @@ Crossref and PubMed require no API keys. Sci-Hub and Unpaywall require no keys e
 
 **No API keys are strictly required** - GRaDOS will use whichever services are configured and skip the rest. At minimum, Crossref + PubMed + Sci-Hub work with zero configuration.
 
-### Search Priority
+### Search Priority 🔎
 
 The `search.order` array controls which databases are queried first. GRaDOS searches in order and stops as soon as it has enough unique results:
 
@@ -316,7 +316,7 @@ The `search.order` array controls which databases are queried first. GRaDOS sear
 }
 ```
 
-### Extraction Waterfall
+### Extraction Waterfall 🌊
 
 The `extract.fetchStrategy.order` controls the full-text extraction priority:
 
@@ -330,17 +330,17 @@ The `extract.fetchStrategy.order` controls the full-text extraction priority:
 }
 ```
 
-### Storage Directories
+### Storage Directories 🗄️
 
 - `extract.downloadDirectory` defaults to `./downloads` and stores raw PDF files for archival use
 - `extract.papersDirectory` defaults to `./papers` and stores parsed Markdown for local indexing
 - relative paths are resolved from `cwd`; if you want storage elsewhere, use absolute paths
 - `mcp-local-rag`'s `BASE_DIR` must point to the same absolute directory as `extract.papersDirectory`
 
-## SKILL.md
+## SKILL.md 🤖
 
 The `skills/GRaDOS/SKILL.md` file is a structured prompt that teaches the AI agent the research workflow around GRaDOS and `mcp-local-rag`. Copy it into your agent's skill/prompt directory to enable the full workflow.
 
-## License
+## License 📄
 
 MIT
