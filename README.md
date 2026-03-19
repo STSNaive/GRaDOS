@@ -37,6 +37,7 @@ GRaDOS is designed to sit inside an agent workflow:
 |---|---|---|
 | GRaDOS | `search_academic_papers` | Waterfall search across Scopus, Web of Science, Springer, Crossref, and PubMed. Deduplicates by DOI. |
 | GRaDOS | `extract_paper_full_text` | 4-stage fetch + 3-stage parse + QA validation. Returns Markdown and auto-saves `.md` to the papers directory. |
+| GRaDOS | `parse_pdf_file` | Parse a local PDF via configured waterfall (LlamaParse → Marker → Native). Use after downloading PDFs with Playwright MCP. |
 | GRaDOS | `save_paper_to_zotero` | Saves cited paper metadata to Zotero web library via API. Called after synthesis for papers used in the answer. |
 | mcp-local-rag | `query_documents` | Semantic + keyword search over locally indexed papers. |
 | mcp-local-rag | `ingest_file` | Index a paper's Markdown file into the local RAG database. |
@@ -226,14 +227,12 @@ Marker successfully converted PDF to Markdown.
 
 ### Integrated Paper Knowledge Base 🗂️
 
-GRaDOS pairs well with `mcp-local-rag`: GRaDOS fetches and parses papers, while `mcp-local-rag` indexes the saved Markdown for semantic and keyword retrieval.
-
-**Storage separation:** PDFs and Markdown are stored in separate directories to prevent duplicate indexing:
+After extracting a paper, GRaDOS stores the PDF and the parsed Markdown separately to prevent duplicate indexing:
 
 | Directory | Content | Purpose | Configured by |
 |---|---|---|---|
 | `downloads/` | Raw `.pdf` files | Archival only, not indexed | `extract.downloadDirectory` |
-| `papers/` | Parsed `.md` files (with YAML front-matter) | Indexed by `mcp-local-rag` | `extract.papersDirectory` |
+| `papers/` | Parsed `.md` files (with YAML front-matter) | Available for semantic and keyword retrieval | `extract.papersDirectory` |
 
 Each Markdown file includes structured front-matter:
 
@@ -246,7 +245,7 @@ fetched_at: "2026-03-17T12:00:00.000Z"
 ---
 ```
 
-**Database workflow:**
+Pair with [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag) to build a vector index over `papers/` for local semantic and keyword retrieval. The full workflow:
 
 1. **Extract** - GRaDOS downloads a PDF and parses it, saves `.pdf` to `downloads/` and `.md` to `papers/`
 2. **Ingest** - The AI agent calls `ingest_file` on the new `.md` file, which embeds it into a local LanceDB vector store
@@ -257,7 +256,7 @@ fetched_at: "2026-03-17T12:00:00.000Z"
 
 ### Optional: Install mcp-local-rag (local paper library with RAG) 🔎
 
-[mcp-local-rag](https://github.com/shinpr/mcp-local-rag) provides a local paper library with semantic search. GRaDOS automatically saves parsed Markdown files to a `papers/` directory that `mcp-local-rag` can index and make searchable. No Python is required - it is pure Node.js, just like GRaDOS.
+[mcp-local-rag](https://github.com/shinpr/mcp-local-rag) provides semantic and keyword retrieval for local papers. Pure Node.js, no Python required.
 
 > **Version note:** the current `mcp-local-rag` 0.10.x line requires Node.js 20 or newer.
 
@@ -310,7 +309,6 @@ env = { BASE_DIR = "/absolute/path/to/papers" }
 
 > **Important:** `BASE_DIR` must point to the same absolute directory as `extract.papersDirectory` in `mcp-config.json`. If `extract.papersDirectory` is relative, resolve it from `PROJECT_ROOT` first (usually the config file's directory).
 
-The storage split and ingest/query flow are described above in **Integrated Paper Knowledge Base**. The additional thing to remember here is that `mcp-local-rag` does **not** auto-scan directories - the agent still needs to call `ingest_file` for each new Markdown file.
 
 ### Optional: Zotero web library integration 📚
 
@@ -336,6 +334,45 @@ GRaDOS can automatically save cited papers to your [Zotero](https://www.zotero.o
 ```
 
 Papers are saved as `journalArticle` items with title, DOI, authors, abstract, journal, year, URL, and tags. The research query topic is automatically added as a tag to keep your library organised by theme.
+
+### Optional: Playwright MCP (LLM-friendly browser fallback) 🌐
+
+When GRaDOS's built-in headless browser (Puppeteer) fails to extract a PDF — typically due to complex publisher page layouts or CAPTCHA challenges — the AI agent can fall back to [Playwright MCP](https://github.com/microsoft/playwright-mcp), which gives the LLM direct browser control through accessibility tree snapshots.
+
+**Why Playwright MCP over raw Puppeteer?** Puppeteer uses hardcoded CSS selectors that break on unfamiliar publisher pages. With Playwright MCP, the LLM sees the page structure and can adaptively click the right download button, regardless of layout. This is token-expensive (~13.7K base + page content), so it's only used as a fallback when the zero-cost Puppeteer path fails.
+
+**Install:**
+
+```bash
+npm install -g @playwright/mcp
+```
+
+**Register with your MCP client:**
+
+```bash
+# Claude Code
+claude mcp add playwright -- npx @playwright/mcp --headless
+
+# Codex
+codex mcp add playwright -- npx @playwright/mcp --headless
+```
+
+Or configure manually — Claude Code (`.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp", "--headless"]
+    }
+  }
+}
+```
+
+The `SKILL.md` workflow (Step 3b) automatically guides the agent to use Playwright MCP tools when `extract_paper_full_text` fails. The workflow is: `browser_navigate` → `browser_snapshot` → `browser_click` → download → `parse_pdf_file`.
+
+> **Note:** Playwright MCP is entirely optional. Without it, GRaDOS still works through its built-in waterfall (TDM → OA → Sci-Hub → Headless Puppeteer). Playwright MCP adds an LLM-driven safety net for the cases Puppeteer can't handle.
 
 ## Configuration ⚙️
 
@@ -391,7 +428,7 @@ The `extract.fetchStrategy.order` controls the full-text extraction priority:
 
 ## SKILL.md 🤖
 
-The `skills/GRaDOS/SKILL.md` file is a structured prompt that teaches the AI agent the research workflow around GRaDOS and `mcp-local-rag`. Copy it into your agent's skill/prompt directory to enable the full workflow.
+The `skills/grados/SKILL.md` file is a structured prompt that teaches the AI agent the research workflow around GRaDOS and `mcp-local-rag`. Copy it into your agent's skill/prompt directory to enable the full workflow.
 
 ## License 📄
 

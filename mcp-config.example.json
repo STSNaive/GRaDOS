@@ -61,9 +61,16 @@
         }
     },
     "localRag": {
+        "enabled": true,
+        "_comment_enabled": "Set to false to skip local paper library steps in the agent workflow (Step 0 in SKILL.md). The mcp-local-rag server must still be separately registered in your MCP client.",
         "_comment": "Reference config for mcp-local-rag. Current 0.10.x requires Node.js 20+. Install: npx -y mcp-local-rag. Register: claude mcp add local-rag -- npx -y mcp-local-rag",
         "baseDirShouldMatch": "./papers",
         "_comment_baseDirShouldMatch": "Set mcp-local-rag's BASE_DIR env var to the same absolute path as extract.papersDirectory above."
+    },
+    "playwrightMcp": {
+        "_comment": "Optional companion: Playwright MCP provides LLM-friendly browser automation as a fallback when the built-in headless browser fails. Install: npm install -g @playwright/mcp. Register: claude mcp add playwright -- npx @playwright/mcp --headless",
+        "_comment_usage": "When extract_paper_full_text fails, the agent can use Playwright MCP tools (browser_navigate, browser_snapshot, browser_click) to adaptively navigate publisher pages and download PDFs, then call parse_pdf_file to parse them.",
+        "_comment_install": "See https://github.com/microsoft/playwright-mcp for setup instructions."
     },
     "zotero": {
         "_comment": "Zotero Web API settings. Get your API key at https://www.zotero.org/settings/keys and your library ID at https://www.zotero.org/settings/keys (shown as 'Your userID for use in API calls').",

@@ -35,6 +35,15 @@ test-results.txt
 # Claude
 .claude/
 
+# Windows system files
+desktop.ini
+Thumbs.db
+%SystemDrive%/
+
+# Plan docs (local only)
+*_plan.md
+*_strategy.md
+
 # MCPB (local-only)
 .mcpbignore
 *.mcpb

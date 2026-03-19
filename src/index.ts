@@ -11,7 +11,12 @@ import * as dotenv from "dotenv";
 import * as fs from "fs";
 import * as path from "path";
 import * as cheerio from 'cheerio';
-import puppeteer from 'puppeteer-core';
+import puppeteerVanilla from 'puppeteer-core';
+import { addExtra } from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
+const puppeteer = addExtra(puppeteerVanilla as any);
+puppeteer.use(StealthPlugin());
 import FormData from 'form-data';
 import { PDFParse } from 'pdf-parse';
 import { spawn } from 'node:child_process';
@@ -331,6 +336,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 }
             },
             {
+                name: "parse_pdf_file",
+                description: "Parses a local PDF file using the configured parsing waterfall (LlamaParse → Marker → Native) and returns extracted Markdown text. Use this when you have already downloaded a PDF (e.g., via Playwright MCP browser automation) and need GRaDOS to parse it. If a DOI is provided, the parsed Markdown is saved to the papers directory with YAML front-matter for local RAG indexing.",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        file_path: {
+                            type: "string",
+                            description: "Path to the local PDF file. Absolute paths are used as-is; relative paths are resolved from PROJECT_ROOT (the config file's directory)."
+                        },
+                        expected_title: {
+                            type: "string",
+                            description: "Expected paper title for QA validation. If provided, the parsed text is checked to contain this title."
+                        },
+                        doi: {
+                            type: "string",
+                            description: "DOI of the paper. If provided, the parsed Markdown is saved to the papers directory with YAML front-matter."
+                        }
+                    },
+                    required: ["file_path"]
+                }
+            },
+            {
                 name: "save_paper_to_zotero",
                 description: "Saves a paper's bibliographic metadata to the Zotero web library. Call this after synthesis for each paper that was cited in the final answer. Requires ZOTERO_API_KEY and zotero.libraryId in mcp-config.json.",
                 inputSchema: {
@@ -634,13 +661,26 @@ async function fetchFromHeadlessBrowser(doi: string, extractConfig: any): Promis
         let pdfBuffer: Buffer | null = null;
         
         const launchAndAttempt = async (isHeadless: boolean): Promise<boolean> => {
-            const browser = await puppeteer.launch({ executablePath, headless: isHeadless, defaultViewport: null });
+            // Fingerprint randomization: vary viewport to reduce detection
+            const viewports = [
+                { width: 1366, height: 768 },
+                { width: 1440, height: 900 },
+                { width: 1536, height: 864 },
+                { width: 1920, height: 1080 }
+            ];
+            const randomViewport = viewports[Math.floor(Math.random() * viewports.length)];
+            const browser = await puppeteer.launch({
+                executablePath,
+                headless: isHeadless,
+                defaultViewport: randomViewport,
+                args: ['--disable-blink-features=AutomationControlled']
+            });
             try {
                 const page = await browser.newPage();
                 let foundCaptcha = false;
                 
                 // 1. Setup Interceptor to catch any downloaded PDF
-                page.on('response', async (response) => {
+                page.on('response', async (response: any) => {
                     const contentType = response.headers()['content-type'];
                     if (contentType && contentType.includes('application/pdf')) {
                         try {
@@ -1233,6 +1273,115 @@ ${finalExtractedText}`
                 }
             ]
         };
+    } else if (name === "parse_pdf_file") {
+        const filePath = String(args?.file_path || "");
+        const expectedTitle = args?.expected_title ? String(args.expected_title) : undefined;
+        const doi = args?.doi ? String(args.doi) : undefined;
+
+        if (!filePath) {
+            return {
+                content: [{ type: "text", text: "Error: parse_pdf_file requires 'file_path'." }],
+                isError: true
+            };
+        }
+
+        const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(PROJECT_ROOT, filePath);
+
+        if (!fs.existsSync(resolvedPath)) {
+            return {
+                content: [{ type: "text", text: `Error: File not found: ${resolvedPath}` }],
+                isError: true
+            };
+        }
+
+        const pdfBuffer = fs.readFileSync(resolvedPath);
+
+        // Validate PDF magic bytes
+        const header = pdfBuffer.subarray(0, 5).toString('ascii');
+        if (!header.startsWith('%PDF')) {
+            return {
+                content: [{ type: "text", text: `Error: File is not a valid PDF (header: "${header.replace(/[^\x20-\x7E]/g, '?')}")` }],
+                isError: true
+            };
+        }
+
+        const extractConfig = config?.extract || {};
+        const parseOrder: string[] = extractConfig?.parsing?.order || ["LlamaParse", "Marker", "Native"];
+        const parseEnabled: { [key: string]: boolean } = extractConfig?.parsing?.enabled || { "LlamaParse": true, "Marker": true, "Native": true };
+        const fileName = path.basename(resolvedPath);
+
+        console.error(`[parse_pdf_file] Parsing ${fileName} via configured waterfall...`);
+
+        let parsedMarkdown = "";
+
+        for (const parser of parseOrder) {
+            if (parseEnabled[parser] === false) continue;
+
+            if (parser === "LlamaParse" && !parsedMarkdown) {
+                const md = await parseWithLlamaParse(pdfBuffer, fileName);
+                if (md) { console.error("   ✨ LlamaParse success."); parsedMarkdown = md; break; }
+            }
+            if (parser === "Marker" && !parsedMarkdown) {
+                const markerTimeout = extractConfig?.parsing?.markerTimeout || 120000;
+                const md = await parseWithMarker(pdfBuffer, fileName, markerTimeout);
+                if (md) { console.error("   ✨ Marker success."); parsedMarkdown = md; break; }
+            }
+            if (parser === "Native" && !parsedMarkdown) {
+                const md = await parseWithNative(pdfBuffer);
+                if (md) { console.error("   ✨ Native success."); parsedMarkdown = md; break; }
+            }
+        }
+
+        if (!parsedMarkdown) {
+            return {
+                content: [{ type: "text", text: `Error: All configured parsers failed to extract text from: ${resolvedPath}` }],
+                isError: true
+            };
+        }
+
+        // QA validation
+        const qaMin = extractConfig?.qa?.minCharacters || 1500;
+        if (!isValidPaperContent(parsedMarkdown, doi || fileName, qaMin, expectedTitle)) {
+            return {
+                content: [{ type: "text", text: `Error: QA validation failed for ${fileName}. The extracted text may be too short, contain paywall content, or not match the expected title.` }],
+                isError: true
+            };
+        }
+
+        // Save to papers directory if DOI is provided
+        let savedPath = "";
+        if (doi) {
+            try {
+                const papersDir = extractConfig?.papersDirectory ? path.resolve(PROJECT_ROOT, extractConfig.papersDirectory) : path.join(PROJECT_ROOT, "papers");
+                if (!fs.existsSync(papersDir)) fs.mkdirSync(papersDir, { recursive: true });
+                const safeDoi = doi.replace(/[^a-z0-9]/gi, '_');
+                const mdFilePath = path.join(papersDir, `${safeDoi}.md`);
+                const frontMatter = [
+                    '---',
+                    `doi: "${doi}"`,
+                    expectedTitle ? `title: "${expectedTitle.replace(/"/g, '\\"')}"` : '',
+                    `source: "Local PDF (parse_pdf_file)"`,
+                    `fetched_at: "${new Date().toISOString()}"`,
+                    '---',
+                    ''
+                ].filter(Boolean).join('\n');
+                fs.writeFileSync(mdFilePath, frontMatter + parsedMarkdown, 'utf-8');
+                savedPath = mdFilePath;
+                console.error(`📚 Saved Markdown for RAG indexing: ${mdFilePath}`);
+            } catch (saveErr: any) {
+                console.error(`⚠️ Failed to save Markdown (non-fatal): ${saveErr.message}`);
+            }
+        }
+
+        let resultText = `# Parsed PDF [Source: Local File]\n## File: ${fileName}\n`;
+        if (doi) resultText += `## DOI: ${doi}\n`;
+        if (savedPath) resultText += `## Saved to: ${savedPath}\n`;
+        resultText += `\n${parsedMarkdown}`;
+
+        return {
+            content: [{ type: "text", text: resultText }]
+        };
+
     } else if (name === "save_paper_to_zotero") {
         const doi     = String(args?.doi || "");
         const title   = String(args?.title || "");
@@ -1266,7 +1415,7 @@ ${finalExtractedText}`
     }
 
     return {
-        content: [{ type: "text", text: `Error: Unknown tool "${name}". Available tools: search_academic_papers, extract_paper_full_text, save_paper_to_zotero.` }],
+        content: [{ type: "text", text: `Error: Unknown tool "${name}". Available tools: search_academic_papers, extract_paper_full_text, parse_pdf_file, save_paper_to_zotero.` }],
         isError: true
     };
 });
@@ -1323,6 +1472,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
             tools: [
                 { name: "search_academic_papers", purpose: "Search academic databases and return deduplicated paper metadata" },
                 { name: "extract_paper_full_text", purpose: "Fetch and parse full-text paper content by DOI" },
+                { name: "parse_pdf_file", purpose: "Parse a local PDF file using configured waterfall (LlamaParse → Marker → Native)" },
                 { name: "save_paper_to_zotero", purpose: "Save cited paper metadata to Zotero web library" }
             ],
             companionMcp: {
@@ -1404,6 +1554,17 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
                 },
                 returns: "Full-text paper content in Markdown. Auto-saves .md to papers directory and .pdf to downloads directory.",
                 commonFailures: ["Paywall blocks all strategies", "PDF parsing fails", "QA validation rejects truncated content"]
+            },
+            {
+                name: "parse_pdf_file",
+                description: "Parses a local PDF file using the configured parsing waterfall (LlamaParse → Marker → Native). Use when you have downloaded a PDF via browser automation (e.g., Playwright MCP) and need to extract text.",
+                parameters: {
+                    file_path: { type: "string", required: true, description: "Path to the local PDF file (absolute or relative to PROJECT_ROOT)" },
+                    expected_title: { type: "string", required: false, description: "Paper title for QA validation" },
+                    doi: { type: "string", required: false, description: "DOI — if provided, saves parsed Markdown to papers directory with front-matter" }
+                },
+                returns: "Markdown-formatted paper text. If DOI provided, also saves .md to papers directory for RAG indexing.",
+                commonFailures: ["File not found", "Not a valid PDF", "All parsers fail", "QA validation rejects content"]
             },
             {
                 name: "save_paper_to_zotero",
