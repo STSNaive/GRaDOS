@@ -82,17 +82,16 @@ claude mcp add --transport stdio grados -- npx -y grados
 codex mcp add grados -- npx -y grados
 ```
 
-If you want GRaDOS to load a specific `mcp-config.json`, the manual `cwd` configuration below is the most reliable setup.
+If you want GRaDOS to load a specific `mcp-config.json`, use `--config` (recommended) or `GRADOS_CONFIG_PATH`:
 
-Or configure manually - Claude Code (`.claude/settings.json`):
+Claude Code (`.claude/settings.json`):
 
 ```json
 {
   "mcpServers": {
     "grados": {
       "command": "npx",
-      "args": ["-y", "grados"],
-      "cwd": "/path/to/directory/containing/mcp-config.json"
+      "args": ["-y", "grados", "--config", "/path/to/mcp-config.json"]
     }
   }
 }
@@ -103,22 +102,59 @@ Codex (`~/.codex/config.toml`):
 ```toml
 [mcp_servers.grados]
 command = "npx"
-args = ["-y", "grados"]
-cwd = "/path/to/directory/containing/mcp-config.json"
+args = ["-y", "grados", "--config", "/path/to/mcp-config.json"]
 ```
 
-#### Tip: What `cwd` means 💡
+#### Tip: Path resolution 💡
 
-`cwd` is the runtime working directory where GRaDOS starts. In the current implementation it is used for:
+GRaDOS resolves paths in two separate scopes:
 
-- loading `mcp-config.json`
-- resolving relative output paths such as `./downloads` and `./papers`
-- resolving other relative assets such as `./scihub-mirrors.txt`
-- locating `./marker-worker` when Marker parsing is enabled
+| Scope | Resolved from | Examples |
+|---|---|---|
+| **Package assets** | npm install directory (`PACKAGE_ROOT`) | `marker-worker/` |
+| **Project files** | Config file's parent directory (`PROJECT_ROOT`) | `downloads/`, `papers/`, `scihub-mirrors.txt` |
 
-So `cwd` is not "where npm installed the package" - it is "the directory GRaDOS should treat as its runtime project root".
+**Config file discovery** (in priority order):
 
-If you want papers to be saved in a different directory, keep `cwd` pointed at the config/runtime directory and use absolute paths in `mcp-config.json`:
+1. `--config <path>` CLI argument
+2. `GRADOS_CONFIG_PATH` environment variable
+3. `cwd/mcp-config.json` (default fallback)
+
+The directory containing the resolved config file becomes `PROJECT_ROOT`. All relative paths in `mcp-config.json` (like `./papers`, `./downloads`) resolve from there — not from `cwd`.
+
+**Examples:**
+
+```bash
+# Explicit config path (recommended for MCP client setup)
+grados --config D:/Projects/Papers/mcp-config.json
+
+# Or via environment variable
+GRADOS_CONFIG_PATH=D:/Projects/Papers/mcp-config.json grados
+```
+
+Claude Code (`.claude/settings.json`) — using `--config` instead of `cwd`:
+
+```json
+{
+  "mcpServers": {
+    "grados": {
+      "command": "npx",
+      "args": ["-y", "grados", "--config", "D:/Projects/Papers/mcp-config.json"]
+    }
+  }
+}
+```
+
+Codex (`~/.codex/config.toml`) — using env var:
+
+```toml
+[mcp_servers.grados]
+command = "npx"
+args = ["-y", "grados"]
+env = { GRADOS_CONFIG_PATH = "D:/Projects/Papers/mcp-config.json" }
+```
+
+If you want storage in a different directory, use absolute paths in config:
 
 ```json
 {
@@ -129,13 +165,13 @@ If you want papers to be saved in a different directory, keep `cwd` pointed at t
 }
 ```
 
-If you use relative paths instead, they are resolved from `cwd`.
+Relative paths are resolved from `PROJECT_ROOT` (the config file's directory).
 
 ### Optional: Install Marker (high-quality local PDF parsing) 🧠
 
 Marker uses deep learning models to convert PDFs to Markdown with much better accuracy than the built-in parser (`pdf-parse`). It is the recommended parser for production use.
 
-> **Current path behavior:** Marker is resolved from `./marker-worker` relative to `cwd`. If you want to enable Marker, use a `cwd` that contains `marker-worker/` (for example the project root), or copy that directory into your runtime/config directory.
+> **Path behavior:** Marker is resolved from `marker-worker/` inside the grados package installation directory (`PACKAGE_ROOT`), not from `cwd` or the config directory. When installed via `npm install -g grados`, it is automatically found at the correct location.
 
 **Prerequisites:** Python 3.12 (required by `marker-pdf`). Optional: NVIDIA GPU + CUDA for significant speedup.
 

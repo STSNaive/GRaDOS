@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+    ListToolsRequestSchema, CallToolRequestSchema,
+    ListResourcesRequestSchema, ReadResourceRequestSchema,
+    ListResourceTemplatesRequestSchema
+} from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
 import * as dotenv from "dotenv";
 import * as fs from "fs";
@@ -17,15 +21,38 @@ dotenv.config();
 // Apply a stealthy global User-Agent to evade basic 403 Forbidden blocks
 axios.defaults.headers.common['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
+// --- Path Resolution ---
+// PACKAGE_ROOT: where grados is installed (contains marker-worker/, mcp-config.example.json, etc.)
+// In dist/index.js, __dirname is <install>/dist, so the package root is one level up.
+const PACKAGE_ROOT = path.resolve(__dirname, "..");
+
+// Resolve config file path: --config <path> > GRADOS_CONFIG_PATH env > cwd/mcp-config.json
+function resolveConfigPath(): string {
+    const argIdx = process.argv.indexOf("--config");
+    if (argIdx !== -1 && process.argv[argIdx + 1]) {
+        return path.resolve(process.argv[argIdx + 1]);
+    }
+    if (process.env.GRADOS_CONFIG_PATH) {
+        return path.resolve(process.env.GRADOS_CONFIG_PATH);
+    }
+    return path.join(process.cwd(), "mcp-config.json");
+}
+
+const CONFIG_PATH = resolveConfigPath();
+
+// PROJECT_ROOT: directory containing the config file. All user-project relative paths
+// (papers/, downloads/, mirror store) resolve against this, NOT process.cwd().
+const PROJECT_ROOT = path.dirname(CONFIG_PATH);
+
 // Load Configuration
 let config: any = {};
 try {
-    const configPath = path.join(process.cwd(), "mcp-config.json");
-    if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    if (fs.existsSync(CONFIG_PATH)) {
+        config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+        console.error(`[GRaDOS] Loaded config from: ${CONFIG_PATH}`);
     }
 } catch (e) {
-    console.error("Failed to load mcp-config.json. Falling back to default env variables.", e);
+    console.error(`Failed to load config from ${CONFIG_PATH}. Falling back to default env variables.`, e);
 }
 
 // Inject API keys from config into process.env (single config file as source of truth)
@@ -55,6 +82,7 @@ const server = new Server(
     {
         capabilities: {
             tools: {},
+            resources: {},
         },
     }
 );
@@ -490,7 +518,7 @@ async function fetchFromOA(doi: string): Promise<FetchResult | null> {
 }
 
 async function getWorkingSciHubMirror(configMirrorStore: string, fallback: string, autoUpdate: boolean): Promise<string> {
-    const mirrorFile = path.resolve(process.cwd(), configMirrorStore);
+    const mirrorFile = path.resolve(PROJECT_ROOT, configMirrorStore);
     let mirrors = [fallback];
     
     try {
@@ -757,7 +785,7 @@ async function parseWithLlamaParse(pdfBuffer: Buffer, fileName: string): Promise
 
 async function parseWithMarker(pdfBuffer: Buffer, fileName: string, timeoutMs: number = 120000): Promise<string | null> {
     try {
-        const workerDir = path.resolve(process.cwd(), "marker-worker");
+        const workerDir = path.resolve(PACKAGE_ROOT, "marker-worker");
         const pythonExec = path.join(workerDir, ".venv", "Scripts", "python.exe");
         const workerPy = path.join(workerDir, "worker.py");
         if (!fs.existsSync(pythonExec) || !fs.existsSync(workerPy)) {
@@ -1095,7 +1123,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     console.error(`   [${strategy.name}] procured PDF Buffer. Saving to disk...`);
                     
                     // PDF files are saved to downloadDirectory (archival only, not indexed by RAG)
-                    const downloadDir = extractConfig?.downloadDirectory ? path.resolve(process.cwd(), extractConfig.downloadDirectory) : path.join(process.cwd(), "downloads");
+                    const downloadDir = extractConfig?.downloadDirectory ? path.resolve(PROJECT_ROOT, extractConfig.downloadDirectory) : path.join(PROJECT_ROOT, "downloads");
                     if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
                     
                     const safeDoi = doi.replace(/[^a-z0-9]/gi, '_');
@@ -1157,7 +1185,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     // 4. Save parsed Markdown to papersDirectory for mcp-local-rag indexing
                     //    Separate from downloadDirectory (PDF) to avoid duplicate RAG ingestion
                     try {
-                        const papersDir = extractConfig?.papersDirectory ? path.resolve(process.cwd(), extractConfig.papersDirectory) : path.join(process.cwd(), "papers");
+                        const papersDir = extractConfig?.papersDirectory ? path.resolve(PROJECT_ROOT, extractConfig.papersDirectory) : path.join(PROJECT_ROOT, "papers");
                         if (!fs.existsSync(papersDir)) fs.mkdirSync(papersDir, { recursive: true });
                         const safeDoi = doi.replace(/[^a-z0-9]/gi, '_');
                         const mdFilePath = path.join(papersDir, `${safeDoi}.md`);
@@ -1241,6 +1269,172 @@ ${finalExtractedText}`
         content: [{ type: "text", text: `Error: Unknown tool "${name}". Available tools: search_academic_papers, extract_paper_full_text, save_paper_to_zotero.` }],
         isError: true
     };
+});
+
+// --- MCP Resources ---
+// Phase 1: Static read-only resources for service discovery and status.
+// These allow clients that support resources (Claude Code @-mentions, Codex resource wrappers)
+// to discover GRaDOS capabilities even without tools/list.
+
+const GRADOS_VERSION = "0.2.1";
+
+server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    return {
+        resources: [
+            {
+                uri: "grados://about",
+                name: "GRaDOS About",
+                description: "Service overview: name, version, capabilities, and available tools",
+                mimeType: "application/json"
+            },
+            {
+                uri: "grados://status",
+                name: "GRaDOS Status",
+                description: "Health check: config loaded, directories exist, API keys configured",
+                mimeType: "application/json"
+            },
+            {
+                uri: "grados://tools",
+                name: "GRaDOS Tools",
+                description: "Read-only mirror of available tools with names, descriptions, and parameter schemas",
+                mimeType: "application/json"
+            }
+        ]
+    };
+});
+
+server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const uri = request.params.uri;
+
+    if (uri === "grados://about") {
+        const about = {
+            name: "GRaDOS",
+            fullName: "Graduate Research and Document Operating System",
+            version: GRADOS_VERSION,
+            description: "MCP server for academic paper search and full-text extraction",
+            capabilities: [
+                "Waterfall search across academic databases (Crossref, PubMed, Web of Science, Elsevier, Springer)",
+                "Full-text extraction via TDM APIs, Open Access, Sci-Hub, and headless browser",
+                "Progressive PDF parsing (LlamaParse → Marker → Native)",
+                "QA validation to reject paywalls and truncated content",
+                "Automatic Markdown output with YAML front-matter",
+                "Zotero web library integration for citation management"
+            ],
+            tools: [
+                { name: "search_academic_papers", purpose: "Search academic databases and return deduplicated paper metadata" },
+                { name: "extract_paper_full_text", purpose: "Fetch and parse full-text paper content by DOI" },
+                { name: "save_paper_to_zotero", purpose: "Save cited paper metadata to Zotero web library" }
+            ],
+            companionMcp: {
+                name: "mcp-local-rag",
+                tools: [
+                    { name: "query_documents", purpose: "Semantic + keyword search over locally indexed papers" },
+                    { name: "ingest_file", purpose: "Index a Markdown paper file into local RAG database" },
+                    { name: "list_files", purpose: "List all indexed papers with status" }
+                ]
+            },
+            configPath: CONFIG_PATH,
+            projectRoot: PROJECT_ROOT
+        };
+        return {
+            contents: [{ uri, mimeType: "application/json", text: JSON.stringify(about, null, 2) }]
+        };
+    }
+
+    if (uri === "grados://status") {
+        const extractConfig = config?.extract || {};
+        const papersDir = extractConfig?.papersDirectory
+            ? path.resolve(PROJECT_ROOT, extractConfig.papersDirectory)
+            : path.join(PROJECT_ROOT, "papers");
+        const downloadDir = extractConfig?.downloadDirectory
+            ? path.resolve(PROJECT_ROOT, extractConfig.downloadDirectory)
+            : path.join(PROJECT_ROOT, "downloads");
+
+        const status = {
+            online: true,
+            configLoaded: Object.keys(config).length > 0,
+            configPath: CONFIG_PATH,
+            directories: {
+                papersDirectory: { path: papersDir, exists: fs.existsSync(papersDir) },
+                downloadDirectory: { path: downloadDir, exists: fs.existsSync(downloadDir) }
+            },
+            apiKeys: {
+                ELSEVIER_API_KEY: !!getApiKey("ELSEVIER_API_KEY"),
+                WOS_API_KEY: !!getApiKey("WOS_API_KEY"),
+                SPRINGER_meta_API_KEY: !!getApiKey("SPRINGER_meta_API_KEY"),
+                SPRINGER_OA_API_KEY: !!getApiKey("SPRINGER_OA_API_KEY"),
+                LLAMAPARSE_API_KEY: !!getApiKey("LLAMAPARSE_API_KEY"),
+                ZOTERO_API_KEY: !!getApiKey("ZOTERO_API_KEY")
+            },
+            zotero: {
+                configured: !!(config?.zotero?.libraryId && getApiKey("ZOTERO_API_KEY")),
+                libraryType: config?.zotero?.libraryType || "not set"
+            },
+            academicEtiquetteEmail: getEtiquetteEmail(),
+            searchSources: config?.search?.order || ["Elsevier", "Springer", "WebOfScience", "Crossref", "PubMed"],
+            fetchStrategy: extractConfig?.fetchStrategy?.order || ["TDM", "OA", "SciHub", "Headless"],
+            parsingOrder: extractConfig?.parsing?.order || ["LlamaParse", "Marker", "Native"]
+        };
+        return {
+            contents: [{ uri, mimeType: "application/json", text: JSON.stringify(status, null, 2) }]
+        };
+    }
+
+    if (uri === "grados://tools") {
+        const tools = [
+            {
+                name: "search_academic_papers",
+                description: "Searches multiple academic databases sequentially in priority order for a given query and returns a deduplicated list of papers with metadata (DOIs, Abstracts).",
+                parameters: {
+                    query: { type: "string", required: true, description: "The search query" },
+                    limit: { type: "number", required: false, default: 10, description: "Maximum number of results to return" }
+                },
+                returns: "Markdown-formatted list of papers with DOI, title, authors, year, abstract",
+                commonFailures: ["No API key for a specific database (gracefully skipped)", "Network timeout", "Database rate limiting"]
+            },
+            {
+                name: "extract_paper_full_text",
+                description: "Given a DOI, attempts to fetch the full text using a waterfall strategy (TDM → OA → Sci-Hub → Headless). Returns markdown-formatted text with QA validation.",
+                parameters: {
+                    doi: { type: "string", required: true, description: "The DOI of the paper" },
+                    publisher: { type: "string", required: false, description: "Publisher name to optimize extraction" },
+                    expected_title: { type: "string", required: false, description: "Paper title for QA validation" }
+                },
+                returns: "Full-text paper content in Markdown. Auto-saves .md to papers directory and .pdf to downloads directory.",
+                commonFailures: ["Paywall blocks all strategies", "PDF parsing fails", "QA validation rejects truncated content"]
+            },
+            {
+                name: "save_paper_to_zotero",
+                description: "Saves a paper's bibliographic metadata to the Zotero web library. Requires ZOTERO_API_KEY and zotero.libraryId in config.",
+                parameters: {
+                    doi: { type: "string", required: true, description: "The DOI of the paper" },
+                    title: { type: "string", required: true, description: "The full title" },
+                    authors: { type: "array", required: false, description: "List of author names" },
+                    abstract: { type: "string", required: false, description: "Paper abstract" },
+                    journal: { type: "string", required: false, description: "Journal name" },
+                    year: { type: "string", required: false, description: "Publication year" },
+                    url: { type: "string", required: false, description: "URL to paper landing page" },
+                    tags: { type: "array", required: false, description: "Tags/keywords" },
+                    collection_key: { type: "string", required: false, description: "Zotero collection key override" }
+                },
+                returns: "Confirmation with Zotero item key",
+                commonFailures: ["ZOTERO_API_KEY not configured", "libraryId not set", "Network error"]
+            }
+        ];
+        return {
+            contents: [{ uri, mimeType: "application/json", text: JSON.stringify(tools, null, 2) }]
+        };
+    }
+
+    return {
+        contents: [{ uri, mimeType: "text/plain", text: `Unknown resource URI: ${uri}` }]
+    };
+});
+
+// CRITICAL: Must implement resources/templates/list even if empty.
+// Codex disconnects ALL MCP servers if this returns -32601 (Method not found). See: github.com/openai/codex/issues/14454
+server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
+    return { resourceTemplates: [] };
 });
 
 // --- CLI: --init flag to bootstrap mcp-config.json ---

@@ -48,7 +48,7 @@
         },
         "parsing": {
             "markerTimeout": 120000,
-            "_comment_markerTimeout": "Maximum time in milliseconds to wait for the local Marker worker process under ./marker-worker (default: 120000).",
+            "_comment_markerTimeout": "Maximum time in milliseconds to wait for the local Marker worker process. The worker is resolved from the grados package installation directory, not from this config's directory (default: 120000).",
             "order": ["LlamaParse", "Marker", "Native"],
             "enabled": {
                 "LlamaParse": true,
