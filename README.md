@@ -80,9 +80,36 @@ Pair with [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag) to build a 
 
 ## Installation 🚀
 
-### Install GRaDOS
+### Option A: Claude Code Plugin (easiest) 🔌
 
-#### Option A: npm (recommended) 📦
+If you use [Claude Code](https://code.claude.com/) (CLI or Desktop), install GRaDOS as a plugin. This automatically registers all three MCP servers (GRaDOS, mcp-local-rag, Playwright) with no manual configuration.
+
+**1. Add the marketplace and install:**
+
+```bash
+# In Claude Code
+/plugin marketplace add STSNaive/GRaDOS#claude-plugin
+/plugin install grados@stsnaive-grados
+```
+
+**2. Run the setup command:**
+
+```
+/grados:setup
+```
+
+This generates a config file and guides you through setting API keys. No environment variables or shell profile editing required — the plugin handles all paths automatically.
+
+**3. Reload and verify:**
+
+```
+/reload-plugins
+/grados:status
+```
+
+> **What the plugin includes:** GRaDOS MCP server, [mcp-local-rag](https://github.com/shinpr/mcp-local-rag) for local paper retrieval, [Playwright MCP](https://github.com/microsoft/playwright-mcp) for browser-assisted PDF downloads, a research workflow skill, and setup/status commands.
+
+### Option B: npm (manual setup) 📦
 
 ```bash
 npm install -g grados
@@ -94,7 +121,7 @@ grados --init
 # (see mcp-config.example.json for all options)
 ```
 
-#### Option B: From source 🛠️
+### Option C: From source 🛠️
 
 ```bash
 git clone https://github.com/STSNaive/GRaDOS.git

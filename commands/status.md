@@ -1,5 +1,5 @@
 ---
-description: Diagnose GRaDOS MCP server status, API key configuration, and dependency health.
+description: Diagnose GRaDOS MCP server status, config, API keys, and dependency health.
 ---
 
 # GRaDOS Status Check
@@ -12,36 +12,43 @@ Run `npx -y grados --version` and report the version. If it fails, report that G
 
 ## 2. Config File
 
-Check the value of `GRADOS_CONFIG_PATH` environment variable (if set). Then check if `mcp-config.json` exists in the current working directory.
+Check for config files in this priority order:
 
-Report which config file GRaDOS would use based on the discovery order:
-1. `--config` CLI argument (from MCP server config)
-2. `GRADOS_CONFIG_PATH` env var
-3. `cwd/mcp-config.json`
+1. **Plugin data directory**: `${CLAUDE_PLUGIN_DATA}/mcp-config.json` (used when installed as a Claude Code plugin)
+2. **GRADOS_CONFIG_PATH** environment variable (if set)
+3. **Current directory**: `./mcp-config.json`
+
+For each path, check if the file exists. Report which config file GRaDOS would use.
+
+If no config file is found, suggest running `/grados:setup`.
 
 ## 3. API Keys Configured
 
-Check which of these environment variables or config values are set (non-empty):
+Read the config file found in Step 2. Check which API keys are set (non-empty) in the `apiKeys` section:
 - `ELSEVIER_API_KEY`
 - `WOS_API_KEY`
 - `SPRINGER_meta_API_KEY`
 - `SPRINGER_OA_API_KEY`
 - `LLAMAPARSE_API_KEY`
 - `ZOTERO_API_KEY`
-- `ZOTERO_LIBRARY_ID`
-- `ACADEMIC_ETIQUETTE_EMAIL`
 
-Report as a checklist: ✓ configured / ✗ not set.
+Also check if `academicEtiquetteEmail` is configured (not empty or default placeholder).
+
+**SECURITY: Do NOT display the actual key values. Only report whether each key is set or not.**
+
+Report as a checklist: configured / not set.
 
 Remind user that Crossref, PubMed, Unpaywall, and Sci-Hub work without any API keys.
 
 ## 4. Storage Directories
 
-Check if `papers/` and `downloads/` directories exist (relative to config file location or cwd). Report their status and file counts if they exist.
+Check if `papers/` and `downloads/` directories exist relative to the config file location. Report their status and file counts if they exist.
 
-## 5. Marker Worker
+## 5. Companion MCP Servers
 
-Check if `marker-worker/.venv/` exists (relative to the grados package directory or cwd). Report whether Marker appears to be installed.
+Check if these companion tools are available (try calling them or checking MCP server status):
+- **mcp-local-rag**: `local-rag:status` — report if available
+- **Playwright MCP**: check if playwright browser tools are available
 
 ## 6. Summary
 
@@ -50,12 +57,14 @@ Present a clear summary table:
 ```
 Component          Status
 ─────────────────────────────
-GRaDOS server      ✓/✗ (version)
-Config file        ✓/✗ (path)
-API keys           N of 8 configured
-papers/ directory  ✓/✗ (N files)
-downloads/ dir     ✓/✗ (N files)
-Marker worker      ✓/✗
+GRaDOS server      [version or error]
+Config file        [path or "not found"]
+API keys           N of 6 configured
+Email              [set or "not set"]
+papers/ directory  [N files or "not found"]
+downloads/ dir     [N files or "not found"]
+mcp-local-rag      [available or "not found"]
+Playwright MCP     [available or "not found"]
 ```
 
 If any critical issues are found, suggest running `/grados:setup` to fix them.

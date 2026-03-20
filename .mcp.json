@@ -2,18 +2,18 @@
   "mcpServers": {
     "grados": {
       "command": "npx",
-      "args": ["-y", "grados"],
+      "args": ["-y", "grados", "--config", "${CLAUDE_PLUGIN_DATA}/mcp-config.json"]
+    },
+    "local-rag": {
+      "command": "npx",
+      "args": ["-y", "mcp-local-rag"],
       "env": {
-        "GRADOS_CONFIG_PATH": "",
-        "ELSEVIER_API_KEY": "",
-        "WOS_API_KEY": "",
-        "SPRINGER_meta_API_KEY": "",
-        "SPRINGER_OA_API_KEY": "",
-        "LLAMAPARSE_API_KEY": "",
-        "ACADEMIC_ETIQUETTE_EMAIL": "",
-        "ZOTERO_API_KEY": "",
-        "ZOTERO_LIBRARY_ID": ""
+        "BASE_DIR": "${CLAUDE_PLUGIN_DATA}/papers"
       }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--headless"]
     }
   }
 }

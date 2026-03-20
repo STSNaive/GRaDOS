@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"${CLAUDE_PLUGIN_DATA}/mcp-config.json\" && echo '[GRaDOS] Config loaded from ${CLAUDE_PLUGIN_DATA}/mcp-config.json' || echo '[GRaDOS] Config not found. Run /grados:setup to complete configuration.'"
+          }
+        ]
+      }
+    ]
+  }
+}
