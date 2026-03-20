@@ -31,7 +31,7 @@ GRaDOS is designed to sit inside an agent workflow:
 5. Run QA checks before returning content
 6. Save raw PDFs to `downloads/` and parsed Markdown to `papers/` for later reuse
 
-**MCP Tools exposed:**
+### MCP Tools 🔧
 
 | Server | Tool | Description |
 |---|---|---|
@@ -45,9 +45,44 @@ GRaDOS is designed to sit inside an agent workflow:
 | mcp-local-rag | `delete_file` | Remove stale indexed entries from the local RAG database. |
 | mcp-local-rag | `status` | Inspect local RAG database health and configuration warnings. |
 
+### SKILL.md (Companion Skill) 🤖
+
+`skills/grados/SKILL.md` is the companion structured prompt that describes the research workflow around GRaDOS and `mcp-local-rag`. Copy it into your agent's skill/prompt directory to enable the full workflow.
+
+### Local Paper Knowledge Base 🗂️
+
+After extracting a paper, GRaDOS stores the PDF and the parsed Markdown separately to prevent duplicate indexing:
+
+| Directory | Content | Purpose | Configured by |
+|---|---|---|---|
+| `downloads/` | Raw `.pdf` files | Archival only, not indexed | `extract.downloadDirectory` |
+| `papers/` | Parsed `.md` files (with YAML front-matter) | Available for semantic and keyword retrieval | `extract.papersDirectory` |
+
+Each Markdown file includes structured front-matter:
+
+```yaml
+---
+doi: "10.1038/s41598-025-29656-1"
+title: "Triple-negative complementary metamaterial..."
+source: "Unpaywall OA"
+fetched_at: "2026-03-17T12:00:00.000Z"
+---
+```
+
+Pair with [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag) to build a vector index over `papers/` for local semantic and keyword retrieval. The full workflow:
+
+1. **Extract** - GRaDOS downloads a PDF and parses it, saves `.pdf` to `downloads/` and `.md` to `papers/`
+2. **Ingest** - The AI agent calls `ingest_file` on the new `.md` file, which embeds it into a local LanceDB vector store
+3. **Query** - On future questions, the workflow can check the local library first via `query_documents`, avoiding redundant API calls and re-extraction
+4. **Manage** - Use `list_files` to see all indexed papers and `delete_file` to remove outdated entries
+
+> **Note:** `mcp-local-rag` does not auto-scan directories. Papers must be explicitly ingested via the `ingest_file` tool. The included `SKILL.md` workflow can handle this automatically.
+
 ## Installation 🚀
 
-### Option A: npm (recommended) 📦
+### Install GRaDOS
+
+#### Option A: npm (recommended) 📦
 
 ```bash
 npm install -g grados
@@ -59,7 +94,7 @@ grados --init
 # (see mcp-config.example.json for all options)
 ```
 
-### Option B: From source 🛠️
+#### Option B: From source 🛠️
 
 ```bash
 git clone https://github.com/STSNaive/GRaDOS.git
@@ -107,68 +142,6 @@ Codex (`~/.codex/config.toml`):
 command = "npx"
 args = ["-y", "grados", "--config", "/path/to/mcp-config.json"]
 ```
-
-#### Tip: Path resolution 💡
-
-GRaDOS resolves paths in two separate scopes:
-
-| Scope | Resolved from | Examples |
-|---|---|---|
-| **Package assets** | npm install directory (`PACKAGE_ROOT`) | `marker-worker/` |
-| **Project files** | Config file's parent directory (`PROJECT_ROOT`) | `downloads/`, `papers/`, `scihub-mirrors.txt` |
-
-**Config file discovery** (in priority order):
-
-1. `--config <path>` CLI argument
-2. `GRADOS_CONFIG_PATH` environment variable
-3. `cwd/mcp-config.json` (default fallback)
-
-The directory containing the resolved config file becomes `PROJECT_ROOT`. All relative paths in `mcp-config.json` (like `./papers`, `./downloads`) resolve from there — not from `cwd`.
-
-**Examples:**
-
-```bash
-# Explicit config path (recommended for MCP client setup)
-grados --config D:/Projects/Papers/mcp-config.json
-
-# Or via environment variable
-GRADOS_CONFIG_PATH=D:/Projects/Papers/mcp-config.json grados
-```
-
-Claude Code (`.claude/settings.json`) — using `--config` instead of `cwd`:
-
-```json
-{
-  "mcpServers": {
-    "grados": {
-      "command": "npx",
-      "args": ["-y", "grados", "--config", "D:/Projects/Papers/mcp-config.json"]
-    }
-  }
-}
-```
-
-Codex (`~/.codex/config.toml`) — using env var:
-
-```toml
-[mcp_servers.grados]
-command = "npx"
-args = ["-y", "grados"]
-env = { GRADOS_CONFIG_PATH = "D:/Projects/Papers/mcp-config.json" }
-```
-
-If you want storage in a different directory, use absolute paths in config:
-
-```json
-{
-  "extract": {
-    "downloadDirectory": "E:/academic-cache/downloads",
-    "papersDirectory": "E:/academic-cache/papers"
-  }
-}
-```
-
-Relative paths are resolved from `PROJECT_ROOT` (the config file's directory).
 
 ### Optional: Install Marker (high-quality local PDF parsing) 🧠
 
@@ -224,35 +197,6 @@ If Marker is active, the log will show:
 [Marker] Converting PDF with local Marker worker...
 Marker successfully converted PDF to Markdown.
 ```
-
-### Integrated Paper Knowledge Base 🗂️
-
-After extracting a paper, GRaDOS stores the PDF and the parsed Markdown separately to prevent duplicate indexing:
-
-| Directory | Content | Purpose | Configured by |
-|---|---|---|---|
-| `downloads/` | Raw `.pdf` files | Archival only, not indexed | `extract.downloadDirectory` |
-| `papers/` | Parsed `.md` files (with YAML front-matter) | Available for semantic and keyword retrieval | `extract.papersDirectory` |
-
-Each Markdown file includes structured front-matter:
-
-```yaml
----
-doi: "10.1038/s41598-025-29656-1"
-title: "Triple-negative complementary metamaterial..."
-source: "Unpaywall OA"
-fetched_at: "2026-03-17T12:00:00.000Z"
----
-```
-
-Pair with [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag) to build a vector index over `papers/` for local semantic and keyword retrieval. The full workflow:
-
-1. **Extract** - GRaDOS downloads a PDF and parses it, saves `.pdf` to `downloads/` and `.md` to `papers/`
-2. **Ingest** - The AI agent calls `ingest_file` on the new `.md` file, which embeds it into a local LanceDB vector store
-3. **Query** - On future questions, the workflow can check the local library first via `query_documents`, avoiding redundant API calls and re-extraction
-4. **Manage** - Use `list_files` to see all indexed papers and `delete_file` to remove outdated entries
-
-> **Note:** `mcp-local-rag` does not auto-scan directories. Papers must be explicitly ingested via the `ingest_file` tool. The included `SKILL.md` workflow can handle this automatically.
 
 ### Optional: Install mcp-local-rag (local paper library with RAG) 🔎
 
@@ -374,6 +318,51 @@ The `SKILL.md` workflow (Step 3b) automatically guides the agent to use Playwrig
 
 > **Note:** Playwright MCP is entirely optional. Without it, GRaDOS still works through its built-in waterfall (TDM → OA → Sci-Hub → Headless Puppeteer). Playwright MCP adds an LLM-driven safety net for the cases Puppeteer can't handle.
 
+### Configuration Example: GRaDOS + mcp-local-rag + Playwright 🧩
+
+If you want to wire up the most common end-to-end research workflow in one shot, configure these three MCP services together. This example assumes your config file lives at `D:/Projects/Papers/mcp-config.json`, and that `extract.papersDirectory` uses the default relative path `./papers`, so `mcp-local-rag` should point `BASE_DIR` to `D:/Projects/Papers/papers`.
+
+Claude Code (`.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "grados": {
+      "command": "npx",
+      "args": ["-y", "grados", "--config", "D:/Projects/Papers/mcp-config.json"]
+    },
+    "local-rag": {
+      "command": "npx",
+      "args": ["-y", "mcp-local-rag"],
+      "env": {
+        "BASE_DIR": "D:/Projects/Papers/papers"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp", "--headless"]
+    }
+  }
+}
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.grados]
+command = "npx"
+args = ["-y", "grados", "--config", "D:/Projects/Papers/mcp-config.json"]
+
+[mcp_servers.local-rag]
+command = "npx"
+args = ["-y", "mcp-local-rag"]
+env = { BASE_DIR = "D:/Projects/Papers/papers" }
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp", "--headless"]
+```
+
 ## Configuration ⚙️
 
 All configuration lives in a single file: `mcp-config.json`. Run `grados --init` to generate one from the template.
@@ -423,12 +412,68 @@ The `extract.fetchStrategy.order` controls the full-text extraction priority:
 
 - `extract.downloadDirectory` defaults to `./downloads` and stores raw PDF files for archival use
 - `extract.papersDirectory` defaults to `./papers` and stores parsed Markdown for local indexing
-- relative paths are resolved from `PROJECT_ROOT` (the config file's directory); if you want storage elsewhere, use absolute paths
+- relative paths are resolved from `PROJECT_ROOT` (the config file's directory); the "Tip: Path Resolution" below shows the full rule set and examples
 - `mcp-local-rag`'s `BASE_DIR` must point to the same absolute directory as `extract.papersDirectory`
 
-## SKILL.md 🤖
+#### Tip: Path Resolution 💡
 
-The `skills/grados/SKILL.md` file is a structured prompt that teaches the AI agent the research workflow around GRaDOS and `mcp-local-rag`. Copy it into your agent's skill/prompt directory to enable the full workflow.
+GRaDOS resolves paths in two separate scopes:
+
+| Scope | Resolved from | Examples |
+|---|---|---|
+| **Package assets** | npm install directory (`PACKAGE_ROOT`) | `marker-worker/` |
+| **Project files** | Config file's parent directory (`PROJECT_ROOT`) | `downloads/`, `papers/`, `scihub-mirrors.txt` |
+
+**Config file discovery** (in priority order):
+
+1. `--config <path>` CLI argument
+2. `GRADOS_CONFIG_PATH` environment variable
+3. `cwd/mcp-config.json` (default fallback)
+
+The directory containing the resolved config file becomes `PROJECT_ROOT`. All relative paths in `mcp-config.json` (like `./papers`, `./downloads`) resolve from there — not from `cwd`.
+
+**Examples:**
+
+```bash
+# Explicit config path (recommended for MCP client setup)
+grados --config D:/Projects/Papers/mcp-config.json
+
+# Or via environment variable
+GRADOS_CONFIG_PATH=D:/Projects/Papers/mcp-config.json grados
+```
+
+Claude Code (`.claude/settings.json`) — using `--config` instead of `cwd`:
+
+```json
+{
+  "mcpServers": {
+    "grados": {
+      "command": "npx",
+      "args": ["-y", "grados", "--config", "D:/Projects/Papers/mcp-config.json"]
+    }
+  }
+}
+```
+
+Codex (`~/.codex/config.toml`) — using env var:
+
+```toml
+[mcp_servers.grados]
+command = "npx"
+args = ["-y", "grados"]
+env = { GRADOS_CONFIG_PATH = "D:/Projects/Papers/mcp-config.json" }
+```
+
+If you want storage in a different directory, use absolute paths in config:
+
+```json
+{
+  "extract": {
+    "downloadDirectory": "E:/academic-cache/downloads",
+    "papersDirectory": "E:/academic-cache/papers"
+  }
+}
+```
 
 ## License 📄
 

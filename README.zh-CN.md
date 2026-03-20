@@ -31,7 +31,7 @@ GRaDOS 通常运行在一个 agent 工作流里：
 5. 对提取结果做 QA 校验后再返回
 6. 将原始 PDF 保存到 `downloads/`，将解析后的 Markdown 保存到 `papers/`
 
-**MCP 工具：**
+### MCP 工具 🔧
 
 | 服务 | 工具 | 说明 |
 |---|---|---|
@@ -45,9 +45,44 @@ GRaDOS 通常运行在一个 agent 工作流里：
 | mcp-local-rag | `delete_file` | 删除过期或不再需要的本地索引条目 |
 | mcp-local-rag | `status` | 检查本地 RAG 数据库状态与配置告警 |
 
+### SKILL.md（配套 Skill） 🤖
+
+`skills/grados/SKILL.md` 是配套的结构化提示词，描述了围绕 GRaDOS 和 `mcp-local-rag` 的研究流程。把它放到 agent 的技能目录后，agent 就可以按这套协议调用这两个 MCP 服务。
+
+### 本地论文知识库 🗂️
+
+GRaDOS 提取论文后，会将 PDF 和解析后的 Markdown 分开保存，避免重复索引：
+
+| 目录 | 内容 | 作用 | 对应配置 |
+|---|---|---|---|
+| `downloads/` | 原始 `.pdf` 文件 | 归档，不参与索引 | `extract.downloadDirectory` |
+| `papers/` | 解析后的 `.md` 文件（带 YAML front-matter） | 可供语义检索和关键词检索 | `extract.papersDirectory` |
+
+Markdown 文件会带上结构化 front-matter，例如：
+
+```yaml
+---
+doi: "10.1038/s41598-025-29656-1"
+title: "Triple-negative complementary metamaterial..."
+source: "Unpaywall OA"
+fetched_at: "2026-03-17T12:00:00.000Z"
+---
+```
+
+配合 [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag)，可以对 `papers/` 中的文件建立向量索引，实现本地论文语义检索和关键词检索。完整工作流如下：
+
+1. **Extract** - GRaDOS 下载 PDF、解析内容，并把 `.pdf` 保存到 `downloads/`，`.md` 保存到 `papers/`
+2. **Ingest** - agent 调用 `ingest_file`，把新的 `.md` 建立向量索引
+3. **Query** - 后续问题可以先用 `query_documents` 查本地库
+4. **Manage** - 用 `list_files` / `delete_file` 管理索引文件
+
+> **注意：** `mcp-local-rag` 不会自动扫描目录。新论文仍然需要显式调用 `ingest_file`。如果你使用 `skills/grados/SKILL.md` 中的流程，这一步可以交给 agent 按协议执行。
+
 ## 安装 🚀
 
-### 方式 A：npm（推荐） 📦
+### 安装 GRaDOS
+
+#### 方式 A：npm（推荐） 📦
 
 ```bash
 npm install -g grados
@@ -59,7 +94,7 @@ grados --init
 # （所有选项见 mcp-config.example.json）
 ```
 
-### 方式 B：源码安装 🛠️
+#### 方式 B：源码安装 🛠️
 
 ```bash
 git clone https://github.com/STSNaive/GRaDOS.git
@@ -107,68 +142,6 @@ Codex（`~/.codex/config.toml`）：
 command = "npx"
 args = ["-y", "grados", "--config", "/path/to/mcp-config.json"]
 ```
-
-#### 提示：路径解析 💡
-
-GRaDOS 会在两个独立作用域中解析路径：
-
-| 作用域 | 解析基准 | 示例 |
-|---|---|---|
-| **包内资源** | npm 安装目录（`PACKAGE_ROOT`） | `marker-worker/` |
-| **项目文件** | 配置文件所在目录（`PROJECT_ROOT`） | `downloads/`、`papers/`、`scihub-mirrors.txt` |
-
-**配置文件发现顺序**（按优先级）：
-
-1. 命令行参数 `--config <path>`
-2. 环境变量 `GRADOS_CONFIG_PATH`
-3. 默认回退到 `cwd/mcp-config.json`
-
-最终解析出的配置文件所在目录会成为 `PROJECT_ROOT`。`mcp-config.json` 中所有相对路径（例如 `./papers`、`./downloads`）都会相对于这个目录解析，而不是相对于进程当前工作目录。
-
-**示例：**
-
-```bash
-# 显式指定配置文件（推荐给 MCP 客户端使用）
-grados --config D:/Projects/Papers/mcp-config.json
-
-# 或通过环境变量
-GRADOS_CONFIG_PATH=D:/Projects/Papers/mcp-config.json grados
-```
-
-Claude Code（`.claude/settings.json`）—— 使用 `--config`，而不是依赖 `cwd`：
-
-```json
-{
-  "mcpServers": {
-    "grados": {
-      "command": "npx",
-      "args": ["-y", "grados", "--config", "D:/Projects/Papers/mcp-config.json"]
-    }
-  }
-}
-```
-
-Codex（`~/.codex/config.toml`）—— 使用环境变量：
-
-```toml
-[mcp_servers.grados]
-command = "npx"
-args = ["-y", "grados"]
-env = { GRADOS_CONFIG_PATH = "D:/Projects/Papers/mcp-config.json" }
-```
-
-如果你想把数据存到别处，请在配置里使用绝对路径：
-
-```json
-{
-  "extract": {
-    "downloadDirectory": "E:/academic-cache/downloads",
-    "papersDirectory": "E:/academic-cache/papers"
-  }
-}
-```
-
-相对路径始终相对于 `PROJECT_ROOT`（也就是配置文件所在目录）解析。
 
 ### 可选：安装 Marker（更高质量的本地 PDF 解析） 🧠
 
@@ -224,35 +197,6 @@ node tests/mcp-smoke.mjs
 [Marker] Converting PDF with local Marker worker...
 Marker successfully converted PDF to Markdown.
 ```
-
-### 本地论文知识库 🗂️
-
-GRaDOS 提取论文后，会将 PDF 和解析后的 Markdown 分开保存，避免重复索引：
-
-| 目录 | 内容 | 作用 | 对应配置 |
-|---|---|---|---|
-| `downloads/` | 原始 `.pdf` 文件 | 归档，不参与索引 | `extract.downloadDirectory` |
-| `papers/` | 解析后的 `.md` 文件（带 YAML front-matter） | 可供语义检索和关键词检索 | `extract.papersDirectory` |
-
-Markdown 文件会带上结构化 front-matter，例如：
-
-```yaml
----
-doi: "10.1038/s41598-025-29656-1"
-title: "Triple-negative complementary metamaterial..."
-source: "Unpaywall OA"
-fetched_at: "2026-03-17T12:00:00.000Z"
----
-```
-
-配合 [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag)，可以对 `papers/` 中的文件建立向量索引，实现本地论文语义检索和关键词检索。完整工作流如下：
-
-1. **Extract** - GRaDOS 下载 PDF、解析内容，并把 `.pdf` 保存到 `downloads/`，`.md` 保存到 `papers/`
-2. **Ingest** - agent 调用 `ingest_file`，把新的 `.md` 建立向量索引
-3. **Query** - 后续问题可以先用 `query_documents` 查本地库
-4. **Manage** - 用 `list_files` / `delete_file` 管理索引文件
-
-> **注意：** `mcp-local-rag` 不会自动扫描目录。新论文仍然需要显式调用 `ingest_file`。如果你使用 `skills/grados/SKILL.md` 中的流程，这一步可以交给 agent 按协议执行。
 
 ### 可选：安装 mcp-local-rag（本地 RAG 论文库） 🔎
 
@@ -376,6 +320,51 @@ codex mcp add playwright -- npx @playwright/mcp --headless
 
 > **注意：** Playwright MCP 完全是可选的。不安装它，GRaDOS 仍然通过内置的 waterfall（TDM → OA → Sci-Hub → Headless Puppeteer）正常工作。Playwright MCP 只是为 Puppeteer 无法处理的情况添加了一层 LLM 驱动的安全网。
 
+### 配置示例：GRaDOS + mcp-local-rag + Playwright 🧩
+
+如果你希望一次性接入最常见的完整研究工作流，可以把这三个 MCP 服务一起配置。下面这个例子假设配置文件在 `D:/Projects/Papers/mcp-config.json`，并且 `extract.papersDirectory` 使用默认相对路径 `./papers`，因此 `mcp-local-rag` 的 `BASE_DIR` 对应到 `D:/Projects/Papers/papers`。
+
+Claude Code（`.claude/settings.json`）：
+
+```json
+{
+  "mcpServers": {
+    "grados": {
+      "command": "npx",
+      "args": ["-y", "grados", "--config", "D:/Projects/Papers/mcp-config.json"]
+    },
+    "local-rag": {
+      "command": "npx",
+      "args": ["-y", "mcp-local-rag"],
+      "env": {
+        "BASE_DIR": "D:/Projects/Papers/papers"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp", "--headless"]
+    }
+  }
+}
+```
+
+Codex（`~/.codex/config.toml`）：
+
+```toml
+[mcp_servers.grados]
+command = "npx"
+args = ["-y", "grados", "--config", "D:/Projects/Papers/mcp-config.json"]
+
+[mcp_servers.local-rag]
+command = "npx"
+args = ["-y", "mcp-local-rag"]
+env = { BASE_DIR = "D:/Projects/Papers/papers" }
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp", "--headless"]
+```
+
 ## 配置说明 ⚙️
 
 所有配置都在 `mcp-config.json` 中。可以先运行 `grados --init` 生成模板，再按需修改。
@@ -425,12 +414,68 @@ Crossref、PubMed、Sci-Hub、Unpaywall 不需要 API Key。
 
 - `extract.downloadDirectory` 默认是 `./downloads`，用于保存原始 PDF
 - `extract.papersDirectory` 默认是 `./papers`，用于保存解析后的 Markdown
-- 相对路径都基于 `PROJECT_ROOT`（配置文件所在目录）解析；如果想把数据放到别处，建议直接写绝对路径
+- 相对路径都基于 `PROJECT_ROOT`（配置文件所在目录）解析；下面的“提示：路径解析”会给出完整规则和实例
 - `mcp-local-rag` 的 `BASE_DIR` 必须和 `extract.papersDirectory` 指向同一个绝对目录
 
-## SKILL.md 🤖
+#### 提示：路径解析 💡
 
-`skills/grados/SKILL.md` 是配套的结构化提示词，描述了围绕 GRaDOS 和 `mcp-local-rag` 的研究流程。把它放到 agent 的技能目录后，agent 就可以按这套协议调用这两个 MCP 服务。
+GRaDOS 会在两个独立作用域中解析路径：
+
+| 作用域 | 解析基准 | 示例 |
+|---|---|---|
+| **包内资源** | npm 安装目录（`PACKAGE_ROOT`） | `marker-worker/` |
+| **项目文件** | 配置文件所在目录（`PROJECT_ROOT`） | `downloads/`、`papers/`、`scihub-mirrors.txt` |
+
+**配置文件发现顺序**（按优先级）：
+
+1. 命令行参数 `--config <path>`
+2. 环境变量 `GRADOS_CONFIG_PATH`
+3. 默认回退到 `cwd/mcp-config.json`
+
+最终解析出的配置文件所在目录会成为 `PROJECT_ROOT`。`mcp-config.json` 中所有相对路径（例如 `./papers`、`./downloads`）都会相对于这个目录解析，而不是相对于进程当前工作目录。
+
+**示例：**
+
+```bash
+# 显式指定配置文件（推荐给 MCP 客户端使用）
+grados --config D:/Projects/Papers/mcp-config.json
+
+# 或通过环境变量
+GRADOS_CONFIG_PATH=D:/Projects/Papers/mcp-config.json grados
+```
+
+Claude Code（`.claude/settings.json`）—— 使用 `--config`，而不是依赖 `cwd`：
+
+```json
+{
+  "mcpServers": {
+    "grados": {
+      "command": "npx",
+      "args": ["-y", "grados", "--config", "D:/Projects/Papers/mcp-config.json"]
+    }
+  }
+}
+```
+
+Codex（`~/.codex/config.toml`）—— 使用环境变量：
+
+```toml
+[mcp_servers.grados]
+command = "npx"
+args = ["-y", "grados"]
+env = { GRADOS_CONFIG_PATH = "D:/Projects/Papers/mcp-config.json" }
+```
+
+如果你想把数据存到别处，请在配置里使用绝对路径：
+
+```json
+{
+  "extract": {
+    "downloadDirectory": "E:/academic-cache/downloads",
+    "papersDirectory": "E:/academic-cache/papers"
+  }
+}
+```
 
 ## License 📄
 

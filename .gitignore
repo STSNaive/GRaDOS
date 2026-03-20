@@ -43,7 +43,9 @@ Thumbs.db
 # Plan docs (local only)
 *_plan.md
 *_strategy.md
+TODO.md
 
 # MCPB (local-only)
 .mcpbignore
 *.mcpb
+.DS_Store
