@@ -477,6 +477,37 @@ env = { GRADOS_CONFIG_PATH = "D:/Projects/Papers/mcp-config.json" }
 }
 ```
 
+## Claude Code 插件 🔌
+
+GRaDOS 可以作为 [Claude Code 插件](https://github.com/STSNaive/GRaDOS/tree/claude-plugin) 使用，开箱即用地提供 skill、斜杠命令和 MCP 服务配置。
+
+### 通过 Marketplace 安装
+
+```bash
+/plugin marketplace add STSNaive/GRaDOS#claude-plugin
+/plugin install grados@grados-marketplace
+```
+
+### 包含内容
+
+| 组件 | 说明 |
+|---|---|
+| **Skill** (`/grados:grados`) | 完整的学术研究流程 — 检索、提取、综合、引用 |
+| **命令** (`/grados:setup`) | 交互式配置向导，引导设置 API Key 和依赖 |
+| **命令** (`/grados:status`) | 诊断检查：服务状态、API Key、存储目录 |
+| **MCP 服务** | 自动配置的 `grados` 服务，通过 `npx -y grados` 启动 |
+
+### 配置 API Key
+
+安装插件后，设置你需要的 API Key 环境变量。插件的 `.mcp.json` 中声明了所有支持的环境变量（默认值为空），填入你需要的即可：
+
+- `GRADOS_CONFIG_PATH` — 指向你的 `mcp-config.json`（推荐）
+- `ELSEVIER_API_KEY`、`WOS_API_KEY`、`SPRINGER_meta_API_KEY`、`SPRINGER_OA_API_KEY`
+- `LLAMAPARSE_API_KEY`、`ZOTERO_API_KEY`、`ZOTERO_LIBRARY_ID`
+- `ACADEMIC_ETIQUETTE_EMAIL`
+
+运行 `/grados:setup` 可以获得引导式配置，运行 `/grados:status` 查看当前配置状态。
+
 ## License 📄
 
 MIT

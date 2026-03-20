@@ -475,6 +475,37 @@ If you want storage in a different directory, use absolute paths in config:
 }
 ```
 
+## Claude Code Plugin 🔌
+
+GRaDOS is available as a [Claude Code plugin](https://github.com/STSNaive/GRaDOS/tree/claude-plugin), providing a skill, slash commands, and an MCP server configuration out of the box.
+
+### Install via Marketplace
+
+```bash
+/plugin marketplace add STSNaive/GRaDOS#claude-plugin
+/plugin install grados@grados-marketplace
+```
+
+### What's Included
+
+| Component | Description |
+|---|---|
+| **Skill** (`/grados:grados`) | Full academic research workflow — search, extract, synthesize, cite |
+| **Command** (`/grados:setup`) | Interactive setup wizard for config, API keys, and dependencies |
+| **Command** (`/grados:status`) | Diagnostic check of server, keys, and storage |
+| **MCP Server** | Auto-configured `grados` server via `npx -y grados` |
+
+### Configure API Keys
+
+After installing the plugin, set environment variables for the API keys you want to use. The plugin's `.mcp.json` declares all supported env vars with empty defaults — fill in the ones you need:
+
+- `GRADOS_CONFIG_PATH` — path to your `mcp-config.json` (recommended)
+- `ELSEVIER_API_KEY`, `WOS_API_KEY`, `SPRINGER_meta_API_KEY`, `SPRINGER_OA_API_KEY`
+- `LLAMAPARSE_API_KEY`, `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`
+- `ACADEMIC_ETIQUETTE_EMAIL`
+
+Run `/grados:setup` for a guided walkthrough, or `/grados:status` to check what's configured.
+
 ## License 📄
 
 MIT

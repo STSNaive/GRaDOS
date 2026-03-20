@@ -7,13 +7,6 @@ description: >-
   literature reviews, state-of-the-art methods, or questions requiring
   peer-reviewed evidence. Does not trigger for general coding, math,
   or non-research tasks.
-license: MIT
-compatibility: >-
-  Requires grados MCP server (npm install -g grados).
-  Optional: mcp-local-rag server for local paper library.
-metadata:
-  author: STSNaive
-  version: "0.2.3"
 ---
 
 # GRaDOS: Strict Academic Research Protocol
