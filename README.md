@@ -80,9 +80,36 @@ Pair with [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag) to build a 
 
 ## Installation 🚀
 
-### Install GRaDOS
+### Option A: Claude Code Plugin (easiest) 🔌
 
-#### Option A: npm (recommended) 📦
+If you use [Claude Code](https://code.claude.com/) (CLI or Desktop), install GRaDOS as a plugin. This automatically registers all three MCP servers (GRaDOS, mcp-local-rag, Playwright) with no manual configuration.
+
+**1. Add the marketplace and install:**
+
+```bash
+# In Claude Code
+/plugin marketplace add STSNaive/GRaDOS
+/plugin install grados@stsnaive-grados
+```
+
+**2. Run the setup command:**
+
+```
+/grados:setup
+```
+
+This generates a config file and guides you through setting API keys. No environment variables or shell profile editing required — the plugin handles all paths automatically.
+
+**3. Reload and verify:**
+
+```
+/reload-plugins
+/grados:status
+```
+
+> **What the plugin includes:** GRaDOS MCP server, [mcp-local-rag](https://github.com/shinpr/mcp-local-rag) for local paper retrieval, [Playwright MCP](https://github.com/microsoft/playwright-mcp) for browser-assisted PDF downloads, a research workflow skill, and setup/status commands.
+
+### Option B: npm (manual setup) 📦
 
 ```bash
 npm install -g grados
@@ -94,7 +121,7 @@ grados --init
 # (see mcp-config.example.json for all options)
 ```
 
-#### Option B: From source 🛠️
+### Option C: From source 🛠️
 
 ```bash
 git clone https://github.com/STSNaive/GRaDOS.git
@@ -474,6 +501,37 @@ If you want storage in a different directory, use absolute paths in config:
   }
 }
 ```
+
+## Claude Code Plugin 🔌
+
+GRaDOS is available as a Claude Code plugin, providing a skill, slash commands, and an MCP server configuration out of the box.
+
+### Install via Marketplace
+
+```bash
+/plugin marketplace add https://github.com/STSNaive/GRaDOS.git
+/plugin install grados@grados-marketplace
+```
+
+### What's Included
+
+| Component | Description |
+|---|---|
+| **Skill** (`/grados:grados`) | Full academic research workflow — search, extract, synthesize, cite |
+| **Command** (`/grados:setup`) | Interactive setup wizard for config, API keys, and dependencies |
+| **Command** (`/grados:status`) | Diagnostic check of server, keys, and storage |
+| **MCP Server** | Auto-configured `grados` server via `npx -y grados` |
+
+### Configure API Keys
+
+After installing the plugin, set environment variables for the API keys you want to use. The plugin's `.mcp.json` declares all supported env vars with empty defaults — fill in the ones you need:
+
+- `GRADOS_CONFIG_PATH` — path to your `mcp-config.json` (recommended)
+- `ELSEVIER_API_KEY`, `WOS_API_KEY`, `SPRINGER_meta_API_KEY`, `SPRINGER_OA_API_KEY`
+- `LLAMAPARSE_API_KEY`, `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`
+- `ACADEMIC_ETIQUETTE_EMAIL`
+
+Run `/grados:setup` for a guided walkthrough, or `/grados:status` to check what's configured.
 
 ## License 📄
 

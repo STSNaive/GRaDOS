@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "grados": {
+      "command": "npx",
+      "args": ["-y", "grados", "--config", "${CLAUDE_PLUGIN_DATA}/mcp-config.json"]
+    },
+    "local-rag": {
+      "command": "npx",
+      "args": ["-y", "mcp-local-rag"],
+      "env": {
+        "BASE_DIR": "${CLAUDE_PLUGIN_DATA}/papers"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--headless"]
+    }
+  }
+}
