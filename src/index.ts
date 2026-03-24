@@ -14,12 +14,12 @@ import * as cheerio from 'cheerio';
 import puppeteerVanilla from 'puppeteer-core';
 import { addExtra } from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-
-const puppeteer = addExtra(puppeteerVanilla as any);
-puppeteer.use(StealthPlugin());
 import FormData from 'form-data';
 import { PDFParse } from 'pdf-parse';
 import { spawn } from 'node:child_process';
+
+const puppeteer = addExtra(puppeteerVanilla as any);
+puppeteer.use(StealthPlugin());
 
 dotenv.config();
 
@@ -102,6 +102,421 @@ interface PaperMetadata {
     year?: string;
     url?: string;
     source: string;
+}
+
+type JsonSchema = Record<string, unknown>;
+
+interface ToolRegistryEntry {
+    name: string;
+    description: string;
+    purpose: string;
+    returns: string;
+    commonFailures: string[];
+    inputSchema: JsonSchema;
+    outputSchema?: JsonSchema;
+}
+
+interface PaperSavedSummary {
+    kind: "paper_saved_summary";
+    doi: string;
+    safe_doi: string;
+    title: string;
+    source: string;
+    relative_path: string;
+    absolute_path: string;
+    canonical_uri: string;
+    word_count: number;
+    char_count: number;
+    preview_excerpt: string;
+    section_headings: string[];
+    full_text_saved: true;
+    read_required_for_citation: true;
+    preview_not_citable: true;
+}
+
+interface PaperReadResult {
+    kind: "paper_read_result";
+    doi: string;
+    safe_doi: string;
+    title: string;
+    canonical_uri: string;
+    relative_path: string;
+    absolute_path: string;
+    start_paragraph: number;
+    returned_paragraphs: number;
+    section_query?: string;
+    truncated: boolean;
+    citation_ready: true;
+    content_text: string;
+}
+
+interface PaperIndexEntry {
+    doi: string;
+    safe_doi: string;
+    title: string;
+    canonical_uri: string;
+    relative_path: string;
+    absolute_path: string;
+    last_modified: string;
+}
+
+const PAPER_METADATA_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        title: { type: "string" },
+        doi: { type: "string" },
+        abstract: { type: "string" },
+        publisher: { type: "string" },
+        authors: { type: "array", items: { type: "string" } },
+        year: { type: "string" },
+        url: { type: "string" },
+        source: { type: "string" }
+    },
+    required: ["title", "doi", "source"],
+    additionalProperties: false
+};
+
+const SEARCH_INPUT_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        query: {
+            type: "string",
+            description: "The search query (e.g., 'large language models in multi-agent reinforcement learning')."
+        },
+        limit: {
+            type: "number",
+            description: "Maximum number of results to return (default: 15).",
+            default: 15
+        }
+    },
+    required: ["query"],
+    additionalProperties: false
+};
+
+const SEARCH_OUTPUT_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        query: { type: "string" },
+        limit: { type: "number" },
+        results: {
+            type: "array",
+            items: PAPER_METADATA_SCHEMA
+        }
+    },
+    required: ["query", "limit", "results"],
+    additionalProperties: false
+};
+
+const PAPER_SAVED_SUMMARY_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        kind: { type: "string", const: "paper_saved_summary" },
+        doi: { type: "string" },
+        safe_doi: { type: "string" },
+        title: { type: "string" },
+        source: { type: "string" },
+        relative_path: { type: "string" },
+        absolute_path: { type: "string" },
+        canonical_uri: { type: "string" },
+        word_count: { type: "number" },
+        char_count: { type: "number" },
+        preview_excerpt: { type: "string" },
+        section_headings: { type: "array", items: { type: "string" } },
+        full_text_saved: { type: "boolean", const: true },
+        read_required_for_citation: { type: "boolean", const: true },
+        preview_not_citable: { type: "boolean", const: true }
+    },
+    required: [
+        "kind",
+        "doi",
+        "safe_doi",
+        "title",
+        "source",
+        "relative_path",
+        "absolute_path",
+        "canonical_uri",
+        "word_count",
+        "char_count",
+        "preview_excerpt",
+        "section_headings",
+        "full_text_saved",
+        "read_required_for_citation",
+        "preview_not_citable"
+    ],
+    additionalProperties: false
+};
+
+const PAPER_READ_RESULT_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        kind: { type: "string", const: "paper_read_result" },
+        doi: { type: "string" },
+        safe_doi: { type: "string" },
+        title: { type: "string" },
+        canonical_uri: { type: "string" },
+        relative_path: { type: "string" },
+        absolute_path: { type: "string" },
+        start_paragraph: { type: "number" },
+        returned_paragraphs: { type: "number" },
+        section_query: { type: "string" },
+        truncated: { type: "boolean" },
+        citation_ready: { type: "boolean", const: true },
+        content_text: { type: "string" }
+    },
+    required: [
+        "kind",
+        "doi",
+        "safe_doi",
+        "title",
+        "canonical_uri",
+        "relative_path",
+        "absolute_path",
+        "start_paragraph",
+        "returned_paragraphs",
+        "truncated",
+        "citation_ready",
+        "content_text"
+    ],
+    additionalProperties: false
+};
+
+const EXTRACT_INPUT_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        doi: {
+            type: "string",
+            description: "The Digital Object Identifier (DOI) of the paper."
+        },
+        publisher: {
+            type: "string",
+            description: "The publisher name, if known (e.g., 'Elsevier', 'Springer'), to optimize extraction strategy."
+        },
+        expected_title: {
+            type: "string",
+            description: "The title of the paper. Used for QA validation to ensure the extracted text matches the requested paper."
+        }
+    },
+    required: ["doi"],
+    additionalProperties: false
+};
+
+const PARSE_PDF_INPUT_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        file_path: {
+            type: "string",
+            description: "Path to the local PDF file. Absolute paths are used as-is; relative paths are resolved from PROJECT_ROOT (the config file's directory)."
+        },
+        expected_title: {
+            type: "string",
+            description: "Expected paper title for QA validation. If provided, the parsed text is checked to contain this title."
+        },
+        doi: {
+            type: "string",
+            description: "DOI of the paper. If provided, the parsed Markdown is saved to the papers directory with front-matter."
+        }
+    },
+    required: ["file_path"],
+    additionalProperties: false
+};
+
+const READ_SAVED_PAPER_INPUT_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        doi: {
+            type: "string",
+            description: "DOI of the saved paper to read."
+        },
+        safe_doi: {
+            type: "string",
+            description: "Sanitized DOI filename token (non-alphanumeric characters replaced with underscores)."
+        },
+        uri: {
+            type: "string",
+            description: "Canonical resource URI in the form grados://papers/{safe_doi}."
+        },
+        start_paragraph: {
+            type: "number",
+            description: "Paragraph offset to start reading from (default: 0).",
+            default: 0
+        },
+        max_paragraphs: {
+            type: "number",
+            description: "Maximum number of paragraphs to return (default: 20).",
+            default: 20
+        },
+        section_query: {
+            type: "string",
+            description: "Optional section heading query. If provided, GRaDOS finds the closest matching section and returns a paragraph window from there."
+        },
+        include_front_matter: {
+            type: "boolean",
+            description: "Whether to include YAML front-matter in the returned text (default: false).",
+            default: false
+        }
+    },
+    additionalProperties: false
+};
+
+const ZOTERO_SAVE_INPUT_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        doi: {
+            type: "string",
+            description: "The DOI of the paper."
+        },
+        title: {
+            type: "string",
+            description: "The full title of the paper."
+        },
+        authors: {
+            type: "array",
+            items: { type: "string" },
+            description: "List of author names (e.g. ['Jane Smith', 'John Doe'])."
+        },
+        abstract: {
+            type: "string",
+            description: "The abstract of the paper."
+        },
+        journal: {
+            type: "string",
+            description: "Journal or publisher name."
+        },
+        year: {
+            type: "string",
+            description: "Publication year (e.g. '2023')."
+        },
+        url: {
+            type: "string",
+            description: "URL to the paper's landing page."
+        },
+        tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional tags/keywords to attach to the Zotero item."
+        },
+        collection_key: {
+            type: "string",
+            description: "Optional Zotero collection key to file the item into. Overrides zotero.defaultCollectionKey from config."
+        }
+    },
+    required: ["doi", "title"],
+    additionalProperties: false
+};
+
+const ZOTERO_SAVE_OUTPUT_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        success: { type: "boolean" },
+        doi: { type: "string" },
+        title: { type: "string" },
+        item_key: { type: "string" },
+        error: { type: "string" }
+    },
+    required: ["success", "doi", "title"],
+    additionalProperties: false
+};
+
+const TOOL_REGISTRY: ToolRegistryEntry[] = [
+    {
+        name: "search_academic_papers",
+        description: "Searches multiple academic databases sequentially in priority order (Crossref, PubMed, WoS, Elsevier, Springer) for a given query and returns a deduplicated list of papers with metadata (DOIs, Abstracts).",
+        purpose: "Search academic databases and return deduplicated paper metadata",
+        returns: "Structured paper metadata plus a markdown-formatted screening list.",
+        commonFailures: ["No API key for a specific database (gracefully skipped)", "Network timeout", "Database rate limiting"],
+        inputSchema: SEARCH_INPUT_SCHEMA,
+        outputSchema: SEARCH_OUTPUT_SCHEMA
+    },
+    {
+        name: "extract_paper_full_text",
+        description: "Given a DOI, attempts to fetch the full text of the paper using a waterfall strategy. Saves full text to papers/{safe_doi}.md and returns a compact, non-citable summary with canonical paths and URI. Use read_saved_paper or the paper resource to access the full text when needed. Includes QA validation to ensure it's not a paywall.",
+        purpose: "Fetch full-text paper content by DOI, save it to disk, and return a canonical saved-paper summary",
+        returns: "PaperSavedSummary with canonical path, URI, preview excerpt, and section headings.",
+        commonFailures: ["Paywall blocks all strategies", "PDF parsing fails", "QA validation rejects truncated content", "Saved markdown file could not be written"],
+        inputSchema: EXTRACT_INPUT_SCHEMA,
+        outputSchema: PAPER_SAVED_SUMMARY_SCHEMA
+    },
+    {
+        name: "parse_pdf_file",
+        description: "Parses a local PDF file using the configured parsing waterfall (LlamaParse → Marker → Native). Use this when you have already downloaded a PDF (e.g., via Playwright MCP browser automation) and need GRaDOS to parse it. If a DOI is provided, the parsed Markdown is saved to the papers directory with YAML front-matter and returned as a canonical saved-paper summary.",
+        purpose: "Parse a local PDF file and optionally save it into the canonical papers store",
+        returns: "Full parsed text for ad-hoc PDFs, or PaperSavedSummary when DOI-backed saving is requested.",
+        commonFailures: ["File not found", "Not a valid PDF", "All parsers fail", "QA validation rejects content", "Saved markdown file could not be written"],
+        inputSchema: PARSE_PDF_INPUT_SCHEMA
+    },
+    {
+        name: "read_saved_paper",
+        description: "Reads a previously saved paper from papers/{safe_doi}.md. This is the canonical deep-reading tool for synthesis and citation verification. It supports DOI, safe_doi, or grados://papers/{safe_doi} identifiers plus paragraph windows and section queries.",
+        purpose: "Read canonical paper markdown from the saved papers store for synthesis and citation checking",
+        returns: "PaperReadResult with the canonical URI, resolved paths, paragraph window metadata, and returned text.",
+        commonFailures: ["Identifier is missing or ambiguous", "Requested paper file does not exist", "URI is not a valid grados paper URI"],
+        inputSchema: READ_SAVED_PAPER_INPUT_SCHEMA,
+        outputSchema: PAPER_READ_RESULT_SCHEMA
+    },
+    {
+        name: "save_paper_to_zotero",
+        description: "Saves a paper's bibliographic metadata to the Zotero web library. Call this after synthesis for each paper that was cited in the final answer. Requires ZOTERO_API_KEY and zotero.libraryId in mcp-config.json.",
+        purpose: "Save cited paper metadata to the Zotero web library",
+        returns: "Structured success/error status with the Zotero item key when available.",
+        commonFailures: ["ZOTERO_API_KEY not configured", "libraryId not set", "Network error"],
+        inputSchema: ZOTERO_SAVE_INPUT_SCHEMA,
+        outputSchema: ZOTERO_SAVE_OUTPUT_SCHEMA
+    }
+];
+
+const STATIC_RESOURCE_DEFINITIONS = [
+    {
+        uri: "grados://about",
+        name: "GRaDOS About",
+        description: "Service overview: name, version, capabilities, and available tools",
+        mimeType: "application/json"
+    },
+    {
+        uri: "grados://status",
+        name: "GRaDOS Status",
+        description: "Health check: config loaded, directories exist, API keys configured",
+        mimeType: "application/json"
+    },
+    {
+        uri: "grados://tools",
+        name: "GRaDOS Tools",
+        description: "Read-only mirror of available tools with names, descriptions, and schemas",
+        mimeType: "application/json"
+    },
+    {
+        uri: "grados://papers/index",
+        name: "GRaDOS Papers Index",
+        description: "Lightweight index of saved markdown papers in the configured papers directory",
+        mimeType: "application/json"
+    }
+] as const;
+
+const PAPER_RESOURCE_TEMPLATE = {
+    uriTemplate: "grados://papers/{safe_doi}",
+    name: "GRaDOS Saved Paper",
+    description: "Canonical full-text markdown resource for a saved paper",
+    mimeType: "text/markdown"
+};
+
+function buildToolListEntries() {
+    return TOOL_REGISTRY.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {})
+    }));
+}
+
+function buildToolMirrorEntries() {
+    return TOOL_REGISTRY.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        purpose: tool.purpose,
+        inputSchema: tool.inputSchema,
+        ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+        returns: tool.returns,
+        commonFailures: tool.commonFailures
+    }));
 }
 
 // Mock Search Functions (Require API Keys)
@@ -293,119 +708,7 @@ async function searchPubMed(query: string, limit: number): Promise<PaperMetadata
 // Tool Listing
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-        tools: [
-            {
-                name: "search_academic_papers",
-                description: "Searches multiple academic databases sequentially in priority order (Crossref, PubMed, WoS, Elsevier, Springer) for a given query and returns a deduplicated list of papers with metadata (DOIs, Abstracts).",
-                inputSchema: {
-                    type: "object",
-                    properties: {
-                        query: {
-                            type: "string",
-                            description: "The search query (e.g., 'large language models in multi-agent reinforcement learning')."
-                        },
-                        limit: {
-                            type: "number",
-                            description: "Maximum number of results to return (default: 15).",
-                            default: 15
-                        }
-                    },
-                    required: ["query"]
-                }
-            },
-            {
-                name: "extract_paper_full_text",
-                description: "Given a DOI, attempts to fetch the full text of the paper using a waterfall strategy. Saves full text to papers/{safe_doi}.md and returns a compact summary (title, DOI, file path, opening paragraphs). Use your file reading tool to access the full text when needed. Includes QA validation to ensure it's not a paywall.",
-                inputSchema: {
-                    type: "object",
-                    properties: {
-                        doi: {
-                            type: "string",
-                            description: "The Digital Object Identifier (DOI) of the paper."
-                        },
-                        publisher: {
-                            type: "string",
-                            description: "The publisher name, if known (e.g., 'Elsevier', 'Springer'), to optimize extraction strategy."
-                        },
-                        expected_title: {
-                            type: "string",
-                            description: "The title of the paper. Used for QA validation to ensure the extracted text matches the requested paper."
-                        }
-                    },
-                    required: ["doi"]
-                }
-            },
-            {
-                name: "parse_pdf_file",
-                description: "Parses a local PDF file using the configured parsing waterfall (LlamaParse → Marker → Native) and returns extracted Markdown text. Use this when you have already downloaded a PDF (e.g., via Playwright MCP browser automation) and need GRaDOS to parse it. If a DOI is provided, the parsed Markdown is saved to the papers directory with YAML front-matter for local RAG indexing.",
-                inputSchema: {
-                    type: "object",
-                    properties: {
-                        file_path: {
-                            type: "string",
-                            description: "Path to the local PDF file. Absolute paths are used as-is; relative paths are resolved from PROJECT_ROOT (the config file's directory)."
-                        },
-                        expected_title: {
-                            type: "string",
-                            description: "Expected paper title for QA validation. If provided, the parsed text is checked to contain this title."
-                        },
-                        doi: {
-                            type: "string",
-                            description: "DOI of the paper. If provided, the parsed Markdown is saved to the papers directory with YAML front-matter."
-                        }
-                    },
-                    required: ["file_path"]
-                }
-            },
-            {
-                name: "save_paper_to_zotero",
-                description: "Saves a paper's bibliographic metadata to the Zotero web library. Call this after synthesis for each paper that was cited in the final answer. Requires ZOTERO_API_KEY and zotero.libraryId in mcp-config.json.",
-                inputSchema: {
-                    type: "object",
-                    properties: {
-                        doi: {
-                            type: "string",
-                            description: "The DOI of the paper."
-                        },
-                        title: {
-                            type: "string",
-                            description: "The full title of the paper."
-                        },
-                        authors: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "List of author names (e.g. ['Jane Smith', 'John Doe'])."
-                        },
-                        abstract: {
-                            type: "string",
-                            description: "The abstract of the paper."
-                        },
-                        journal: {
-                            type: "string",
-                            description: "Journal or publisher name."
-                        },
-                        year: {
-                            type: "string",
-                            description: "Publication year (e.g. '2023')."
-                        },
-                        url: {
-                            type: "string",
-                            description: "URL to the paper's landing page."
-                        },
-                        tags: {
-                            type: "array",
-                            items: { type: "string" },
-                            description: "Optional tags/keywords to attach to the Zotero item."
-                        },
-                        collection_key: {
-                            type: "string",
-                            description: "Optional Zotero collection key to file the item into. Overrides zotero.defaultCollectionKey from config."
-                        }
-                    },
-                    required: ["doi", "title"]
-                }
-            }
-        ]
+        tools: buildToolListEntries()
     };
 });
 
@@ -451,15 +754,317 @@ function isValidPaperContent(text: string, doi: string, minCharacters: number = 
     return true;
 }
 
-// --- Helper: Extract Opening Paragraphs for Compact Summary ---
-function extractOpening(text: string, maxParagraphs: number): string {
-    // Skip YAML front-matter (if present)
-    let content = text.replace(/^---[\s\S]*?---\n*/, '');
-    // Skip leading # heading lines
+function getPapersDirectory(): string {
+    const papersDirectory = config?.extract?.papersDirectory;
+    return papersDirectory ? path.resolve(PROJECT_ROOT, papersDirectory) : path.join(PROJECT_ROOT, "papers");
+}
+
+function getDownloadsDirectory(): string {
+    const downloadDirectory = config?.extract?.downloadDirectory;
+    return downloadDirectory ? path.resolve(PROJECT_ROOT, downloadDirectory) : path.join(PROJECT_ROOT, "downloads");
+}
+
+function safeDoiFromDoi(doi: string): string {
+    return doi.replace(/[^a-z0-9]/gi, '_');
+}
+
+function buildPaperUri(safeDoi: string): string {
+    return `grados://papers/${safeDoi}`;
+}
+
+function toProjectRelative(filePath: string): string {
+    return path.relative(PROJECT_ROOT, filePath).split(path.sep).join('/');
+}
+
+function stripFrontMatter(text: string): string {
+    return text.replace(/^---[\s\S]*?---\n*/, '');
+}
+
+function parseFrontMatter(text: string): Record<string, string> {
+    const match = text.match(/^---\n([\s\S]*?)\n---\n?/);
+    if (!match) return {};
+
+    const metadata: Record<string, string> = {};
+    for (const rawLine of match[1].split('\n')) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+
+        const separatorIndex = line.indexOf(':');
+        if (separatorIndex === -1) continue;
+
+        const key = line.slice(0, separatorIndex).trim();
+        let value = line.slice(separatorIndex + 1).trim();
+        if (value.startsWith('"') && value.endsWith('"')) {
+            value = value.slice(1, -1).replace(/\\"/g, '"');
+        }
+        metadata[key] = value;
+    }
+
+    return metadata;
+}
+
+function normalizeComparable(value: string): string {
+    return value.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function splitIntoParagraphs(text: string, includeFrontMatter: boolean = false): string[] {
+    const content = includeFrontMatter ? text : stripFrontMatter(text);
+    return content
+        .split(/\n{2,}/)
+        .map((paragraph) => paragraph.trim())
+        .filter((paragraph) => paragraph.length > 0);
+}
+
+function extractSectionHeadings(text: string, maxHeadings: number = 12): string[] {
+    const content = stripFrontMatter(text);
+    const markdownHeadings = Array.from(content.matchAll(/^#{1,6}\s+(.+)$/gm))
+        .map((match) => match[1].trim())
+        .filter((heading) => heading.length > 0);
+
+    if (markdownHeadings.length > 0) {
+        return Array.from(new Set(markdownHeadings)).slice(0, maxHeadings);
+    }
+
+    const fallbackHeadings = Array.from(content.matchAll(/^(abstract|introduction|materials and methods|methods|results|discussion|conclusion|references)\s*$/gim))
+        .map((match) => match[1].trim())
+        .filter((heading) => heading.length > 0)
+        .map((heading) => heading.replace(/\b\w/g, (char) => char.toUpperCase()));
+
+    return Array.from(new Set(fallbackHeadings)).slice(0, maxHeadings);
+}
+
+function truncateText(text: string, maxChars: number): string {
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars - 3).trimEnd()}...`;
+}
+
+function extractPreviewExcerpt(text: string, maxChars: number = 1200): string {
+    let content = stripFrontMatter(text);
     content = content.replace(/^#[^\n]*\n+/, '');
-    // Split by double newlines into paragraphs
-    const paragraphs = content.split(/\n{2,}/).filter(p => p.trim().length > 0);
-    return paragraphs.slice(0, maxParagraphs).join('\n\n');
+    const paragraphs = splitIntoParagraphs(content, true);
+    if (paragraphs.length === 0) return "";
+    return truncateText(paragraphs[0], maxChars);
+}
+
+function buildPaperResourceLink(summary: Pick<PaperSavedSummary, "canonical_uri" | "title">) {
+    return {
+        type: "resource_link",
+        uri: summary.canonical_uri,
+        name: summary.title,
+        description: "Canonical saved paper markdown resource",
+        mimeType: "text/markdown"
+    };
+}
+
+function buildReadResourceLink(result: Pick<PaperReadResult, "canonical_uri" | "title">) {
+    return {
+        type: "resource_link",
+        uri: result.canonical_uri,
+        name: result.title,
+        description: "Canonical saved paper markdown resource",
+        mimeType: "text/markdown"
+    };
+}
+
+function buildPaperSavedSummary(params: {
+    doi: string;
+    title?: string;
+    source: string;
+    text: string;
+    absolutePath: string;
+}): PaperSavedSummary {
+    const safeDoi = safeDoiFromDoi(params.doi);
+    const metadata = parseFrontMatter(params.text);
+    const title = params.title || metadata.title || "(unknown)";
+
+    return {
+        kind: "paper_saved_summary",
+        doi: params.doi,
+        safe_doi: safeDoi,
+        title,
+        source: params.source,
+        relative_path: toProjectRelative(params.absolutePath),
+        absolute_path: params.absolutePath,
+        canonical_uri: buildPaperUri(safeDoi),
+        word_count: params.text.split(/\s+/).filter(Boolean).length,
+        char_count: params.text.length,
+        preview_excerpt: extractPreviewExcerpt(params.text),
+        section_headings: extractSectionHeadings(params.text),
+        full_text_saved: true,
+        read_required_for_citation: true,
+        preview_not_citable: true
+    };
+}
+
+function buildPaperSavedSummaryText(summary: PaperSavedSummary): string {
+    const headings = summary.section_headings.length > 0 ? summary.section_headings.join(" | ") : "(none detected)";
+    return [
+        `# Paper Saved Successfully [Source: ${summary.source}]`,
+        ``,
+        `| Field | Value |`,
+        `|-------|-------|`,
+        `| **Title** | ${summary.title} |`,
+        `| **DOI** | ${summary.doi} |`,
+        `| **File** | \`${summary.relative_path}\` |`,
+        `| **URI** | \`${summary.canonical_uri}\` |`,
+        `| **Length** | ${summary.word_count} words / ${summary.char_count} chars |`,
+        ``,
+        `## Preview (Not Citable)`,
+        ``,
+        summary.preview_excerpt || "(empty preview)",
+        ``,
+        `## Section Headings`,
+        ``,
+        headings,
+        ``,
+        `---`,
+        `> Preview text is not citable. Use \`read_saved_paper\` or read \`${summary.canonical_uri}\` before synthesis or citation verification.`
+    ].join('\n');
+}
+
+function buildPaperSavedSummaryResult(summary: PaperSavedSummary) {
+    return {
+        content: [
+            {
+                type: "text",
+                text: buildPaperSavedSummaryText(summary)
+            },
+            buildPaperResourceLink(summary)
+        ],
+        structuredContent: summary
+    };
+}
+
+function parsePaperUri(uri: string): string | null {
+    const match = uri.match(/^grados:\/\/papers\/([A-Za-z0-9_]+)$/);
+    return match?.[1] || null;
+}
+
+function resolvePaperLookup(args: any): { safeDoi: string; requestedBy: "doi" | "safe_doi" | "uri" } | { error: string } {
+    const doi = args?.doi ? String(args.doi) : "";
+    const safeDoi = args?.safe_doi ? String(args.safe_doi) : "";
+    const uri = args?.uri ? String(args.uri) : "";
+    const providedCount = [doi, safeDoi, uri].filter((value) => value.length > 0).length;
+
+    if (providedCount !== 1) {
+        return { error: "read_saved_paper requires exactly one of 'doi', 'safe_doi', or 'uri'." };
+    }
+
+    if (doi) return { safeDoi: safeDoiFromDoi(doi), requestedBy: "doi" };
+    if (safeDoi) return { safeDoi, requestedBy: "safe_doi" };
+
+    const parsedUri = parsePaperUri(uri);
+    if (!parsedUri) {
+        return { error: `Invalid paper URI: ${uri}. Expected grados://papers/{safe_doi}.` };
+    }
+    return { safeDoi: parsedUri, requestedBy: "uri" };
+}
+
+function readSavedPaperFileBySafeDoi(safeDoi: string): { absolutePath: string; text: string; metadata: Record<string, string> } | null {
+    const absolutePath = path.join(getPapersDirectory(), `${safeDoi}.md`);
+    if (!fs.existsSync(absolutePath)) return null;
+
+    const text = fs.readFileSync(absolutePath, "utf-8");
+    return {
+        absolutePath,
+        text,
+        metadata: parseFrontMatter(text)
+    };
+}
+
+function findParagraphWindowStart(paragraphs: string[], sectionQuery?: string): number {
+    if (!sectionQuery) return 0;
+
+    const normalizedQuery = normalizeComparable(sectionQuery);
+    if (!normalizedQuery) return 0;
+
+    const headingParagraphs = paragraphs.map((paragraph, index) => ({ paragraph, index }))
+        .filter(({ paragraph }) => /^#{1,6}\s+/.test(paragraph));
+
+    const exactHeadingMatch = headingParagraphs.find(({ paragraph }) => normalizeComparable(paragraph.replace(/^#{1,6}\s+/, '')) === normalizedQuery);
+    if (exactHeadingMatch) return exactHeadingMatch.index;
+
+    const partialHeadingMatch = headingParagraphs.find(({ paragraph }) => normalizeComparable(paragraph.replace(/^#{1,6}\s+/, '')).includes(normalizedQuery));
+    if (partialHeadingMatch) return partialHeadingMatch.index;
+
+    const paragraphMatch = paragraphs.findIndex((paragraph) => normalizeComparable(paragraph).includes(normalizedQuery));
+    return paragraphMatch >= 0 ? paragraphMatch : 0;
+}
+
+function buildPaperReadResult(params: {
+    doi: string;
+    safeDoi: string;
+    title: string;
+    absolutePath: string;
+    startParagraph: number;
+    returnedParagraphs: number;
+    sectionQuery?: string;
+    truncated: boolean;
+    contentText: string;
+}): PaperReadResult {
+    return {
+        kind: "paper_read_result",
+        doi: params.doi,
+        safe_doi: params.safeDoi,
+        title: params.title,
+        canonical_uri: buildPaperUri(params.safeDoi),
+        relative_path: toProjectRelative(params.absolutePath),
+        absolute_path: params.absolutePath,
+        start_paragraph: params.startParagraph,
+        returned_paragraphs: params.returnedParagraphs,
+        ...(params.sectionQuery ? { section_query: params.sectionQuery } : {}),
+        truncated: params.truncated,
+        citation_ready: true,
+        content_text: params.contentText
+    };
+}
+
+function buildPaperReadText(result: PaperReadResult): string {
+    return [
+        `# Paper Read Result`,
+        ``,
+        `| Field | Value |`,
+        `|-------|-------|`,
+        `| **Title** | ${result.title} |`,
+        `| **DOI** | ${result.doi} |`,
+        `| **File** | \`${result.relative_path}\` |`,
+        `| **URI** | \`${result.canonical_uri}\` |`,
+        `| **Paragraph Window** | start=${result.start_paragraph}, count=${result.returned_paragraphs} |`,
+        result.section_query ? `| **Section Query** | ${result.section_query} |` : "",
+        ``,
+        result.content_text
+    ].filter(Boolean).join('\n');
+}
+
+function buildPaperIndexEntry(fileName: string): PaperIndexEntry | null {
+    const absolutePath = path.join(getPapersDirectory(), fileName);
+    if (!fs.existsSync(absolutePath)) return null;
+
+    const safeDoi = path.basename(fileName, '.md');
+    const text = fs.readFileSync(absolutePath, 'utf-8');
+    const metadata = parseFrontMatter(text);
+    const stats = fs.statSync(absolutePath);
+
+    return {
+        doi: metadata.doi || "",
+        safe_doi: safeDoi,
+        title: metadata.title || "(unknown)",
+        canonical_uri: buildPaperUri(safeDoi),
+        relative_path: toProjectRelative(absolutePath),
+        absolute_path: absolutePath,
+        last_modified: stats.mtime.toISOString()
+    };
+}
+
+function listSavedPaperIndex(): PaperIndexEntry[] {
+    const papersDir = getPapersDirectory();
+    if (!fs.existsSync(papersDir)) return [];
+
+    return fs.readdirSync(papersDir)
+        .filter((fileName) => fileName.endsWith('.md'))
+        .sort()
+        .map((fileName) => buildPaperIndexEntry(fileName))
+        .filter((entry): entry is PaperIndexEntry => entry !== null);
 }
 
 // --- Fetch Strategies (Phase 1) ---
@@ -647,28 +1252,165 @@ async function fetchFromSciHub(doi: string, extractConfig: any): Promise<FetchRe
     return null;
 }
 
+function normalizeHeadlessBrowser(browserValue: string): string {
+    const normalized = browserValue.toLowerCase().trim();
+    if (normalized === "auto" || normalized.length === 0) return "msedge";
+    if (normalized === "edge") return "msedge";
+    if (normalized === "google-chrome" || normalized === "chromium" || normalized === "chromium-browser") return "chrome";
+    return normalized;
+}
+
+function getHeadlessBrowserCandidates(browser: string): string[] {
+    const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+
+    if (process.platform === "win32") {
+        if (browser === "msedge") {
+            return [
+                "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+                "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"
+            ];
+        }
+        if (browser === "chrome") {
+            return [
+                "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
+            ];
+        }
+        if (browser === "firefox") {
+            return [
+                "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
+                "C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe"
+            ];
+        }
+    }
+
+    if (process.platform === "darwin") {
+        if (browser === "msedge") {
+            return [
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+                path.join(homeDir, "Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+            ];
+        }
+        if (browser === "chrome") {
+            return [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                path.join(homeDir, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+            ];
+        }
+        if (browser === "firefox") {
+            return [
+                "/Applications/Firefox.app/Contents/MacOS/firefox",
+                path.join(homeDir, "Applications/Firefox.app/Contents/MacOS/firefox")
+            ];
+        }
+    }
+
+    if (process.platform === "linux") {
+        if (browser === "msedge") {
+            return [
+                "/usr/bin/microsoft-edge",
+                "/usr/bin/microsoft-edge-stable",
+                "/snap/bin/microsoft-edge"
+            ];
+        }
+        if (browser === "chrome") {
+            return [
+                "/usr/bin/google-chrome",
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser"
+            ];
+        }
+        if (browser === "firefox") {
+            return [
+                "/usr/bin/firefox",
+                "/snap/bin/firefox"
+            ];
+        }
+    }
+
+    return [];
+}
+
+function getHeadlessBrowserPathNames(browser: string): string[] {
+    if (browser === "msedge") return ["msedge", "msedge.exe", "microsoft-edge", "microsoft-edge-stable"];
+    if (browser === "chrome") return ["chrome", "chrome.exe", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
+    if (browser === "firefox") return ["firefox", "firefox.exe"];
+    return [];
+}
+
+function findExecutableOnPath(binaryNames: string[]): string | null {
+    const pathEntries = (process.env.PATH || "")
+        .split(path.delimiter)
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+
+    for (const directory of pathEntries) {
+        for (const binaryName of binaryNames) {
+            const candidate = path.join(directory, binaryName);
+            if (fs.existsSync(candidate)) return candidate;
+
+            if (process.platform === "win32" && !candidate.toLowerCase().endsWith(".exe")) {
+                const exeCandidate = `${candidate}.exe`;
+                if (fs.existsSync(exeCandidate)) return exeCandidate;
+            }
+        }
+    }
+
+    return null;
+}
+
+function resolveHeadlessBrowserExecutable(headlessConf: any): { browser: string; executablePath: string } | null {
+    const configuredBrowser = normalizeHeadlessBrowser(String(headlessConf?.browser || "msedge"));
+    const configuredExecutablePath = headlessConf?.executablePath ? String(headlessConf.executablePath) : "";
+
+    if (configuredExecutablePath) {
+        const resolvedExplicitPath = path.isAbsolute(configuredExecutablePath)
+            ? configuredExecutablePath
+            : path.resolve(PROJECT_ROOT, configuredExecutablePath);
+        if (fs.existsSync(resolvedExplicitPath)) {
+            return { browser: configuredBrowser, executablePath: resolvedExplicitPath };
+        }
+        console.error(`[Headless] Configured executablePath not found: ${resolvedExplicitPath}`);
+    }
+
+    const candidatePaths = getHeadlessBrowserCandidates(configuredBrowser);
+    for (const candidatePath of candidatePaths) {
+        if (fs.existsSync(candidatePath)) {
+            return { browser: configuredBrowser, executablePath: candidatePath };
+        }
+    }
+
+    const pathHit = findExecutableOnPath(getHeadlessBrowserPathNames(configuredBrowser));
+    if (pathHit) {
+        return { browser: configuredBrowser, executablePath: pathHit };
+    }
+
+    console.error(`[Headless] Could not resolve an executable for configured browser="${configuredBrowser}" on platform="${process.platform}".`);
+    return null;
+}
+
 // --- Fetch Strategy (Phase 4: Headless Browser Fallback) ---
 async function fetchFromHeadlessBrowser(doi: string, extractConfig: any): Promise<FetchResult | null> {
     const headlessConf = extractConfig?.headlessBrowser || {};
-    const browserStr = headlessConf.browser || "msedge";
     const interactiveCaptchaHelp = headlessConf.interactiveCaptchaHelp !== false;
-    
-    let executablePath = "";
-    if (browserStr === "msedge") {
-        executablePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
-    } else if (browserStr === "chrome") {
-        executablePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-    } else if (browserStr === "firefox") {
-        executablePath = "C:\\Program Files\\Mozilla Firefox\\firefox.exe";
-    }
-    
-    if (!fs.existsSync(executablePath)) {
-        console.error(`Configured browser ${browserStr} not found at ${executablePath}. Headless failed.`);
-        return null; 
+    const browserResolution = resolveHeadlessBrowserExecutable(headlessConf);
+
+    if (!browserResolution) {
+        return null;
     }
 
+    const { browser: browserStr, executablePath } = browserResolution;
+    const browserLabel = browserStr === "msedge"
+        ? "Edge"
+        : browserStr === "chrome"
+            ? "Chrome"
+            : browserStr === "firefox"
+                ? "Firefox"
+                : browserStr;
+
     try {
-        console.error(`Launching ${browserStr} Headless for DOI: ${doi}...`);
+        console.error(`Launching ${browserLabel} Headless for DOI: ${doi}...`);
         let pdfBuffer: Buffer | null = null;
         
         const launchAndAttempt = async (isHeadless: boolean): Promise<boolean> => {
@@ -696,7 +1438,7 @@ async function fetchFromHeadlessBrowser(doi: string, extractConfig: any): Promis
                     if (contentType && contentType.includes('application/pdf')) {
                         try {
                             pdfBuffer = await response.buffer();
-                            console.error(`   [Edge] Browser successfully intercepted PDF!`);
+                            console.error(`   [${browserLabel}] Browser successfully intercepted PDF!`);
                         } catch(e){}
                     }
                 });
@@ -710,7 +1452,7 @@ async function fetchFromHeadlessBrowser(doi: string, extractConfig: any): Promis
                 const isCaptcha = pageHtml.includes('captcha') || pageHtml.includes('recaptcha');
                 
                 if (isHeadless && (isCloudflare || isCaptcha)) {
-                    console.error("   [Edge] Anti-Bot / CAPTCHA detected in Headless mode!");
+                    console.error(`   [${browserLabel}] Anti-Bot / CAPTCHA detected in Headless mode!`);
                     await browser.close();
                     return true; // Return true to request retry in visible mode
                 }
@@ -719,7 +1461,7 @@ async function fetchFromHeadlessBrowser(doi: string, extractConfig: any): Promis
                 if (!pdfBuffer) {
                     const link = await page.$('a[href*="pdf"], a[title*="PDF"], a[class*="pdf"]').catch(()=>null);
                     if (link) {
-                        console.error("   [Edge] Clicking generic PDF link on publisher page...");
+                        console.error(`   [${browserLabel}] Clicking generic PDF link on publisher page...`);
                         await Promise.all([
                             page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(()=>{}),
                             link.click().catch(()=>{})
@@ -729,14 +1471,14 @@ async function fetchFromHeadlessBrowser(doi: string, extractConfig: any): Promis
                 
                 // 4. Try SciHub inside the browser as a robust fallback
                 if (!pdfBuffer) {
-                    console.error("   [Edge] Publisher PDF not found. Falling back to Browser Sci-Hub...");
+                    console.error(`   [${browserLabel}] Publisher PDF not found. Falling back to Browser Sci-Hub...`);
                     const mirrorFile = extractConfig?.sciHub?.mirrorUrlFile || "./scihub-mirrors.txt";
                     const activeMirror = await getWorkingSciHubMirror(mirrorFile, "https://sci-hub.ru", false);
                     await page.goto(`${activeMirror}/${doi}`, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
                     
                     const shHtml = await page.content();
                     if (isHeadless && (shHtml.includes('cf-browser') || shHtml.includes('captcha'))) {
-                         console.error("   [Edge] Sci-Hub is also protected by Cloudflare!");
+                         console.error(`   [${browserLabel}] Sci-Hub is also protected by Cloudflare!`);
                          await browser.close();
                          return true; 
                     }
@@ -751,7 +1493,7 @@ async function fetchFromHeadlessBrowser(doi: string, extractConfig: any): Promis
 
                 if (!isHeadless && !pdfBuffer) {
                     // Give user time to click the PDF themselves if we missed it
-                    console.error("   [Edge] Waiting 20 seconds for you to manually trigger the PDF download...");
+                    console.error(`   [${browserLabel}] Waiting 20 seconds for you to manually trigger the PDF download...`);
                     await new Promise(r => setTimeout(r, 20000));
                 }
 
@@ -775,7 +1517,7 @@ async function fetchFromHeadlessBrowser(doi: string, extractConfig: any): Promis
         }
 
         if (pdfBuffer) {
-            return { source: "Headless Browser (Edge)", pdfBuffer };
+            return { source: `Headless Browser (${browserLabel})`, pdfBuffer };
         }
     } catch(e: any) {
         console.error(`Headless Browser Exception: ${e.message}`);
@@ -1089,7 +1831,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     type: "text",
                     text: formattedString
                 }
-            ]
+            ],
+            structuredContent: {
+                query,
+                limit,
+                results: finalResults
+            }
         };
     } else if (name === "extract_paper_full_text") {
         const doi = String(args?.doi || "");
@@ -1104,6 +1851,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         let finalExtractedText = "";
         let successfulSource = "";
+        let savedMarkdownPath = "";
         
         // Define our waterfall strategies
         const fetchStrategies: Array<{ name: string, run: () => Promise<FetchResult | null> }> = [];
@@ -1174,10 +1922,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     console.error(`   [${strategy.name}] procured PDF Buffer. Saving to disk...`);
                     
                     // PDF files are saved to downloadDirectory (archival only, not indexed by RAG)
-                    const downloadDir = extractConfig?.downloadDirectory ? path.resolve(PROJECT_ROOT, extractConfig.downloadDirectory) : path.join(PROJECT_ROOT, "downloads");
+                    const downloadDir = getDownloadsDirectory();
                     if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
                     
-                    const safeDoi = doi.replace(/[^a-z0-9]/gi, '_');
+                    const safeDoi = safeDoiFromDoi(doi);
                     const pdfFilePath = path.join(downloadDir, `${safeDoi}.pdf`);
                     fs.writeFileSync(pdfFilePath, fetchRes.pdfBuffer);
                     console.error(`   💾 PDF saved successfully to: ${pdfFilePath}`);
@@ -1236,9 +1984,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     // 4. Save parsed Markdown to papersDirectory for mcp-local-rag indexing
                     //    Separate from downloadDirectory (PDF) to avoid duplicate RAG ingestion
                     try {
-                        const papersDir = extractConfig?.papersDirectory ? path.resolve(PROJECT_ROOT, extractConfig.papersDirectory) : path.join(PROJECT_ROOT, "papers");
+                        const papersDir = getPapersDirectory();
                         if (!fs.existsSync(papersDir)) fs.mkdirSync(papersDir, { recursive: true });
-                        const safeDoi = doi.replace(/[^a-z0-9]/gi, '_');
+                        const safeDoi = safeDoiFromDoi(doi);
                         const mdFilePath = path.join(papersDir, `${safeDoi}.md`);
                         // Prepend YAML front-matter with metadata for RAG enrichment
                         const frontMatter = [
@@ -1251,9 +1999,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                             ''
                         ].filter(Boolean).join('\n');
                         fs.writeFileSync(mdFilePath, frontMatter + parsedMarkdown, 'utf-8');
+                        savedMarkdownPath = mdFilePath;
                         console.error(`📚 Saved Markdown for RAG indexing: ${mdFilePath}`);
                     } catch (saveErr: any) {
-                        console.error(`⚠️ Failed to save Markdown (non-fatal): ${saveErr.message}`);
+                        console.error(`❌ Failed to save Markdown: ${saveErr.message}`);
+                        throw new Error(`Failed to save extracted markdown for DOI ${doi}: ${saveErr.message}`);
                     }
 
                     break; // Success! Exit the waterfall.
@@ -1273,38 +2023,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
              };
         }
 
-        // Build compact summary for context window (full text already saved to papers/)
-        const safeDoiForReturn = doi.replace(/[^a-z0-9]/gi, '_');
-        const openingParagraphs = extractOpening(finalExtractedText, 3);
-        const wordCount = finalExtractedText.split(/\s+/).length;
-        const charCount = finalExtractedText.length;
-        const title = expectedTitle || "(unknown)";
+        if (!savedMarkdownPath) {
+            return {
+                content: [{ type: "text", text: `Error: Extracted text for DOI ${doi} but failed to persist it into the papers directory.` }],
+                isError: true
+            };
+        }
 
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: [
-                        `# Paper Extracted Successfully [Source: ${successfulSource}]`,
-                        ``,
-                        `| Field | Value |`,
-                        `|-------|-------|`,
-                        `| **Title** | ${title} |`,
-                        `| **DOI** | ${doi} |`,
-                        `| **File** | \`papers/${safeDoiForReturn}.md\` |`,
-                        `| **Length** | ${wordCount} words / ${charCount} chars |`,
-                        `| **Source** | ${successfulSource} |`,
-                        ``,
-                        `## Opening Content`,
-                        ``,
-                        openingParagraphs,
-                        ``,
-                        `---`,
-                        `> **Full text saved to \`papers/${safeDoiForReturn}.md\`.** Use your file reading tool to access complete content when needed for synthesis.`,
-                    ].join('\n')
-                }
-            ]
-        };
+        const summary = buildPaperSavedSummary({
+            doi,
+            title: expectedTitle,
+            source: successfulSource,
+            text: fs.readFileSync(savedMarkdownPath, 'utf-8'),
+            absolutePath: savedMarkdownPath
+        });
+
+        return buildPaperSavedSummaryResult(summary);
     } else if (name === "parse_pdf_file") {
         const filePath = String(args?.file_path || "");
         const expectedTitle = args?.expected_title ? String(args.expected_title) : undefined;
@@ -1384,9 +2118,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let savedPath = "";
         if (doi) {
             try {
-                const papersDir = extractConfig?.papersDirectory ? path.resolve(PROJECT_ROOT, extractConfig.papersDirectory) : path.join(PROJECT_ROOT, "papers");
+                const papersDir = getPapersDirectory();
                 if (!fs.existsSync(papersDir)) fs.mkdirSync(papersDir, { recursive: true });
-                const safeDoi = doi.replace(/[^a-z0-9]/gi, '_');
+                const safeDoi = safeDoiFromDoi(doi);
                 const mdFilePath = path.join(papersDir, `${safeDoi}.md`);
                 const frontMatter = [
                     '---',
@@ -1401,17 +2135,81 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 savedPath = mdFilePath;
                 console.error(`📚 Saved Markdown for RAG indexing: ${mdFilePath}`);
             } catch (saveErr: any) {
-                console.error(`⚠️ Failed to save Markdown (non-fatal): ${saveErr.message}`);
+                return {
+                    content: [{ type: "text", text: `Error: Parsed PDF content but failed to save markdown for DOI ${doi}: ${saveErr.message}` }],
+                    isError: true
+                };
             }
         }
 
-        let resultText = `# Parsed PDF [Source: Local File]\n## File: ${fileName}\n`;
-        if (doi) resultText += `## DOI: ${doi}\n`;
-        if (savedPath) resultText += `## Saved to: ${savedPath}\n`;
-        resultText += `\n${parsedMarkdown}`;
+        if (doi) {
+            const summary = buildPaperSavedSummary({
+                doi,
+                title: expectedTitle,
+                source: "Local PDF (parse_pdf_file)",
+                text: fs.readFileSync(savedPath, 'utf-8'),
+                absolutePath: savedPath
+            });
+            return buildPaperSavedSummaryResult(summary);
+        }
 
         return {
-            content: [{ type: "text", text: resultText }]
+            content: [{
+                type: "text",
+                text: `# Parsed PDF [Source: Local File]\n## File: ${fileName}\n\n${parsedMarkdown}`
+            }]
+        };
+
+    } else if (name === "read_saved_paper") {
+        const lookup = resolvePaperLookup(args);
+        if ("error" in lookup) {
+            return {
+                content: [{ type: "text", text: `Error: ${lookup.error}` }],
+                isError: true
+            };
+        }
+
+        const paperRecord = readSavedPaperFileBySafeDoi(lookup.safeDoi);
+        if (!paperRecord) {
+            return {
+                content: [{ type: "text", text: `Error: Saved paper not found for ${lookup.requestedBy} "${lookup.safeDoi}".` }],
+                isError: true
+            };
+        }
+
+        const requestedStart = Math.max(0, Number(args?.start_paragraph ?? 0));
+        const maxParagraphs = Math.max(1, Number(args?.max_paragraphs ?? 20));
+        const includeFrontMatter = args?.include_front_matter === true;
+        const sectionQuery = args?.section_query ? String(args.section_query) : undefined;
+
+        const paragraphs = splitIntoParagraphs(paperRecord.text, includeFrontMatter);
+        const sectionStart = findParagraphWindowStart(paragraphs, sectionQuery);
+        const startParagraph = sectionQuery ? sectionStart : Math.min(requestedStart, Math.max(0, paragraphs.length - 1));
+        const paragraphWindow = paragraphs.slice(startParagraph, startParagraph + maxParagraphs);
+        const contentText = paragraphWindow.join('\n\n');
+        const paperTitle = paperRecord.metadata.title || "(unknown)";
+        const paperDoi = paperRecord.metadata.doi || (args?.doi ? String(args.doi) : lookup.safeDoi);
+        const readResult = buildPaperReadResult({
+            doi: paperDoi,
+            safeDoi: lookup.safeDoi,
+            title: paperTitle,
+            absolutePath: paperRecord.absolutePath,
+            startParagraph,
+            returnedParagraphs: paragraphWindow.length,
+            sectionQuery,
+            truncated: startParagraph + paragraphWindow.length < paragraphs.length,
+            contentText
+        });
+
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: buildPaperReadText(readResult)
+                },
+                buildReadResourceLink(readResult)
+            ],
+            structuredContent: readResult
         };
 
     } else if (name === "save_paper_to_zotero") {
@@ -1436,18 +2234,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         if (result.success) {
             return {
-                content: [{ type: "text", text: `✅ Saved to Zotero: "${title}" (DOI: ${doi}) — item key: ${result.itemKey}` }]
+                content: [{ type: "text", text: `✅ Saved to Zotero: "${title}" (DOI: ${doi}) — item key: ${result.itemKey}` }],
+                structuredContent: {
+                    success: true,
+                    doi,
+                    title,
+                    item_key: result.itemKey
+                }
             };
         } else {
             return {
                 content: [{ type: "text", text: `❌ Failed to save to Zotero: ${result.error}` }],
+                structuredContent: {
+                    success: false,
+                    doi,
+                    title,
+                    error: result.error
+                },
                 isError: true
             };
         }
     }
 
     return {
-        content: [{ type: "text", text: `Error: Unknown tool "${name}". Available tools: search_academic_papers, extract_paper_full_text, parse_pdf_file, save_paper_to_zotero.` }],
+        content: [{ type: "text", text: `Error: Unknown tool "${name}". Available tools: ${TOOL_REGISTRY.map((tool) => tool.name).join(", ")}.` }],
         isError: true
     };
 });
@@ -1461,26 +2271,7 @@ const GRADOS_VERSION = "0.2.1";
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
     return {
-        resources: [
-            {
-                uri: "grados://about",
-                name: "GRaDOS About",
-                description: "Service overview: name, version, capabilities, and available tools",
-                mimeType: "application/json"
-            },
-            {
-                uri: "grados://status",
-                name: "GRaDOS Status",
-                description: "Health check: config loaded, directories exist, API keys configured",
-                mimeType: "application/json"
-            },
-            {
-                uri: "grados://tools",
-                name: "GRaDOS Tools",
-                description: "Read-only mirror of available tools with names, descriptions, and parameter schemas",
-                mimeType: "application/json"
-            }
-        ]
+        resources: [...STATIC_RESOURCE_DEFINITIONS]
     };
 });
 
@@ -1495,18 +2286,15 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
             description: "MCP server for academic paper search and full-text extraction",
             capabilities: [
                 "Waterfall search across academic databases (Crossref, PubMed, Web of Science, Elsevier, Springer)",
+                "Canonical saved-paper summaries with structured outputs and resource links",
+                "Deep paper reading via read_saved_paper and grados://papers/{safe_doi}",
                 "Full-text extraction via TDM APIs, Open Access, Sci-Hub, and headless browser",
                 "Progressive PDF parsing (LlamaParse → Marker → Native)",
                 "QA validation to reject paywalls and truncated content",
-                "Automatic Markdown output with YAML front-matter",
+                "Automatic Markdown output with YAML front-matter and install-agnostic path resolution",
                 "Zotero web library integration for citation management"
             ],
-            tools: [
-                { name: "search_academic_papers", purpose: "Search academic databases and return deduplicated paper metadata" },
-                { name: "extract_paper_full_text", purpose: "Fetch and parse full-text paper content by DOI" },
-                { name: "parse_pdf_file", purpose: "Parse a local PDF file using configured waterfall (LlamaParse → Marker → Native)" },
-                { name: "save_paper_to_zotero", purpose: "Save cited paper metadata to Zotero web library" }
-            ],
+            tools: TOOL_REGISTRY.map((tool) => ({ name: tool.name, purpose: tool.purpose })),
             companionMcp: {
                 name: "mcp-local-rag",
                 tools: [
@@ -1517,6 +2305,11 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
                     { name: "status", purpose: "Inspect local RAG database health and configuration warnings" }
                 ]
             },
+            installModes: [
+                "npm/manual MCP registration (Codex, Claude Code, other MCP clients)",
+                "Claude Code plugin bundling the same stdio MCP server"
+            ],
+            paperResourceTemplate: PAPER_RESOURCE_TEMPLATE,
             configPath: CONFIG_PATH,
             projectRoot: PROJECT_ROOT
         };
@@ -1526,13 +2319,8 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     }
 
     if (uri === "grados://status") {
-        const extractConfig = config?.extract || {};
-        const papersDir = extractConfig?.papersDirectory
-            ? path.resolve(PROJECT_ROOT, extractConfig.papersDirectory)
-            : path.join(PROJECT_ROOT, "papers");
-        const downloadDir = extractConfig?.downloadDirectory
-            ? path.resolve(PROJECT_ROOT, extractConfig.downloadDirectory)
-            : path.join(PROJECT_ROOT, "downloads");
+        const papersDir = getPapersDirectory();
+        const downloadDir = getDownloadsDirectory();
 
         const status = {
             online: true,
@@ -1556,8 +2344,9 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
             },
             academicEtiquetteEmail: getEtiquetteEmail(),
             searchSources: config?.search?.order || ["Elsevier", "Springer", "WebOfScience", "Crossref", "PubMed"],
-            fetchStrategy: extractConfig?.fetchStrategy?.order || ["TDM", "OA", "SciHub", "Headless"],
-            parsingOrder: extractConfig?.parsing?.order || ["LlamaParse", "Marker", "Native"]
+            fetchStrategy: config?.extract?.fetchStrategy?.order || ["TDM", "OA", "SciHub", "Headless"],
+            parsingOrder: config?.extract?.parsing?.order || ["LlamaParse", "Marker", "Native"],
+            paperResourceTemplate: PAPER_RESOURCE_TEMPLATE.uriTemplate
         };
         return {
             contents: [{ uri, mimeType: "application/json", text: JSON.stringify(status, null, 2) }]
@@ -1565,59 +2354,27 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     }
 
     if (uri === "grados://tools") {
-        const tools = [
-            {
-                name: "search_academic_papers",
-                description: "Searches multiple academic databases sequentially in priority order for a given query and returns a deduplicated list of papers with metadata (DOIs, Abstracts).",
-                parameters: {
-                    query: { type: "string", required: true, description: "The search query" },
-                    limit: { type: "number", required: false, default: 10, description: "Maximum number of results to return" }
-                },
-                returns: "Markdown-formatted list of papers with DOI, title, authors, year, abstract",
-                commonFailures: ["No API key for a specific database (gracefully skipped)", "Network timeout", "Database rate limiting"]
-            },
-            {
-                name: "extract_paper_full_text",
-                description: "Given a DOI, attempts to fetch the full text using a waterfall strategy (TDM → OA → Sci-Hub → Headless). Returns markdown-formatted text with QA validation.",
-                parameters: {
-                    doi: { type: "string", required: true, description: "The DOI of the paper" },
-                    publisher: { type: "string", required: false, description: "Publisher name to optimize extraction" },
-                    expected_title: { type: "string", required: false, description: "Paper title for QA validation" }
-                },
-                returns: "Full-text paper content in Markdown. Auto-saves .md to papers directory and .pdf to downloads directory.",
-                commonFailures: ["Paywall blocks all strategies", "PDF parsing fails", "QA validation rejects truncated content"]
-            },
-            {
-                name: "parse_pdf_file",
-                description: "Parses a local PDF file using the configured parsing waterfall (LlamaParse → Marker → Native). Use when you have downloaded a PDF via browser automation (e.g., Playwright MCP) and need to extract text.",
-                parameters: {
-                    file_path: { type: "string", required: true, description: "Path to the local PDF file (absolute or relative to PROJECT_ROOT)" },
-                    expected_title: { type: "string", required: false, description: "Paper title for QA validation" },
-                    doi: { type: "string", required: false, description: "DOI — if provided, saves parsed Markdown to papers directory with front-matter" }
-                },
-                returns: "Markdown-formatted paper text. If DOI provided, also saves .md to papers directory for RAG indexing.",
-                commonFailures: ["File not found", "Not a valid PDF", "All parsers fail", "QA validation rejects content"]
-            },
-            {
-                name: "save_paper_to_zotero",
-                description: "Saves a paper's bibliographic metadata to the Zotero web library. Requires ZOTERO_API_KEY and zotero.libraryId in config.",
-                parameters: {
-                    doi: { type: "string", required: true, description: "The DOI of the paper" },
-                    title: { type: "string", required: true, description: "The full title" },
-                    authors: { type: "array", required: false, description: "List of author names" },
-                    abstract: { type: "string", required: false, description: "Paper abstract" },
-                    journal: { type: "string", required: false, description: "Journal name" },
-                    year: { type: "string", required: false, description: "Publication year" },
-                    url: { type: "string", required: false, description: "URL to paper landing page" },
-                    tags: { type: "array", required: false, description: "Tags/keywords" },
-                    collection_key: { type: "string", required: false, description: "Zotero collection key override" }
-                },
-                returns: "Confirmation with Zotero item key",
-                commonFailures: ["ZOTERO_API_KEY not configured", "libraryId not set", "Network error"]
-            }
-        ];
         return {
-            contents: [{ uri, mimeType: "application/json", text: JSON.stringify(tools, null, 2) }]
+            contents: [{ uri, mimeType: "application/json", text: JSON.stringify(buildToolMirrorEntries(), null, 2) }]
+        };
+    }
+
+    if (uri === "grados://papers/index") {
+        return {
+            contents: [{ uri, mimeType: "application/json", text: JSON.stringify(listSavedPaperIndex(), null, 2) }]
+        };
+    }
+
+    const paperSafeDoi = parsePaperUri(uri);
+    if (paperSafeDoi) {
+        const paperRecord = readSavedPaperFileBySafeDoi(paperSafeDoi);
+        if (!paperRecord) {
+            return {
+                contents: [{ uri, mimeType: "text/plain", text: `Saved paper not found for URI: ${uri}` }]
+            };
+        }
+        return {
+            contents: [{ uri, mimeType: "text/markdown", text: paperRecord.text }]
         };
     }
 
@@ -1629,7 +2386,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 // CRITICAL: Must implement resources/templates/list even if empty.
 // Codex disconnects ALL MCP servers if this returns -32601 (Method not found). See: github.com/openai/codex/issues/14454
 server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-    return { resourceTemplates: [] };
+    return { resourceTemplates: [PAPER_RESOURCE_TEMPLATE] };
 });
 
 // --- CLI: --init flag to bootstrap mcp-config.json ---
