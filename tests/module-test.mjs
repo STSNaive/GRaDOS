@@ -11,6 +11,11 @@ const QUERY = 'elastic metamaterial';
 const CONFIG_PATH = join(process.cwd(), 'mcp-config.json');
 const CONFIG_BACKUP = join(process.cwd(), 'mcp-config.json.bak');
 
+if (!existsSync(CONFIG_PATH)) {
+    console.log('Skipping module-test: mcp-config.json not found in repository root.');
+    process.exit(0);
+}
+
 // Save original config
 const originalConfig = readFileSync(CONFIG_PATH, 'utf8');
 writeFileSync(CONFIG_BACKUP, originalConfig);
@@ -35,6 +40,18 @@ async function createClient() {
 }
 
 const results = {};
+
+function getSummaryInfo(result) {
+    const structured = result.structuredContent;
+    const content = result.content || [];
+    return {
+        ok: structured?.kind === 'paper_saved_summary' && content.some(item => item.type === 'resource_link'),
+        kind: structured?.kind,
+        uri: structured?.canonical_uri,
+        relativePath: structured?.relative_path,
+        previewLength: structured?.preview_excerpt?.length || 0
+    };
+}
 
 // ========== PART 1: Test each search source individually ==========
 const searchSources = ['Crossref', 'PubMed', 'Springer', 'WebOfScience', 'Elsevier'];
@@ -108,13 +125,17 @@ setConfig(cfg => {
         });
         const text = r.content?.[0]?.text || '';
         const isError = r.isError || false;
+        const summaryInfo = getSummaryInfo(r);
         results['fetch_SciHub'] = {
-            ok: !isError && text.length > 500,
+            ok: !isError && summaryInfo.ok,
             length: text.length,
             isError,
-            preview: text.substring(0, 150)
+            preview: text.substring(0, 150),
+            kind: summaryInfo.kind,
+            uri: summaryInfo.uri,
+            relativePath: summaryInfo.relativePath
         };
-        console.log(`  isError: ${isError}, length: ${text.length}`);
+        console.log(`  isError: ${isError}, kind: ${summaryInfo.kind || '(none)'}, uri: ${summaryInfo.uri || '(none)'}`);
         if (text.length > 0) console.log(`  Preview: ${text.substring(0, 120)}...`);
     } catch (e) {
         results['fetch_SciHub'] = { ok: false, error: e.message.substring(0, 150) };
@@ -142,13 +163,17 @@ setConfig(cfg => {
         });
         const text = r.content?.[0]?.text || '';
         const isError = r.isError || false;
+        const summaryInfo = getSummaryInfo(r);
         results['fetch_TDM_Springer'] = {
-            ok: !isError && text.length > 500,
+            ok: !isError && summaryInfo.ok,
             length: text.length,
             isError,
-            preview: text.substring(0, 150)
+            preview: text.substring(0, 150),
+            kind: summaryInfo.kind,
+            uri: summaryInfo.uri,
+            relativePath: summaryInfo.relativePath
         };
-        console.log(`  isError: ${isError}, length: ${text.length}`);
+        console.log(`  isError: ${isError}, kind: ${summaryInfo.kind || '(none)'}, uri: ${summaryInfo.uri || '(none)'}`);
         if (text.length > 0) console.log(`  Preview: ${text.substring(0, 120)}...`);
     } catch (e) {
         results['fetch_TDM_Springer'] = { ok: false, error: e.message.substring(0, 150) };
@@ -176,13 +201,17 @@ setConfig(cfg => {
         });
         const text = r.content?.[0]?.text || '';
         const isError = r.isError || false;
+        const summaryInfo = getSummaryInfo(r);
         results['fetch_OA_arXiv'] = {
-            ok: !isError && text.length > 500,
+            ok: !isError && summaryInfo.ok,
             length: text.length,
             isError,
-            preview: text.substring(0, 150)
+            preview: text.substring(0, 150),
+            kind: summaryInfo.kind,
+            uri: summaryInfo.uri,
+            relativePath: summaryInfo.relativePath
         };
-        console.log(`  isError: ${isError}, length: ${text.length}`);
+        console.log(`  isError: ${isError}, kind: ${summaryInfo.kind || '(none)'}, uri: ${summaryInfo.uri || '(none)'}`);
         if (text.length > 0) console.log(`  Preview: ${text.substring(0, 120)}...`);
     } catch (e) {
         results['fetch_OA_arXiv'] = { ok: false, error: e.message.substring(0, 150) };

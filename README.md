@@ -36,8 +36,9 @@ GRaDOS is designed to sit inside an agent workflow:
 | Server | Tool | Description |
 |---|---|---|
 | GRaDOS | `search_academic_papers` | Waterfall search across Scopus, Web of Science, Springer, Crossref, and PubMed. Deduplicates by DOI. |
-| GRaDOS | `extract_paper_full_text` | 4-stage fetch + 3-stage parse + QA validation. Returns Markdown and auto-saves `.md` to the papers directory. |
-| GRaDOS | `parse_pdf_file` | Parse a local PDF via configured waterfall (LlamaParse → Marker → Native). Use after downloading PDFs with Playwright MCP. |
+| GRaDOS | `extract_paper_full_text` | 4-stage fetch + 3-stage parse + QA validation. Auto-saves full-text `.md` to the papers directory and returns a **compact, non-citable saved-paper summary** (title, DOI, canonical path/URI, short preview, section headings) to keep the agent's context window clean. |
+| GRaDOS | `parse_pdf_file` | Parse a local PDF via configured waterfall (LlamaParse → Marker → Native). Use after downloading PDFs with Playwright MCP. If a DOI is provided, it returns the same saved-paper summary contract as `extract_paper_full_text`. |
+| GRaDOS | `read_saved_paper` | Canonical deep-reading tool for saved papers. Accepts `doi`, `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis and citation verification. |
 | GRaDOS | `save_paper_to_zotero` | Saves cited paper metadata to Zotero web library via API. Called after synthesis for papers used in the answer. |
 | mcp-local-rag | `query_documents` | Semantic + keyword search over locally indexed papers. |
 | mcp-local-rag | `ingest_file` | Index a paper's Markdown file into the local RAG database. |
@@ -78,11 +79,19 @@ Pair with [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag) to build a 
 
 > **Note:** `mcp-local-rag` does not auto-scan directories. Papers must be explicitly ingested via the `ingest_file` tool. The included `SKILL.md` workflow can handle this automatically.
 
+GRaDOS also exposes the saved paper store as installation-agnostic MCP surfaces:
+
+- `read_saved_paper` is the canonical tool for model-driven deep reading.
+- `grados://papers/index` lists saved papers.
+- `grados://papers/{safe_doi}` provides the canonical full Markdown resource for one saved paper.
+
 ## Installation 🚀
 
 ### Option A: Claude Code Plugin (easiest) 🔌
 
 If you use [Claude Code](https://code.claude.com/) (CLI or Desktop), install GRaDOS as a plugin. This automatically registers all three MCP servers (GRaDOS, mcp-local-rag, Playwright) with no manual configuration.
+
+> The plugin bundles the same GRaDOS stdio MCP server described below. It does not introduce a separate plugin-only paper-reading API.
 
 **1. Add the marketplace and install:**
 
@@ -169,6 +178,8 @@ Codex (`~/.codex/config.toml`):
 command = "npx"
 args = ["-y", "grados", "--config", "/path/to/mcp-config.json"]
 ```
+
+The same GRaDOS API surface is available whether the server is started via `npx`, source checkout, or bundled inside the Claude plugin. Installation method only changes how the stdio server is launched and where its config file lives.
 
 ### Optional: Install Marker (high-quality local PDF parsing) 🧠
 
@@ -311,6 +322,8 @@ Papers are saved as `journalArticle` items with title, DOI, authors, abstract, j
 When GRaDOS's built-in headless browser (Puppeteer) fails to extract a PDF — typically due to complex publisher page layouts or CAPTCHA challenges — the AI agent can fall back to [Playwright MCP](https://github.com/microsoft/playwright-mcp), which gives the LLM direct browser control through accessibility tree snapshots.
 
 **Why Playwright MCP over raw Puppeteer?** Puppeteer uses hardcoded CSS selectors that break on unfamiliar publisher pages. With Playwright MCP, the LLM sees the page structure and can adaptively click the right download button, regardless of layout. This is token-expensive (~13.7K base + page content), so it's only used as a fallback when the zero-cost Puppeteer path fails.
+
+The built-in Puppeteer fallback supports **Windows, macOS, and Linux** for the browser type you configure. GRaDOS only probes paths for the configured browser (`msedge`, `chrome`, or `firefox`) on the current OS, and you can override the executable directly with `headlessBrowser.executablePath` in `mcp-config.json`.
 
 **Install:**
 

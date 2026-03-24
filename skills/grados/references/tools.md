@@ -12,8 +12,9 @@
 | Tool | Purpose |
 |---|---|
 | `grados:search_academic_papers` | Waterfall search across academic databases (Crossref, PubMed, Web of Science, Elsevier, Springer). Returns deduplicated paper metadata with DOIs and abstracts. |
-| `grados:extract_paper_full_text` | Fetch full-text paper by DOI via TDM -> OA -> Sci-Hub -> Headless waterfall, then parse PDF via LlamaParse -> Marker -> Native. Auto-saves `.md` to `papers/` directory. **Returns a compact summary** (title, DOI, file path, opening paragraphs), not the full text — use the Read tool to access full content from `papers/{safe_doi}.md`. |
-| `grados:parse_pdf_file` | Parse a local PDF file using the configured parsing waterfall (LlamaParse -> Marker -> Native). Use when you have downloaded a PDF via browser automation (e.g., Playwright MCP) and need to extract text. If DOI is provided, saves `.md` to `papers/` with front-matter. |
+| `grados:extract_paper_full_text` | Fetch full-text paper by DOI via TDM -> OA -> Sci-Hub -> Headless waterfall, then parse PDF via LlamaParse -> Marker -> Native. Auto-saves `.md` to `papers/` directory. **Returns a compact, non-citable saved-paper summary** (title, DOI, canonical path/URI, short preview, section headings), not the full text. |
+| `grados:parse_pdf_file` | Parse a local PDF file using the configured parsing waterfall (LlamaParse -> Marker -> Native). Use when you have downloaded a PDF via browser automation (e.g., Playwright MCP) and need to extract text. If DOI is provided, saves `.md` to `papers/` with front-matter and returns the same saved-paper summary contract as `extract_paper_full_text`. |
+| `grados:read_saved_paper` | Canonical deep-reading tool for previously saved paper Markdown in `papers/`. Accepts `doi`, `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis/citation verification. |
 | `grados:save_paper_to_zotero` | Save cited paper metadata to Zotero web library. Requires ZOTERO_API_KEY and zotero.libraryId in config. |
 
 ## Local RAG Server Tools
@@ -50,3 +51,5 @@ If your client supports resource reading (Claude Code `@` mentions, Codex resour
 | `grados://about` | Service overview: name, version, capabilities, and tool list |
 | `grados://status` | Health check: config loaded, directories exist, API keys configured |
 | `grados://tools` | Read-only mirror of tool schemas with parameter details and common failure modes |
+| `grados://papers/index` | Lightweight index of saved papers in the configured `papers/` directory |
+| `grados://papers/{safe_doi}` | Canonical full Markdown content for one saved paper |
