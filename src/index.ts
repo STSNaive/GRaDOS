@@ -21,15 +21,56 @@ import { spawn } from 'node:child_process';
 const puppeteer = addExtra(puppeteerVanilla as any);
 puppeteer.use(StealthPlugin());
 
-dotenv.config();
-
-// Apply a stealthy global User-Agent to evade basic 403 Forbidden blocks
-axios.defaults.headers.common['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
 // --- Path Resolution ---
 // PACKAGE_ROOT: where grados is installed (contains marker-worker/, mcp-config.example.json, etc.)
 // In dist/index.js, __dirname is <install>/dist, so the package root is one level up.
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
+
+function readPackageVersion(): string {
+    try {
+        const packageJsonPath = path.join(PACKAGE_ROOT, "package.json");
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
+        if (typeof packageJson.version === "string" && packageJson.version.length > 0) {
+            return packageJson.version;
+        }
+    } catch {
+        // Fall through to the conservative fallback below.
+    }
+    return "0.0.0";
+}
+
+const GRADOS_VERSION = readPackageVersion();
+
+function handleCliFlags(): void {
+    if (process.argv.includes("--version") || process.argv.includes("-v")) {
+        console.log(GRADOS_VERSION);
+        process.exit(0);
+    }
+
+    if (process.argv.includes("--init")) {
+        const exampleSrc = path.join(PACKAGE_ROOT, "mcp-config.example.json");
+        const destPath = path.join(process.cwd(), "mcp-config.json");
+
+        if (fs.existsSync(destPath)) {
+            console.log("mcp-config.json already exists in this directory. No changes made.");
+        } else if (!fs.existsSync(exampleSrc)) {
+            console.error("Could not find mcp-config.example.json in the package. Please create mcp-config.json manually.");
+            process.exitCode = 1;
+        } else {
+            fs.copyFileSync(exampleSrc, destPath);
+            console.log(`Created mcp-config.json in ${process.cwd()}`);
+            console.log("Edit this file to add your API keys and configure GRaDOS.");
+        }
+        process.exit();
+    }
+}
+
+handleCliFlags();
+
+dotenv.config();
+
+// Apply a stealthy global User-Agent to evade basic 403 Forbidden blocks
+axios.defaults.headers.common['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 // Resolve config file path: --config <path> > GRADOS_CONFIG_PATH env > cwd/mcp-config.json
 function resolveConfigPath(): string {
@@ -82,7 +123,7 @@ const getEtiquetteEmail = () => config?.academicEtiquetteEmail || process.env.AC
 const server = new Server(
     {
         name: "GRaDOS",
-        version: "1.0.0",
+        version: GRADOS_VERSION,
     },
     {
         capabilities: {
@@ -2267,8 +2308,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // These allow clients that support resources (Claude Code @-mentions, Codex resource wrappers)
 // to discover GRaDOS capabilities even without tools/list.
 
-const GRADOS_VERSION = "0.2.1";
-
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
     return {
         resources: [...STATIC_RESOURCE_DEFINITIONS]
@@ -2388,23 +2427,6 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
     return { resourceTemplates: [PAPER_RESOURCE_TEMPLATE] };
 });
-
-// --- CLI: --init flag to bootstrap mcp-config.json ---
-if (process.argv.includes("--init")) {
-    const exampleSrc = path.join(__dirname, "..", "mcp-config.example.json");
-    const destPath = path.join(process.cwd(), "mcp-config.json");
-
-    if (fs.existsSync(destPath)) {
-        console.log("mcp-config.json already exists in this directory. No changes made.");
-    } else if (!fs.existsSync(exampleSrc)) {
-        console.error("Could not find mcp-config.example.json in the package. Please create mcp-config.json manually.");
-    } else {
-        fs.copyFileSync(exampleSrc, destPath);
-        console.log(`Created mcp-config.json in ${process.cwd()}`);
-        console.log("Edit this file to add your API keys and configure GRaDOS.");
-    }
-    process.exit(0);
-}
 
 // Start Server
 async function main() {

@@ -97,8 +97,8 @@ If you use [Claude Code](https://code.claude.com/) (CLI or Desktop), install GRa
 
 ```bash
 # In Claude Code
-/plugin marketplace add STSNaive/GRaDOS
-/plugin install grados@stsnaive-grados
+/plugin marketplace add https://github.com/STSNaive/GRaDOS.git
+/plugin install grados@grados-marketplace
 ```
 
 **2. Run the setup command:**
@@ -107,7 +107,7 @@ If you use [Claude Code](https://code.claude.com/) (CLI or Desktop), install GRa
 /grados:setup
 ```
 
-This generates a config file and guides you through setting API keys. No environment variables or shell profile editing required — the plugin handles all paths automatically.
+This creates `${CLAUDE_PLUGIN_DATA}/mcp-config.json` and guides you through setting API keys. The plugin also points `local-rag` at `${CLAUDE_PLUGIN_DATA}/papers`, so no environment variables or shell profile editing are required for the default setup.
 
 **3. Reload and verify:**
 
@@ -517,14 +517,7 @@ If you want storage in a different directory, use absolute paths in config:
 
 ## Claude Code Plugin 🔌
 
-GRaDOS is available as a Claude Code plugin, providing a skill, slash commands, and an MCP server configuration out of the box.
-
-### Install via Marketplace
-
-```bash
-/plugin marketplace add https://github.com/STSNaive/GRaDOS.git
-/plugin install grados@grados-marketplace
-```
+GRaDOS is available as a Claude Code plugin, providing a skill, slash commands, and an MCP server configuration out of the box. Use Installation > Option A above to install it from this repository's marketplace manifest.
 
 ### What's Included
 
@@ -535,16 +528,17 @@ GRaDOS is available as a Claude Code plugin, providing a skill, slash commands, 
 | **Command** (`/grados:status`) | Diagnostic check of server, keys, and storage |
 | **MCP Server** | Auto-configured `grados` server via `npx -y grados` |
 
-### Configure API Keys
+### How Configuration Works
 
-After installing the plugin, set environment variables for the API keys you want to use. The plugin's `.mcp.json` declares all supported env vars with empty defaults — fill in the ones you need:
+The bundled `.mcp.json` wires the plugin up like this:
 
-- `GRADOS_CONFIG_PATH` — path to your `mcp-config.json` (recommended)
-- `ELSEVIER_API_KEY`, `WOS_API_KEY`, `SPRINGER_meta_API_KEY`, `SPRINGER_OA_API_KEY`
-- `LLAMAPARSE_API_KEY`, `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`
-- `ACADEMIC_ETIQUETTE_EMAIL`
+- `grados` is launched with `--config ${CLAUDE_PLUGIN_DATA}/mcp-config.json`
+- `local-rag` is launched with `BASE_DIR=${CLAUDE_PLUGIN_DATA}/papers`
+- `playwright` is launched in headless mode
 
-Run `/grados:setup` for a guided walkthrough, or `/grados:status` to check what's configured.
+Run `/grados:setup` to create `${CLAUDE_PLUGIN_DATA}/mcp-config.json`, edit that file with the API keys you want to use, then run `/reload-plugins` so the bundled MCP servers pick up the updated config. No shell environment variables are required for the default plugin workflow.
+
+Run `/grados:status` to verify the final setup.
 
 ## License 📄
 

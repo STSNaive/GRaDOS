@@ -89,7 +89,38 @@ fetched_at: "2026-03-17T12:00:00.000Z"
 
 ### 安装 GRaDOS
 
-#### 方式 A：npm（推荐） 📦
+#### 方式 A：Claude Code 插件（最省事） 🔌
+
+如果你使用 [Claude Code](https://code.claude.com/)（CLI 或 Desktop），可以把 GRaDOS 安装成 plugin。它会自动注册 GRaDOS、mcp-local-rag 和 Playwright 三个 MCP 服务，无需手工配置。
+
+> Plugin 中运行的是与下文相同的 GRaDOS stdio MCP server，并不是另一套独立的论文读取 API。
+
+**1. 添加 marketplace 并安装：**
+
+```bash
+# 在 Claude Code 中
+/plugin marketplace add https://github.com/STSNaive/GRaDOS.git
+/plugin install grados@grados-marketplace
+```
+
+**2. 运行 setup 命令：**
+
+```
+/grados:setup
+```
+
+这会生成 `${CLAUDE_PLUGIN_DATA}/mcp-config.json`，并引导你填写 API Key。Plugin 还会自动把 `local-rag` 指向 `${CLAUDE_PLUGIN_DATA}/papers`，所以默认流程下不需要再配置环境变量或 shell profile。
+
+**3. 重载并验证：**
+
+```
+/reload-plugins
+/grados:status
+```
+
+> **Plugin 内含内容：** GRaDOS MCP server、[mcp-local-rag](https://github.com/shinpr/mcp-local-rag)（本地论文检索）、[Playwright MCP](https://github.com/microsoft/playwright-mcp)（浏览器辅助下载 PDF）、研究工作流 skill，以及 setup/status 命令。
+
+#### 方式 B：npm（手动配置） 📦
 
 ```bash
 npm install -g grados
@@ -101,7 +132,7 @@ grados --init
 # （所有选项见 mcp-config.example.json）
 ```
 
-#### 方式 B：源码安装 🛠️
+#### 方式 C：源码安装 🛠️
 
 ```bash
 git clone https://github.com/STSNaive/GRaDOS.git
@@ -490,14 +521,7 @@ env = { GRADOS_CONFIG_PATH = "D:/Projects/Papers/mcp-config.json" }
 
 ## Claude Code 插件 🔌
 
-GRaDOS 可以作为 Claude Code 插件使用，开箱即用地提供 skill、斜杠命令和 MCP 服务配置。
-
-### 通过 Marketplace 安装
-
-```bash
-/plugin marketplace add https://github.com/STSNaive/GRaDOS.git
-/plugin install grados@grados-marketplace
-```
+GRaDOS 可以作为 Claude Code 插件使用，开箱即用地提供 skill、斜杠命令和 MCP 服务配置。安装方式请使用前文“安装 > 方式 A”中的那一套命令。
 
 ### 包含内容
 
@@ -508,16 +532,17 @@ GRaDOS 可以作为 Claude Code 插件使用，开箱即用地提供 skill、斜
 | **命令** (`/grados:status`) | 诊断检查：服务状态、API Key、存储目录 |
 | **MCP 服务** | 自动配置的 `grados` 服务，通过 `npx -y grados` 启动 |
 
-### 配置 API Key
+### 配置如何工作
 
-安装插件后，设置你需要的 API Key 环境变量。插件的 `.mcp.json` 中声明了所有支持的环境变量（默认值为空），填入你需要的即可：
+打包进 plugin 的 `.mcp.json` 会这样连线：
 
-- `GRADOS_CONFIG_PATH` — 指向你的 `mcp-config.json`（推荐）
-- `ELSEVIER_API_KEY`、`WOS_API_KEY`、`SPRINGER_meta_API_KEY`、`SPRINGER_OA_API_KEY`
-- `LLAMAPARSE_API_KEY`、`ZOTERO_API_KEY`、`ZOTERO_LIBRARY_ID`
-- `ACADEMIC_ETIQUETTE_EMAIL`
+- `grados` 通过 `--config ${CLAUDE_PLUGIN_DATA}/mcp-config.json` 启动
+- `local-rag` 通过 `BASE_DIR=${CLAUDE_PLUGIN_DATA}/papers` 启动
+- `playwright` 以 headless 模式启动
 
-运行 `/grados:setup` 可以获得引导式配置，运行 `/grados:status` 查看当前配置状态。
+先运行 `/grados:setup` 生成 `${CLAUDE_PLUGIN_DATA}/mcp-config.json`，再在这个文件里填写你要用的 API Key，之后执行 `/reload-plugins` 让内置 MCP 服务重新加载配置。默认 plugin 流程下不需要再单独设置 shell 环境变量。
+
+运行 `/grados:status` 可以查看最终配置状态。
 
 ## License 📄
 
