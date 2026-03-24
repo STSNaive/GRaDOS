@@ -36,7 +36,7 @@ GRaDOS is designed to sit inside an agent workflow:
 | Server | Tool | Description |
 |---|---|---|
 | GRaDOS | `search_academic_papers` | Waterfall search across Scopus, Web of Science, Springer, Crossref, and PubMed. Deduplicates by DOI. |
-| GRaDOS | `extract_paper_full_text` | 4-stage fetch + 3-stage parse + QA validation. Returns Markdown and auto-saves `.md` to the papers directory. |
+| GRaDOS | `extract_paper_full_text` | 4-stage fetch + 3-stage parse + QA validation. Auto-saves full-text `.md` to the papers directory and returns a **compact summary** (title, DOI, file path, opening paragraphs) to keep the agent's context window clean. Use the Read tool to access the full text on demand. |
 | GRaDOS | `parse_pdf_file` | Parse a local PDF via configured waterfall (LlamaParse → Marker → Native). Use after downloading PDFs with Playwright MCP. |
 | GRaDOS | `save_paper_to_zotero` | Saves cited paper metadata to Zotero web library via API. Called after synthesis for papers used in the answer. |
 | mcp-local-rag | `query_documents` | Semantic + keyword search over locally indexed papers. |

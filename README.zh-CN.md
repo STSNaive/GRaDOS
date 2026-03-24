@@ -36,7 +36,7 @@ GRaDOS 通常运行在一个 agent 工作流里：
 | 服务 | 工具 | 说明 |
 |---|---|---|
 | GRaDOS | `search_academic_papers` | 按优先级串行搜索 Scopus、Web of Science、Springer、Crossref、PubMed，并按 DOI 去重 |
-| GRaDOS | `extract_paper_full_text` | 按 4 级抓取策略 + 3 级解析策略提取全文，并做 QA 校验 |
+| GRaDOS | `extract_paper_full_text` | 按 4 级抓取策略 + 3 级解析策略提取全文，并做 QA 校验。全文自动保存到 `papers/` 目录，返回给 agent 的是**紧凑摘要**（标题、DOI、文件路径、开头段落），以减少上下文窗口占用。需要全文时可通过 Read 工具按需读取 |
 | GRaDOS | `parse_pdf_file` | 解析本地 PDF 文件，复用已有的解析 waterfall（LlamaParse → Marker → Native）。用于浏览器辅助下载 PDF 后的解析 |
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 保存已引用论文的元数据 |
 | mcp-local-rag | `query_documents` | 对本地已索引论文做语义检索和关键词检索 |
