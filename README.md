@@ -35,7 +35,7 @@ GRaDOS is designed to sit inside an agent workflow:
 
 | Server | Tool | Description |
 |---|---|---|
-| GRaDOS | `search_academic_papers` | Waterfall search across Scopus, Web of Science, Springer, Crossref, and PubMed. Deduplicates by DOI. |
+| GRaDOS | `search_academic_papers` | Waterfall search across Scopus, Web of Science, Springer, Crossref, and PubMed. Deduplicates by DOI and can continue later with `continuation_token` to fetch more unseen papers. |
 | GRaDOS | `extract_paper_full_text` | 4-stage fetch + 3-stage parse + QA validation. Auto-saves full-text `.md` to the papers directory and returns a **compact, non-citable saved-paper summary** (title, DOI, canonical path/URI, short preview, section headings) to keep the agent's context window clean. |
 | GRaDOS | `parse_pdf_file` | Parse a local PDF via configured waterfall (LlamaParse → Marker → Native). Use after downloading PDFs with Playwright MCP. If a DOI is provided, it returns the same saved-paper summary contract as `extract_paper_full_text`. |
 | GRaDOS | `read_saved_paper` | Canonical deep-reading tool for saved papers. Accepts `doi`, `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis and citation verification. |
@@ -448,6 +448,8 @@ The `search.order` array controls which databases are queried first. GRaDOS sear
   }
 }
 ```
+
+To continue the same search later without repeating the same top results, call `search_academic_papers` again with the same `query` plus the `next_continuation_token` returned in `structuredContent`. Each follow-up call returns the next batch of unseen papers until `has_more` becomes `false`.
 
 ### Extraction Waterfall 🌊
 

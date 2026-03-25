@@ -83,6 +83,9 @@ async function run() {
 
         const searchTool = tools.find((tool) => tool.name === 'search_academic_papers');
         assert.equal(searchTool?.inputSchema?.properties?.limit?.default, 15, 'search limit default should be 15');
+        assert.equal(searchTool?.inputSchema?.properties?.continuation_token?.type, 'string', 'search continuation token should be exposed in the tool schema');
+        assert.equal(searchTool?.outputSchema?.properties?.has_more?.type, 'boolean', 'search output should expose has_more');
+        assert.equal(searchTool?.outputSchema?.properties?.next_continuation_token?.type, 'string', 'search output should expose next_continuation_token');
 
         const { resources } = await client.listResources();
         assert(resources.some((resource) => resource.uri === 'grados://papers/index'), 'papers index resource should be listed');
@@ -98,6 +101,8 @@ async function run() {
         const toolsMirror = JSON.parse(toolsResource.contents[0].text);
         const mirroredSearchTool = toolsMirror.find((tool) => tool.name === 'search_academic_papers');
         assert.equal(mirroredSearchTool?.inputSchema?.properties?.limit?.default, 15, 'tools resource should mirror search default');
+        assert.equal(mirroredSearchTool?.inputSchema?.properties?.continuation_token?.type, 'string', 'tools resource should mirror continuation_token input');
+        assert.equal(mirroredSearchTool?.outputSchema?.properties?.has_more?.type, 'boolean', 'tools resource should mirror has_more output');
 
         const paperIndexResource = await client.readResource({ uri: 'grados://papers/index' });
         const paperIndex = JSON.parse(paperIndexResource.contents[0].text);
