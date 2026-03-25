@@ -17,6 +17,14 @@ import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import FormData from 'form-data';
 import { PDFParse } from 'pdf-parse';
 import { spawn } from 'node:child_process';
+import {
+    runResumableSearch,
+    type PaperMetadata,
+    type SearchSourceAdapter,
+    type SearchSourceName,
+    type SearchSourcePage,
+    type SearchSourceState
+} from "./resumable-search.js";
 
 const puppeteer = addExtra(puppeteerVanilla as any);
 puppeteer.use(StealthPlugin());
@@ -188,18 +196,6 @@ const server = new Server(
     }
 );
 
-// --- Types ---
-interface PaperMetadata {
-    title: string;
-    doi: string;
-    abstract?: string;
-    publisher?: string;
-    authors?: string[];
-    year?: string;
-    url?: string;
-    source: string;
-}
-
 type JsonSchema = Record<string, unknown>;
 
 interface ToolRegistryEntry {
@@ -272,6 +268,11 @@ const PAPER_METADATA_SCHEMA: JsonSchema = {
     additionalProperties: false
 };
 
+const SEARCH_SOURCE_NAME_SCHEMA: JsonSchema = {
+    type: "string",
+    enum: ["Elsevier", "Springer", "WebOfScience", "Crossref", "PubMed"]
+};
+
 const SEARCH_INPUT_SCHEMA: JsonSchema = {
     type: "object",
     properties: {
@@ -283,6 +284,10 @@ const SEARCH_INPUT_SCHEMA: JsonSchema = {
             type: "number",
             description: "Maximum number of results to return (default: 15).",
             default: 15
+        },
+        continuation_token: {
+            type: "string",
+            description: "Opaque token returned by a previous search_academic_papers call. Reuse it with the same query to continue fetching new papers without repeats."
         }
     },
     required: ["query"],
@@ -297,9 +302,26 @@ const SEARCH_OUTPUT_SCHEMA: JsonSchema = {
         results: {
             type: "array",
             items: PAPER_METADATA_SCHEMA
+        },
+        has_more: {
+            type: "boolean"
+        },
+        exhausted_sources: {
+            type: "array",
+            items: SEARCH_SOURCE_NAME_SCHEMA
+        },
+        next_continuation_token: {
+            type: "string"
+        },
+        warnings: {
+            type: "array",
+            items: { type: "string" }
+        },
+        continuation_applied: {
+            type: "boolean"
         }
     },
-    required: ["query", "limit", "results"],
+    required: ["query", "limit", "results", "has_more", "exhausted_sources", "warnings", "continuation_applied"],
     additionalProperties: false
 };
 
@@ -516,10 +538,10 @@ const ZOTERO_SAVE_OUTPUT_SCHEMA: JsonSchema = {
 const TOOL_REGISTRY: ToolRegistryEntry[] = [
     {
         name: "search_academic_papers",
-        description: "Searches multiple academic databases sequentially in priority order (Crossref, PubMed, WoS, Elsevier, Springer) for a given query and returns a deduplicated list of papers with metadata (DOIs, Abstracts).",
-        purpose: "Search academic databases and return deduplicated paper metadata",
-        returns: "Structured paper metadata plus a markdown-formatted screening list.",
-        commonFailures: ["No API key for a specific database (gracefully skipped)", "Network timeout", "Database rate limiting"],
+        description: "Searches multiple academic databases sequentially in priority order (Crossref, PubMed, WoS, Elsevier, Springer) for a given query and returns a deduplicated list of papers with metadata (DOIs, Abstracts). Supports resumable continuation via continuation_token.",
+        purpose: "Search academic databases and return deduplicated paper metadata, with optional continuation for fetching more unseen papers later",
+        returns: "Structured paper metadata plus resumable-search metadata and a markdown-formatted screening list.",
+        commonFailures: ["No API key for a specific database (gracefully skipped)", "Network timeout", "Database rate limiting", "Invalid or mismatched continuation_token"],
         inputSchema: SEARCH_INPUT_SCHEMA,
         outputSchema: SEARCH_OUTPUT_SCHEMA
     },
@@ -615,17 +637,70 @@ function buildToolMirrorEntries() {
     }));
 }
 
-// Mock Search Functions (Require API Keys)
-async function searchWebOfScience(query: string, limit: number): Promise<PaperMetadata[]> {
+interface WebOfScienceSearchState extends SearchSourceState {
+    page: number;
+    pageSize: number;
+}
+
+interface ElsevierSearchState extends SearchSourceState {
+    start: number;
+    pageSize: number;
+}
+
+interface SpringerSearchState extends SearchSourceState {
+    fetched: boolean;
+    pageSize: number;
+}
+
+interface CrossrefSearchState extends SearchSourceState {
+    cursor: string;
+    rows: number;
+    pagesFetched: number;
+    cursorIssuedAt: string;
+}
+
+interface PubMedSearchState extends SearchSourceState {
+    retstart: number;
+    pageSize: number;
+    totalCount?: number;
+}
+
+function clampSearchPageSize(limit: number, maxPageSize: number): number {
+    if (!Number.isFinite(limit) || limit <= 0) return Math.min(15, maxPageSize);
+    return Math.max(1, Math.min(Math.floor(limit), maxPageSize));
+}
+
+function filterPapersWithDoi(papers: PaperMetadata[]): PaperMetadata[] {
+    return papers.filter((paper) => typeof paper.doi === "string" && paper.doi.trim().length > 0);
+}
+
+async function searchWebOfSciencePage(params: {
+    query: string;
+    limit: number;
+    state: SearchSourceState;
+}): Promise<SearchSourcePage> {
     const apiKey = getApiKey("WOS_API_KEY");
-    if (!apiKey) return [];
+    if (!apiKey) {
+        return {
+            papers: [],
+            nextState: params.state,
+            exhausted: true,
+            warnings: ["WebOfScience search skipped: WOS_API_KEY not configured."]
+        };
+    }
+
+    const state = params.state as unknown as WebOfScienceSearchState;
+    const page = Number.isFinite(state.page) && state.page > 0 ? Math.floor(state.page) : 1;
+    const pageSize = clampSearchPageSize(state.pageSize ?? params.limit, 50);
+
     try {
         const response = await axios.get("https://api.clarivate.com/apis/wos-starter/v1/documents", {
-            params: { q: `TS=(${query})`, limit: limit },
+            params: { q: `TS=(${params.query})`, page, limit: pageSize },
             headers: { "X-ApiKey": apiKey }
         });
         const hits = response.data?.hits || [];
-        return hits.map((hit: any) => ({
+        const totalResults = Number(response.data?.metadata?.total || 0);
+        const papers = filterPapersWithDoi(hits.map((hit: any) => ({
             title: hit.title || "Unknown Title",
             doi: hit.identifiers?.doi || "",
             abstract: hit.abstract,
@@ -634,20 +709,55 @@ async function searchWebOfScience(query: string, limit: number): Promise<PaperMe
             year: hit.source?.publishYear?.toString(),
             url: hit.links?.record,
             source: "Web of Science"
-        })).filter((p: PaperMetadata) => p.doi !== "");
-    } catch(e) { console.error("WoS search failed", e); return []; }
+        })));
+
+        const exhausted = hits.length === 0
+            || hits.length < pageSize
+            || (totalResults > 0 && page * pageSize >= totalResults);
+
+        return {
+            papers,
+            nextState: { page: page + 1, pageSize },
+            exhausted
+        };
+    } catch (e) {
+        console.error("WoS search failed", e);
+        return {
+            papers: [],
+            nextState: state,
+            exhausted: true,
+            warnings: ["WebOfScience search failed; that source has been marked exhausted for this continuation flow."]
+        };
+    }
 }
 
-async function searchElsevier(query: string, limit: number): Promise<PaperMetadata[]> {
+async function searchElsevierPage(params: {
+    query: string;
+    limit: number;
+    state: SearchSourceState;
+}): Promise<SearchSourcePage> {
     const apiKey = getApiKey("ELSEVIER_API_KEY");
-    if (!apiKey) return [];
+    if (!apiKey) {
+        return {
+            papers: [],
+            nextState: params.state,
+            exhausted: true,
+            warnings: ["Elsevier search skipped: ELSEVIER_API_KEY not configured."]
+        };
+    }
+
+    const state = params.state as unknown as ElsevierSearchState;
+    const start = Number.isFinite(state.start) && state.start >= 0 ? Math.floor(state.start) : 0;
+    const pageSize = clampSearchPageSize(state.pageSize ?? params.limit, 25);
+
     try {
         const response = await axios.get("https://api.elsevier.com/content/search/scopus", {
-            params: { query: query, count: Math.min(limit, 25), view: "COMPLETE" },
+            params: { query: params.query, count: pageSize, start, view: "COMPLETE" },
             headers: { "X-ELS-APIKey": apiKey, "Accept": "application/json" }
         });
         const entries = response.data?.["search-results"]?.entry || [];
-        return entries.map((item: any) => ({
+        const totalResults = Number(response.data?.["search-results"]?.["opensearch:totalResults"] || 0);
+        const papers = filterPapersWithDoi(entries.map((item: any) => ({
             title: item["dc:title"] || "Unknown Title",
             doi: item["prism:doi"],
             abstract: item["dc:description"],
@@ -656,19 +766,59 @@ async function searchElsevier(query: string, limit: number): Promise<PaperMetada
             year: item["prism:coverDate"]?.split("-")?.[0],
             url: item["prism:url"],
             source: "Elsevier (Scopus)"
-        })).filter((p: PaperMetadata) => !!p.doi);
-    } catch(e) { console.error("Elsevier search failed", e); return []; }
+        })));
+
+        const exhausted = entries.length === 0
+            || entries.length < pageSize
+            || (totalResults > 0 && start + pageSize >= totalResults);
+
+        return {
+            papers,
+            nextState: { start: start + pageSize, pageSize },
+            exhausted
+        };
+    } catch (e) {
+        console.error("Elsevier search failed", e);
+        return {
+            papers: [],
+            nextState: state,
+            exhausted: true,
+            warnings: ["Elsevier search failed; that source has been marked exhausted for this continuation flow."]
+        };
+    }
 }
 
-async function searchSpringer(query: string, limit: number): Promise<PaperMetadata[]> {
+async function searchSpringerPage(params: {
+    query: string;
+    limit: number;
+    state: SearchSourceState;
+}): Promise<SearchSourcePage> {
     const apiKey = getApiKey("SPRINGER_meta_API_KEY");
-    if (!apiKey) return [];
+    if (!apiKey) {
+        return {
+            papers: [],
+            nextState: params.state,
+            exhausted: true,
+            warnings: ["Springer search skipped: SPRINGER_meta_API_KEY not configured."]
+        };
+    }
+
+    const state = params.state as unknown as SpringerSearchState;
+    if (state.fetched) {
+        return {
+            papers: [],
+            nextState: state,
+            exhausted: true
+        };
+    }
+
+    const pageSize = clampSearchPageSize(state.pageSize ?? params.limit, 50);
     try {
         const response = await axios.get("https://api.springernature.com/meta/v2/json", {
-            params: { q: `keyword:"${query}"`, p: limit, api_key: apiKey }
+            params: { q: `keyword:"${params.query}"`, p: pageSize, api_key: apiKey }
         });
         const records = response.data?.records || [];
-        return records.map((item: any) => ({
+        const papers = filterPapersWithDoi(records.map((item: any) => ({
             title: item.title || "Unknown Title",
             doi: item.doi,
             abstract: item.abstract,
@@ -677,59 +827,114 @@ async function searchSpringer(query: string, limit: number): Promise<PaperMetada
             year: item.publicationDate?.split("-")?.[0],
             url: item.url?.[0]?.value,
             source: "Springer Nature"
-        })).filter((p: PaperMetadata) => !!p.doi);
-    } catch(e) { console.error("Springer search failed", e); return []; }
+        })));
+
+        return {
+            papers,
+            nextState: { fetched: true, pageSize },
+            exhausted: true,
+            warnings: [
+                "Springer continuation currently uses a conservative single-page strategy until its latest public pagination contract is re-verified."
+            ]
+        };
+    } catch (e) {
+        console.error("Springer search failed", e);
+        return {
+            papers: [],
+            nextState: { fetched: true, pageSize },
+            exhausted: true,
+            warnings: ["Springer search failed; that source has been marked exhausted for this continuation flow."]
+        };
+    }
 }
 
-// Real Implementations (Open / Public APIs)
-async function searchCrossref(query: string, limit: number): Promise<PaperMetadata[]> {
+async function searchCrossrefPage(params: {
+    query: string;
+    limit: number;
+    state: SearchSourceState;
+    now: Date;
+}): Promise<SearchSourcePage> {
+    const state = params.state as unknown as CrossrefSearchState;
+    const cursor = typeof state.cursor === "string" && state.cursor.length > 0 ? state.cursor : "*";
+    const rows = clampSearchPageSize(state.rows ?? params.limit, 100);
+
     try {
         const etiquetteEmail = getEtiquetteEmail();
         const response = await axios.get("https://api.crossref.org/works", {
             params: {
-                query: query,
-                rows: limit,
+                query: params.query,
+                rows,
+                cursor,
                 select: "DOI,title,abstract,publisher,author,published-print,URL"
             },
             headers: {
-                // Etiquette for Crossref API, but still maintaining stealth
-                "User-Agent": `GRaDOS/1.0 (mailto:${etiquetteEmail}) Mozilla/5.0 Chrome/120.0.0.0` 
+                "User-Agent": `GRaDOS/1.0 (mailto:${etiquetteEmail}) Mozilla/5.0 Chrome/120.0.0.0`
             }
         });
 
-        if (!response.data?.message?.items) return [];
-
-        return response.data.message.items.map((item: any) => ({
+        const items = response.data?.message?.items || [];
+        const nextCursor = response.data?.message?.["next-cursor"];
+        const papers = filterPapersWithDoi(items.map((item: any) => ({
             title: item.title?.[0] || "Unknown Title",
             doi: item.DOI,
-            abstract: item.abstract ? item.abstract.replace(/(<([^>]+)>)/gi, "") : undefined, // Strip basic JATS XML tags if present
+            abstract: item.abstract ? item.abstract.replace(/(<([^>]+)>)/gi, "") : undefined,
             publisher: item.publisher,
             authors: item.author?.map((a: any) => `${a.given} ${a.family}`),
             year: item["published-print"]?.["date-parts"]?.[0]?.[0]?.toString(),
             url: item.URL,
             source: "Crossref"
-        }));
+        })));
+
+        return {
+            papers,
+            nextState: {
+                cursor: typeof nextCursor === "string" && nextCursor.length > 0 ? nextCursor : cursor,
+                rows,
+                pagesFetched: (Number.isFinite(state.pagesFetched) ? Number(state.pagesFetched) : 0) + 1,
+                cursorIssuedAt: params.now.toISOString()
+            },
+            exhausted: items.length === 0 || items.length < rows || !nextCursor
+        };
     } catch (e) {
         console.error("Crossref search failed", e);
-        return [];
+        return {
+            papers: [],
+            nextState: state,
+            exhausted: true,
+            warnings: ["Crossref search failed; that source has been marked exhausted for this continuation flow."]
+        };
     }
 }
 
-async function searchPubMed(query: string, limit: number): Promise<PaperMetadata[]> {
+async function searchPubMedPage(params: {
+    query: string;
+    limit: number;
+    state: SearchSourceState;
+}): Promise<SearchSourcePage> {
+    const state = params.state as unknown as PubMedSearchState;
+    const retstart = Number.isFinite(state.retstart) && state.retstart >= 0 ? Math.floor(state.retstart) : 0;
+    const pageSize = clampSearchPageSize(state.pageSize ?? params.limit, 100);
+
     try {
-        // 1. ESearch to get PubMed IDs (PMIDs)
         const searchRes = await axios.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi", {
             params: {
                 db: "pubmed",
-                term: query,
+                term: params.query,
                 retmode: "json",
-                retmax: limit
+                retstart,
+                retmax: pageSize
             }
         });
         const pmids = searchRes.data?.esearchresult?.idlist;
-        if (!pmids || pmids.length === 0) return [];
+        const totalCount = Number(searchRes.data?.esearchresult?.count || state.totalCount || 0);
+        if (!pmids || pmids.length === 0) {
+            return {
+                papers: [],
+                nextState: { retstart, pageSize, totalCount },
+                exhausted: true
+            };
+        }
 
-        // 2. ESummary to get metadata for those PMIDs
         const summaryRes = await axios.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi", {
             params: {
                 db: "pubmed",
@@ -738,7 +943,6 @@ async function searchPubMed(query: string, limit: number): Promise<PaperMetadata
             }
         });
 
-        // 3. EFetch (XML) to get abstracts (not available in ESummary)
         const abstractMap = new Map<string, string>();
         try {
             const fetchRes = await axios.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi", {
@@ -753,52 +957,89 @@ async function searchPubMed(query: string, limit: number): Promise<PaperMetadata
             const articleBlocks = xml.split(/<PubmedArticle>/g).slice(1);
             for (const block of articleBlocks) {
                 const pmidMatch = block.match(/<PMID[^>]*>(\d+)<\/PMID>/);
-                // Handle both single and structured AbstractText elements
                 const abstractMatch = block.match(/<Abstract>([\s\S]*?)<\/Abstract>/);
-                if (pmidMatch && abstractMatch) {
-                    const rawAbstract = abstractMatch[1]
-                        .replace(/<\/?AbstractText[^>]*>/g, ' ')
-                        .replace(/<[^>]+>/g, '')
-                        .replace(/\s+/g, ' ')
-                        .trim();
-                    if (rawAbstract.length > 0) {
-                        abstractMap.set(pmidMatch[1], rawAbstract);
-                    }
+                if (!pmidMatch || !abstractMatch) continue;
+
+                const rawAbstract = abstractMatch[1]
+                    .replace(/<\/?AbstractText[^>]*>/g, " ")
+                    .replace(/<[^>]+>/g, "")
+                    .replace(/\s+/g, " ")
+                    .trim();
+                if (rawAbstract.length > 0) {
+                    abstractMap.set(pmidMatch[1], rawAbstract);
                 }
             }
-        } catch(e) {
+        } catch (e) {
             console.error("PubMed EFetch for abstracts failed, continuing without abstracts.", e);
         }
 
-        const results: PaperMetadata[] = [];
         const resultDict = summaryRes.data?.result || {};
-
+        const papers: PaperMetadata[] = [];
         for (const pmid of pmids) {
             const paper = resultDict[pmid];
             if (!paper) continue;
-            let doi = "";
+
             const articleIds = paper.articleids || [];
             const doiObj = articleIds.find((idObj: any) => idObj.idtype === "doi");
-            if (doiObj) doi = doiObj.value;
+            const doi = doiObj?.value || "";
+            if (!doi) continue;
 
-            if (doi) {
-                 results.push({
-                    title: paper.title,
-                    doi: doi,
-                    abstract: abstractMap.get(pmid),
-                    publisher: paper.fulljournalname,
-                    authors: paper.authors?.map((a: any) => a.name),
-                    year: paper.pubdate?.split(" ")?.[0],
-                    url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
-                    source: "PubMed"
-                });
-            }
+            papers.push({
+                title: paper.title,
+                doi,
+                abstract: abstractMap.get(pmid),
+                publisher: paper.fulljournalname,
+                authors: paper.authors?.map((a: any) => a.name),
+                year: paper.pubdate?.split(" ")?.[0],
+                url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+                source: "PubMed"
+            });
         }
-        return results;
+
+        return {
+            papers,
+            nextState: { retstart: retstart + pageSize, pageSize, totalCount },
+            exhausted: pmids.length === 0 || pmids.length < pageSize || (totalCount > 0 && retstart + pageSize >= totalCount)
+        };
     } catch (e) {
         console.error("PubMed search failed", e);
-        return [];
+        return {
+            papers: [],
+            nextState: state,
+            exhausted: true,
+            warnings: ["PubMed search failed; that source has been marked exhausted for this continuation flow."]
+        };
     }
+}
+
+function buildSearchAdapters(): Partial<Record<SearchSourceName, SearchSourceAdapter>> {
+    return {
+        WebOfScience: {
+            initializeState: ({ limit }) => ({ page: 1, pageSize: clampSearchPageSize(limit, 50) }),
+            fetchPage: ({ query, limit, state }) => searchWebOfSciencePage({ query, limit, state })
+        },
+        Elsevier: {
+            initializeState: ({ limit }) => ({ start: 0, pageSize: clampSearchPageSize(limit, 25) }),
+            fetchPage: ({ query, limit, state }) => searchElsevierPage({ query, limit, state })
+        },
+        Springer: {
+            initializeState: ({ limit }) => ({ fetched: false, pageSize: clampSearchPageSize(limit, 50) }),
+            fetchPage: ({ query, limit, state }) => searchSpringerPage({ query, limit, state })
+        },
+        Crossref: {
+            initializeState: ({ limit, now }) => ({
+                cursor: "*",
+                rows: clampSearchPageSize(limit, 100),
+                pagesFetched: 0,
+                cursorIssuedAt: now.toISOString()
+            }),
+            fetchPage: ({ query, limit, state, now }) => searchCrossrefPage({ query, limit, state, now })
+        },
+        PubMed: {
+            initializeState: ({ limit }) => ({ retstart: 0, pageSize: clampSearchPageSize(limit, 100) }),
+            fetchPage: ({ query, limit, state }) => searchPubMedPage({ query, limit, state })
+        }
+    };
 }
 
 // Tool Listing
@@ -1851,62 +2092,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === "search_academic_papers") {
         const query = String(args?.query || "");
-        const limit = Number(args?.limit || 15);
+        const requestedLimit = Number(args?.limit ?? 15);
+        const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? Math.floor(requestedLimit) : 15;
+        const continuationToken = args?.continuation_token ? String(args.continuation_token) : undefined;
 
         // DEFAULT CONFIG IF NOT SET
         const searchOrder = config?.search?.order || ["Elsevier", "Springer", "WebOfScience", "PubMed", "Crossref"];
         const searchEnabled = config?.search?.enabled || {
              "Elsevier": true, "Springer": true, "WebOfScience": true, "Crossref": true, "PubMed": true
         };
+        const adapters = buildSearchAdapters();
 
-        const serviceMap: { [key: string]: (q: string, l: number) => Promise<PaperMetadata[]> } = {
-            "WebOfScience": searchWebOfScience,
-            "Elsevier": searchElsevier,
-            "Springer": searchSpringer,
-            "Crossref": searchCrossref,
-            "PubMed": searchPubMed
-        };
-
-        // WATERFALL SEARCH: search sources in priority order, deduplicate incrementally, stop when we have enough
-        const uniquePapersMap = new Map<string, PaperMetadata>();
-
-        for (const serviceName of searchOrder) {
-            if (searchEnabled[serviceName] === false) continue;
-
-            const searchFunc = serviceMap[serviceName];
-            if (!searchFunc) continue;
-
-            console.error(`Searching ${serviceName}...`);
-            try {
-                const results = await searchFunc(query, limit);
-                // Incrementally deduplicate by DOI (prefer entries with abstracts)
-                for (const paper of results) {
-                    const lowerDoi = paper.doi.toLowerCase();
-                    if (!uniquePapersMap.has(lowerDoi) || (!uniquePapersMap.get(lowerDoi)?.abstract && paper.abstract)) {
-                        uniquePapersMap.set(lowerDoi, paper);
-                    }
-                }
-                console.error(`${serviceName} returned ${results.length} results. Unique total: ${uniquePapersMap.size}.`);
-
-                // Stop as soon as we have enough unique papers
-                if (uniquePapersMap.size >= limit) {
-                    console.error(`Reached limit (${limit} unique). Skipping remaining sources.`);
-                    break;
-                }
-            } catch (err) {
-                console.error(`Error searching ${serviceName}:`, err);
-            }
+        let searchResult;
+        try {
+            searchResult = await runResumableSearch({
+                query,
+                limit,
+                continuationToken,
+                searchOrder,
+                searchEnabled,
+                adapters
+            });
+        } catch (e: any) {
+            return {
+                isError: true,
+                content: [{ type: "text", text: `Error: ${e.message}` }]
+            };
         }
 
-        let finalResults = Array.from(uniquePapersMap.values());
-
-        // Trim to limit
-        if (finalResults.length > limit) {
-             finalResults = finalResults.slice(0, limit);
-        }
+        const finalResults = searchResult.results;
 
         // Format as Markdown for the LLM
-        let formattedString = `Found ${finalResults.length} unique papers for query: "${query}"\n\n`;
+        let formattedString = `Found ${finalResults.length} new unique papers for query: "${query}"\n\n`;
         finalResults.forEach((p, index) => {
             formattedString += `### ${index + 1}. ${p.title}\n`;
             formattedString += `- **DOI:** ${p.doi}\n`;
@@ -1918,7 +2135,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
 
         if (finalResults.length === 0) {
-             formattedString = `No academic papers found for query: "${query}". Please broaden your search terms.`;
+             formattedString = `No new academic papers found for query: "${query}".`;
+        }
+
+        formattedString += `---\n`;
+        formattedString += `- **Has More:** ${searchResult.hasMore ? "Yes" : "No"}\n`;
+        if (searchResult.exhaustedSources.length > 0) {
+            formattedString += `- **Exhausted Sources:** ${searchResult.exhaustedSources.join(", ")}\n`;
+        }
+        if (searchResult.hasMore) {
+            formattedString += `- **Next Step:** Call \`search_academic_papers\` again with the same query and the returned \`next_continuation_token\` from structuredContent.\n`;
+        }
+        if (searchResult.warnings.length > 0) {
+            formattedString += `- **Warnings:** ${searchResult.warnings.join(" | ")}\n`;
         }
 
         return {
@@ -1931,7 +2160,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             structuredContent: {
                 query,
                 limit,
-                results: finalResults
+                results: finalResults,
+                has_more: searchResult.hasMore,
+                exhausted_sources: searchResult.exhaustedSources,
+                next_continuation_token: searchResult.nextContinuationToken,
+                warnings: searchResult.warnings,
+                continuation_applied: searchResult.continuationApplied
             }
         };
     } else if (name === "extract_paper_full_text") {

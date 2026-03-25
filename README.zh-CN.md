@@ -35,7 +35,7 @@ GRaDOS 通常运行在一个 agent 工作流里：
 
 | 服务 | 工具 | 说明 |
 |---|---|---|
-| GRaDOS | `search_academic_papers` | 按优先级串行搜索 Scopus、Web of Science、Springer、Crossref、PubMed，并按 DOI 去重 |
+| GRaDOS | `search_academic_papers` | 按优先级串行搜索 Scopus、Web of Science、Springer、Crossref、PubMed，并按 DOI 去重；可通过 `continuation_token` 续搜下一批未见论文 |
 | GRaDOS | `extract_paper_full_text` | 按 4 级抓取策略 + 3 级解析策略提取全文，并做 QA 校验。全文自动保存到 `papers/` 目录，返回给 agent 的是**紧凑且不可直接引用的已保存论文摘要**（标题、DOI、规范路径/URI、短 preview、section headings），以减少上下文窗口占用 |
 | GRaDOS | `parse_pdf_file` | 解析本地 PDF 文件，复用已有的解析 waterfall（LlamaParse → Marker → Native）。用于浏览器辅助下载 PDF 后的解析；如果提供 DOI，则返回与 `extract_paper_full_text` 相同的已保存论文摘要契约 |
 | GRaDOS | `read_saved_paper` | 已保存论文的标准深读工具。接受 `doi`、`safe_doi` 或 `grados://papers/{safe_doi}`，返回用于综合和引文核查的段落窗口 |
@@ -452,6 +452,8 @@ Crossref、PubMed、Sci-Hub、Unpaywall 不需要 API Key。
   }
 }
 ```
+
+如果第一次筛过一批论文后还需要继续获取“下一批”，请使用相同的 `query` 再次调用 `search_academic_papers`，并传入上一次 `structuredContent` 返回的 `next_continuation_token`。只要 `has_more` 仍然是 `true`，后续调用就会继续返回尚未见过的新论文。
 
 ### 全文抓取优先级 🌊
 
