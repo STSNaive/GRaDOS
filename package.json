@@ -12,9 +12,11 @@
     "marker-worker/worker.py",
     "marker-worker/runtime_env.py",
     "marker-worker/prewarm.py",
+    "marker-worker/verify.py",
     "marker-worker/pyproject.toml",
     "marker-worker/.python-version",
-    "marker-worker/install.ps1"
+    "marker-worker/install.ps1",
+    "marker-worker/install.sh"
   ],
   "scripts": {
     "build": "tsc",
