@@ -187,21 +187,36 @@ Marker uses deep learning models to convert PDFs to Markdown with much better ac
 
 > **Path behavior:** Marker is resolved from `marker-worker/` inside the grados package installation directory (`PACKAGE_ROOT`), not from `cwd` or the config directory. When installed via `npm install -g grados`, it is automatically found at the correct location.
 
-**Prerequisites:** Python 3.12 (required by `marker-pdf`). Optional: NVIDIA GPU + CUDA for significant speedup.
+**Prerequisites:** Python 3.12 (required by `marker-pdf`). Optional: NVIDIA GPU + CUDA on Windows/Linux for acceleration.
 
-**Install:**
+**Install (macOS/Linux):**
+
+```bash
+cd marker-worker
+chmod +x ./install.sh
+./install.sh               # Unified uv install; on Linux with NVIDIA, asks [y/N] about CUDA
+./install.sh --device cpu  # Force CPU
+./install.sh --device cuda # Linux only
+```
+
+**Install (Windows PowerShell):**
 
 ```powershell
 cd marker-worker
-.\install.ps1              # Auto-detect CPU/GPU
-.\install.ps1 -Torch cuda  # Force GPU (CUDA)
-.\install.ps1 -Torch cpu   # Force CPU
+.\install.ps1              # Unified uv install; if NVIDIA is detected, asks [y/N] about CUDA
+.\install.ps1 -Device cpu  # Force CPU
+.\install.ps1 -Device cuda # Force CUDA
 ```
 
-The install script will:
-1. Set up a Python 3.12 virtual environment (via `uv`)
-2. Install Marker and the selected PyTorch backend
-3. Download model weights and fonts to `marker-worker/.cache/` (first run only)
+The install scripts will:
+1. Create or sync a Python 3.12 virtual environment via `uv`
+2. Write `marker-worker/local.env` with `MARKER_PYTHON` and optional `TORCH_DEVICE`
+3. Prewarm Marker models into `marker-worker/.cache/` (unless `--skip-prewarm` is used)
+4. Run `verify.py` so installation only succeeds after GRaDOS can launch the local Marker worker
+
+By default, Marker auto-detects the best torch device. On macOS, this allows PyTorch to use MPS when available. CUDA remains an explicit opt-in path; if a CUDA attempt fails verification, the installer falls back to CPU compatibility so GRaDOS can still use Marker.
+
+> **local.env behavior:** GRaDOS reads `MARKER_PYTHON` from `marker-worker/local.env` first, then falls back to standard `.venv/` interpreter locations. This means both the bundled installer and manual setups can point GRaDOS at the correct Python environment without changing the main config file.
 
 **Enable in config:** After installation, update `mcp-config.json` to enable Marker:
 

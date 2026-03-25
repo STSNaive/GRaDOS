@@ -15,7 +15,7 @@ def configure_runtime_env() -> dict[str, Path]:
     for directory in (cache_root, models_dir, hf_home, torch_home, fonts_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
-    # Load local.env written by install-marker.ps1 (contains TORCH_DEVICE, etc.)
+    # Load local.env written by the marker install scripts (contains TORCH_DEVICE, etc.)
     local_env = root / "local.env"
     if local_env.is_file():
         for line in local_env.read_text(encoding="utf-8").splitlines():

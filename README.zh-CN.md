@@ -189,21 +189,36 @@ Marker 使用深度学习模型把 PDF 转成 Markdown，相比内置 `pdf-parse
 
 > **路径行为：** Marker 会从 grados 包安装目录（`PACKAGE_ROOT`）中的 `marker-worker/` 查找，而不是从 `cwd` 或配置文件目录查找。通过 `npm install -g grados` 安装时，它会自动位于正确位置。
 
-**前置要求：** Python 3.12。可选：NVIDIA GPU + CUDA。
+**前置要求：** Python 3.12。可选：Windows/Linux 上的 NVIDIA GPU + CUDA 加速。
 
-**安装：**
+**安装（macOS/Linux）：**
+
+```bash
+cd marker-worker
+chmod +x ./install.sh
+./install.sh               # 统一走 uv；Linux 检测到 NVIDIA 时会询问是否安装 CUDA 版
+./install.sh --device cpu  # 强制使用 CPU
+./install.sh --device cuda # 仅 Linux
+```
+
+**安装（Windows PowerShell）：**
 
 ```powershell
 cd marker-worker
-.\install.ps1              # 自动检测 CPU/GPU
-.\install.ps1 -Torch cuda  # 强制使用 CUDA
-.\install.ps1 -Torch cpu   # 强制使用 CPU
+.\install.ps1              # 统一走 uv；检测到 NVIDIA 时会询问是否安装 CUDA 版
+.\install.ps1 -Device cpu  # 强制使用 CPU
+.\install.ps1 -Device cuda # 强制使用 CUDA
 ```
 
 安装脚本会：
-1. 创建 Python 3.12 虚拟环境（通过 `uv`）
-2. 安装 Marker 和所选的 PyTorch 后端
-3. 首次运行时把模型权重和字体下载到 `marker-worker/.cache/`
+1. 通过 `uv` 创建或同步 Python 3.12 虚拟环境
+2. 写入 `marker-worker/local.env`，记录 `MARKER_PYTHON` 和可选的 `TORCH_DEVICE`
+3. 把模型权重和字体预热到 `marker-worker/.cache/`（除非使用 `--skip-prewarm`）
+4. 运行 `verify.py` 做真实握手验证，只有 GRaDOS 能成功拉起本地 Marker worker 时才算安装成功
+
+默认情况下，Marker 会自动选择合适的 torch 设备。对 macOS 来说，这意味着在可用时可以自动使用 PyTorch 的 MPS。CUDA 仍然是显式可选分支；如果 CUDA 安装后的验证失败，安装脚本会自动回退到 CPU 兼容模式，确保 GRaDOS 仍然可以使用 Marker。
+
+> **local.env 行为：** GRaDOS 会优先读取 `marker-worker/local.env` 中的 `MARKER_PYTHON`，只有没有配置时才回退到标准 `.venv/` 解释器路径。这样无论是脚本安装还是手工安装，都可以在不改主配置文件的情况下把 GRaDOS 指向正确的 Python 环境。
 
 **启用配置：** 安装完成后，在 `mcp-config.json` 中启用 Marker：
 

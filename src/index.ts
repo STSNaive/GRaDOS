@@ -41,6 +41,61 @@ function readPackageVersion(): string {
 
 const GRADOS_VERSION = readPackageVersion();
 
+function readLocalEnvFile(filePath: string): Record<string, string> {
+    const values: Record<string, string> = {};
+
+    try {
+        const content = fs.readFileSync(filePath, "utf-8");
+        for (const rawLine of content.split(/\r?\n/)) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith("#")) continue;
+            const separatorIndex = line.indexOf("=");
+            if (separatorIndex === -1) continue;
+
+            const key = line.slice(0, separatorIndex).trim();
+            const value = line.slice(separatorIndex + 1).trim();
+            if (key) {
+                values[key] = value;
+            }
+        }
+    } catch {
+        // Marker installation metadata is optional.
+    }
+
+    return values;
+}
+
+function resolveMarkerPython(workerDir: string): string | null {
+    const localEnvPath = path.join(workerDir, "local.env");
+    const localEnv = readLocalEnvFile(localEnvPath);
+    const configuredPython = localEnv.MARKER_PYTHON;
+
+    if (configuredPython) {
+        const resolvedConfiguredPython = path.isAbsolute(configuredPython)
+            ? configuredPython
+            : path.resolve(workerDir, configuredPython);
+        if (fs.existsSync(resolvedConfiguredPython)) {
+            return resolvedConfiguredPython;
+        }
+        console.error(`   [Marker] Configured interpreter not found: ${resolvedConfiguredPython}`);
+    }
+
+    const fallbackCandidates = [
+        path.join(workerDir, ".venv", "bin", "python"),
+        path.join(workerDir, ".venv", "bin", "python3"),
+        path.join(workerDir, ".venv", "Scripts", "python.exe"),
+        path.join(workerDir, ".venv", "Scripts", "python"),
+    ];
+
+    for (const candidate of fallbackCandidates) {
+        if (fs.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
 function handleCliFlags(): void {
     if (process.argv.includes("--version") || process.argv.includes("-v")) {
         console.log(GRADOS_VERSION);
@@ -1620,10 +1675,10 @@ async function parseWithLlamaParse(pdfBuffer: Buffer, fileName: string): Promise
 async function parseWithMarker(pdfBuffer: Buffer, fileName: string, timeoutMs: number = 120000): Promise<string | null> {
     try {
         const workerDir = path.resolve(PACKAGE_ROOT, "marker-worker");
-        const pythonExec = path.join(workerDir, ".venv", "Scripts", "python.exe");
+        const pythonExec = resolveMarkerPython(workerDir);
         const workerPy = path.join(workerDir, "worker.py");
-        if (!fs.existsSync(pythonExec) || !fs.existsSync(workerPy)) {
-            console.error(`   [Marker] Worker is not installed at ${workerDir}.`);
+        if (!pythonExec || !fs.existsSync(workerPy)) {
+            console.error(`   [Marker] Worker is not installed at ${workerDir}. Run the marker install script in marker-worker/.`);
             return null;
         }
 
