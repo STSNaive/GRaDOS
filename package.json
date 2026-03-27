@@ -55,9 +55,7 @@
     "dotenv": "^17.3.1",
     "form-data": "^4.0.5",
     "pdf-parse": "^2.4.5",
-    "puppeteer-core": "^24.40.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-core": "^24.40.0"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

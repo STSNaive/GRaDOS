@@ -11,9 +11,7 @@ import * as dotenv from "dotenv";
 import * as fs from "fs";
 import * as path from "path";
 import * as cheerio from 'cheerio';
-import puppeteerVanilla from 'puppeteer-core';
-import { addExtra } from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import puppeteer from 'puppeteer-core';
 import FormData from 'form-data';
 import { PDFParse } from 'pdf-parse';
 import { spawn } from 'node:child_process';
@@ -25,9 +23,6 @@ import {
     type SearchSourcePage,
     type SearchSourceState
 } from "./resumable-search.js";
-
-const puppeteer = addExtra(puppeteerVanilla as any);
-puppeteer.use(StealthPlugin());
 
 // --- Path Resolution ---
 // PACKAGE_ROOT: where grados is installed (contains marker-worker/, grados-config.example.json, etc.)
@@ -221,9 +216,40 @@ interface PaperSavedSummary {
     char_count: number;
     preview_excerpt: string;
     section_headings: string[];
+    assets_count: number;
+    figures_count: number;
+    tables_count: number;
+    assets_directory_relative_path?: string;
+    assets_manifest_relative_path?: string;
     full_text_saved: true;
     read_required_for_citation: true;
     preview_not_citable: true;
+}
+
+type PaperAssetKind = "figure" | "table" | "graphical_abstract" | "supplementary_material" | "source_data";
+
+interface PaperAssetHint {
+    kind: PaperAssetKind;
+    label: string;
+    ref?: string;
+    caption?: string;
+    source_url?: string;
+    mime_type?: string;
+    note?: string;
+}
+
+interface PaperAssetRecord extends PaperAssetHint {
+    status: "saved" | "metadata_only" | "download_failed";
+    relative_path?: string;
+    absolute_path?: string;
+    file_size_bytes?: number;
+}
+
+interface PaperSaveResult {
+    markdownPath: string;
+    assetRecords: PaperAssetRecord[];
+    assetsDirectoryPath?: string;
+    assetsManifestPath?: string;
 }
 
 interface PaperReadResult {
@@ -340,6 +366,11 @@ const PAPER_SAVED_SUMMARY_SCHEMA: JsonSchema = {
         char_count: { type: "number" },
         preview_excerpt: { type: "string" },
         section_headings: { type: "array", items: { type: "string" } },
+        assets_count: { type: "number" },
+        figures_count: { type: "number" },
+        tables_count: { type: "number" },
+        assets_directory_relative_path: { type: "string" },
+        assets_manifest_relative_path: { type: "string" },
         full_text_saved: { type: "boolean", const: true },
         read_required_for_citation: { type: "boolean", const: true },
         preview_not_citable: { type: "boolean", const: true }
@@ -357,6 +388,9 @@ const PAPER_SAVED_SUMMARY_SCHEMA: JsonSchema = {
         "char_count",
         "preview_excerpt",
         "section_headings",
+        "assets_count",
+        "figures_count",
+        "tables_count",
         "full_text_saved",
         "read_required_for_citation",
         "preview_not_citable"
@@ -547,7 +581,7 @@ const TOOL_REGISTRY: ToolRegistryEntry[] = [
     },
     {
         name: "extract_paper_full_text",
-        description: "Given a DOI, attempts to fetch the full text of the paper using a waterfall strategy. Saves full text to papers/{safe_doi}.md and returns a compact, non-citable summary with canonical paths and URI. Use read_saved_paper or the paper resource to access the full text when needed. Includes QA validation to ensure it's not a paywall.",
+        description: "Given a DOI, attempts to fetch the full text of the paper using a waterfall strategy. Saves full text to papers/{safe_doi}.md, captures available figures/tables into papers/assets/{safe_doi}/ with a JSON manifest, and returns a compact, non-citable summary with canonical paths and URI. Use read_saved_paper or the paper resource to access the full text when needed. Includes QA validation to ensure it's not a paywall.",
         purpose: "Fetch full-text paper content by DOI, save it to disk, and return a canonical saved-paper summary",
         returns: "PaperSavedSummary with canonical path, URI, preview excerpt, and section headings.",
         commonFailures: ["Paywall blocks all strategies", "PDF parsing fails", "QA validation rejects truncated content", "Saved markdown file could not be written"],
@@ -670,6 +704,11 @@ function clampSearchPageSize(limit: number, maxPageSize: number): number {
     return Math.max(1, Math.min(Math.floor(limit), maxPageSize));
 }
 
+function looksLikeDoi(value: string): boolean {
+    const normalized = value.trim();
+    return /^10\.\d{4,9}\/\S+$/i.test(normalized);
+}
+
 function filterPapersWithDoi(papers: PaperMetadata[]): PaperMetadata[] {
     return papers.filter((paper) => typeof paper.doi === "string" && paper.doi.trim().length > 0);
 }
@@ -692,10 +731,13 @@ async function searchWebOfSciencePage(params: {
     const state = params.state as unknown as WebOfScienceSearchState;
     const page = Number.isFinite(state.page) && state.page > 0 ? Math.floor(state.page) : 1;
     const pageSize = clampSearchPageSize(state.pageSize ?? params.limit, 50);
+    const queryExpression = looksLikeDoi(params.query)
+        ? `DO=(${params.query.trim()})`
+        : `TS=(${params.query})`;
 
     try {
         const response = await axios.get("https://api.clarivate.com/apis/wos-starter/v1/documents", {
-            params: { q: `TS=(${params.query})`, page, limit: pageSize },
+            params: { q: queryExpression, page, limit: pageSize },
             headers: { "X-ApiKey": apiKey }
         });
         const hits = response.data?.hits || [];
@@ -813,9 +855,12 @@ async function searchSpringerPage(params: {
     }
 
     const pageSize = clampSearchPageSize(state.pageSize ?? params.limit, 50);
+    const springerQuery = looksLikeDoi(params.query)
+        ? `doi:${params.query.trim()}`
+        : `keyword:"${params.query.replace(/"/g, '')}"`;
     try {
         const response = await axios.get("https://api.springernature.com/meta/v2/json", {
-            params: { q: `keyword:"${params.query}"`, p: pageSize, api_key: apiKey }
+            params: { q: springerQuery, p: pageSize, api_key: apiKey }
         });
         const records = response.data?.records || [];
         const papers = filterPapersWithDoi(records.map((item: any) => ({
@@ -954,21 +999,17 @@ async function searchPubMedPage(params: {
                 }
             });
             const xml: string = fetchRes.data;
-            const articleBlocks = xml.split(/<PubmedArticle>/g).slice(1);
-            for (const block of articleBlocks) {
-                const pmidMatch = block.match(/<PMID[^>]*>(\d+)<\/PMID>/);
-                const abstractMatch = block.match(/<Abstract>([\s\S]*?)<\/Abstract>/);
-                if (!pmidMatch || !abstractMatch) continue;
+            const $ = cheerio.load(xml, { xml: true });
+            $('PubmedArticle').each((_, el) => {
+                const pmid = $(el).find('PMID').first().text().trim();
+                const abstractEl = $(el).find('Abstract');
+                if (!pmid || abstractEl.length === 0) return;
 
-                const rawAbstract = abstractMatch[1]
-                    .replace(/<\/?AbstractText[^>]*>/g, " ")
-                    .replace(/<[^>]+>/g, "")
-                    .replace(/\s+/g, " ")
-                    .trim();
+                const rawAbstract = abstractEl.text().replace(/\s+/g, " ").trim();
                 if (rawAbstract.length > 0) {
-                    abstractMap.set(pmidMatch[1], rawAbstract);
+                    abstractMap.set(pmid, rawAbstract);
                 }
-            }
+            });
         } catch (e) {
             console.error("PubMed EFetch for abstracts failed, continuing without abstracts.", e);
         }
@@ -1113,6 +1154,408 @@ function toProjectRelative(filePath: string): string {
     return path.relative(PROJECT_ROOT, filePath).split(path.sep).join('/');
 }
 
+function ensureDirectory(dirPath: string): void {
+    if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath, { recursive: true });
+    }
+}
+
+function escapeYamlDoubleQuoted(value: string): string {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function buildFrontMatter(fields: Record<string, string | number | boolean | undefined>): string {
+    const lines = ['---'];
+    for (const [key, rawValue] of Object.entries(fields)) {
+        if (rawValue === undefined || rawValue === null || rawValue === "") continue;
+        if (typeof rawValue === "string") {
+            lines.push(`${key}: "${escapeYamlDoubleQuoted(rawValue)}"`);
+        } else {
+            lines.push(`${key}: ${String(rawValue)}`);
+        }
+    }
+    lines.push('---', '');
+    return lines.join('\n');
+}
+
+function normalizeWhitespace(value: string): string {
+    return value.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function getPaperAssetsDirectory(safeDoi: string): string {
+    return path.join(getPapersDirectory(), "assets", safeDoi);
+}
+
+function getPaperAssetsManifestPath(safeDoi: string): string {
+    return path.join(getPaperAssetsDirectory(safeDoi), "manifest.json");
+}
+
+function findAllOccurrences(text: string, needle: string): number[] {
+    const matches: number[] = [];
+    let cursor = 0;
+    while (cursor >= 0 && cursor < text.length) {
+        const hit = text.indexOf(needle, cursor);
+        if (hit === -1) break;
+        matches.push(hit);
+        cursor = hit + needle.length;
+    }
+    return matches;
+}
+
+function detectElsevierBodyStart(rawText: string): number {
+    const candidates = ["1 Introduction", "Introduction", "1 Background", "Background"];
+    for (const marker of candidates) {
+        const matches = findAllOccurrences(rawText, marker);
+        if (matches.length >= 2) {
+            return matches[1];
+        }
+        if (matches.length === 1 && matches[0] > 4000) {
+            return matches[0];
+        }
+    }
+    return 0;
+}
+
+function cleanElsevierBodyText(rawText: string): string {
+    if (!rawText) return "";
+
+    let working = rawText.replace(/\r/g, ' ').replace(/\n/g, ' ').replace(/\t/g, ' ').replace(/\u00a0/g, ' ');
+    const bodyStart = detectElsevierBodyStart(working);
+    if (bodyStart > 0) {
+        working = working.slice(bodyStart);
+    }
+
+    working = working.replace(/ {2,}/g, ' ');
+    working = working.replace(/\s+([,.;:!?])/g, '$1');
+    return working.trim();
+}
+
+function trimCaptionSnippet(snippet: string, maxChars: number = 500): string {
+    const normalized = normalizeWhitespace(snippet);
+    if (normalized.length <= maxChars) return normalized;
+
+    const truncated = normalized.slice(0, maxChars);
+    const lastSentence = Math.max(
+        truncated.lastIndexOf('. '),
+        truncated.lastIndexOf('; '),
+        truncated.lastIndexOf(': ')
+    );
+    if (lastSentence > 80) {
+        return truncated.slice(0, lastSentence + 1).trim();
+    }
+    return `${truncated.trimEnd()}...`;
+}
+
+function extractCaptionMapFromText(rawText: string): Map<string, string> {
+    const captionMap = new Map<string, string>();
+    const normalized = normalizeWhitespace(cleanElsevierBodyText(rawText));
+    if (!normalized) return captionMap;
+
+    const matches = Array.from(normalized.matchAll(/\b(Fig(?:ure)?\.?|Figure|Table)\s*([0-9]+[A-Za-z]?)\b/g));
+    for (let index = 0; index < matches.length; index++) {
+        const match = matches[index];
+        const prefix = match[1].toLowerCase().startsWith("table") ? "Table" : "Figure";
+        const label = `${prefix} ${match[2]}`;
+        if (captionMap.has(label)) continue;
+
+        const start = match.index ?? 0;
+        const nextStart = matches[index + 1]?.index ?? normalized.length;
+        const windowEnd = Math.min(nextStart, start + 700);
+        const snippet = normalized.slice(start, windowEnd);
+        const caption = trimCaptionSnippet(snippet.replace(/^Fig\.?/i, "Figure"));
+        if (caption.length > label.length + 8) {
+            captionMap.set(label, caption);
+        }
+    }
+
+    return captionMap;
+}
+
+function rankElsevierObjectType(objectType?: string): number {
+    if (objectType === "IMAGE-HIGH-RES") return 5;
+    if (objectType === "IMAGE-DOWNSAMPLED") return 4;
+    if (objectType === "IMAGE-THUMBNAIL") return 3;
+    if (objectType === "ALTIMG") return 2;
+    if (objectType === "APPLICATION") return 1;
+    return 0;
+}
+
+function classifyElsevierObjectRef(ref: string): { kind: PaperAssetKind; label: string } | null {
+    const normalizedRef = ref.toLowerCase();
+    const figureMatch = normalizedRef.match(/^gr(\d+)$/);
+    if (figureMatch) {
+        return { kind: "figure", label: `Figure ${figureMatch[1]}` };
+    }
+
+    const graphicalAbstractMatch = normalizedRef.match(/^ga(\d+)$/);
+    if (graphicalAbstractMatch) {
+        return { kind: "graphical_abstract", label: "Graphical Abstract" };
+    }
+
+    const tableMatch = normalizedRef.match(/^tb(?:l)?(\d+)$/);
+    if (tableMatch) {
+        return { kind: "table", label: `Table ${tableMatch[1]}` };
+    }
+
+    return null;
+}
+
+function selectPreferredElsevierAssets(objects: any[], captionMap: Map<string, string>): PaperAssetHint[] {
+    const byRef = new Map<string, any>();
+
+    for (const objectEntry of objects) {
+        const ref = String(objectEntry?.["@ref"] || "").trim();
+        const sourceUrl = typeof objectEntry?.["$"] === "string" ? objectEntry["$"] : "";
+        const objectType = String(objectEntry?.["@type"] || "");
+        if (!ref || !sourceUrl || objectType === "AAM-PDF") continue;
+
+        const classification = classifyElsevierObjectRef(ref);
+        if (!classification) continue;
+
+        const current = byRef.get(ref);
+        if (!current || rankElsevierObjectType(objectType) > rankElsevierObjectType(current["@type"])) {
+            byRef.set(ref, objectEntry);
+        }
+    }
+
+    const hints: PaperAssetHint[] = [];
+    for (const [ref, objectEntry] of byRef.entries()) {
+        const classification = classifyElsevierObjectRef(ref);
+        if (!classification) continue;
+
+        hints.push({
+            kind: classification.kind,
+            label: classification.label,
+            ref,
+            caption: captionMap.get(classification.label),
+            source_url: typeof objectEntry?.["$"] === "string" ? objectEntry["$"] : undefined,
+            mime_type: typeof objectEntry?.["@mimetype"] === "string" ? objectEntry["@mimetype"] : undefined
+        });
+    }
+
+    return hints;
+}
+
+function extractElsevierAssetHintsFromText(rawText: string): PaperAssetHint[] {
+    const captionMap = extractCaptionMapFromText(rawText);
+    const normalized = normalizeWhitespace(rawText);
+    const objectUrls = Array.from(new Set(normalized.match(/https:\/\/api\.elsevier\.com\/content\/object\/eid\/\S+/g) || []));
+    const hints: PaperAssetHint[] = [];
+
+    for (const objectUrl of objectUrls) {
+        const refMatch = objectUrl.match(/-([A-Za-z]+\d+)\.(?:jpg|jpeg|png|gif|tif|tiff|sml)(?:\?|$)/i);
+        const ref = refMatch?.[1];
+        if (!ref) continue;
+
+        const classification = classifyElsevierObjectRef(ref);
+        if (!classification) continue;
+
+        hints.push({
+            kind: classification.kind,
+            label: classification.label,
+            ref,
+            caption: captionMap.get(classification.label),
+            source_url: objectUrl
+        });
+    }
+
+    const tablesWithNoObjects = Array.from(captionMap.entries())
+        .filter(([label]) => label.startsWith("Table "))
+        .filter(([label]) => !hints.some((hint) => hint.label === label));
+
+    for (const [label, caption] of tablesWithNoObjects) {
+        hints.push({ kind: "table", label, caption, note: "Caption extracted from full text; no downloadable table object was exposed by the API." });
+    }
+
+    return hints;
+}
+
+function dedupeAssetHints(assetHints: PaperAssetHint[]): PaperAssetHint[] {
+    const deduped = new Map<string, PaperAssetHint>();
+    for (const hint of assetHints) {
+        const key = [hint.kind, hint.label, hint.ref || "", hint.source_url || ""].join("|");
+        if (!deduped.has(key)) deduped.set(key, hint);
+    }
+    return Array.from(deduped.values());
+}
+
+function guessFileExtension(asset: Pick<PaperAssetHint, "source_url" | "mime_type">): string {
+    const mimeType = asset.mime_type?.toLowerCase();
+    if (mimeType === "image/jpeg") return "jpg";
+    if (mimeType === "image/png") return "png";
+    if (mimeType === "image/gif") return "gif";
+    if (mimeType === "application/pdf") return "pdf";
+    if (mimeType === "text/csv") return "csv";
+    if (mimeType === "application/vnd.ms-excel") return "xls";
+    if (mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return "xlsx";
+    if (mimeType === "video/mp4") return "mp4";
+
+    if (asset.source_url) {
+        try {
+            const pathname = new URL(asset.source_url).pathname;
+            const ext = path.extname(pathname).replace('.', '').toLowerCase();
+            if (ext) return ext;
+        } catch {
+            // Ignore malformed URLs and fall through to the default.
+        }
+    }
+
+    return "bin";
+}
+
+function normalizeAssetSlug(label: string): string {
+    return label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || "asset";
+}
+
+async function persistPaperAssets(doi: string, safeDoi: string, assetHints: PaperAssetHint[]): Promise<{
+    assetRecords: PaperAssetRecord[];
+    assetsDirectoryPath?: string;
+    assetsManifestPath?: string;
+}> {
+    if (assetHints.length === 0) {
+        return { assetRecords: [] };
+    }
+
+    const assetsDirectoryPath = getPaperAssetsDirectory(safeDoi);
+    ensureDirectory(assetsDirectoryPath);
+
+    const assetRecords: PaperAssetRecord[] = [];
+    let downloadIndex = 1;
+    const elsevierApiKey = getApiKey("ELSEVIER_API_KEY");
+
+    for (const assetHint of assetHints) {
+        if (!assetHint.source_url) {
+            assetRecords.push({
+                ...assetHint,
+                status: "metadata_only"
+            });
+            continue;
+        }
+
+        const extension = guessFileExtension(assetHint);
+        const fileName = `${String(downloadIndex).padStart(2, '0')}_${normalizeAssetSlug(assetHint.label)}.${extension}`;
+        const absolutePath = path.join(assetsDirectoryPath, fileName);
+        const headers: Record<string, string> = {};
+        if (assetHint.source_url.includes("api.elsevier.com") && elsevierApiKey) {
+            headers["X-ELS-APIKey"] = elsevierApiKey;
+        }
+
+        try {
+            const response = await axios.get(assetHint.source_url, {
+                responseType: "arraybuffer",
+                headers
+            });
+            const buffer = Buffer.from(response.data);
+            fs.writeFileSync(absolutePath, buffer);
+            assetRecords.push({
+                ...assetHint,
+                status: "saved",
+                absolute_path: absolutePath,
+                relative_path: toProjectRelative(absolutePath),
+                file_size_bytes: buffer.length,
+                mime_type: response.headers["content-type"] || assetHint.mime_type
+            });
+            downloadIndex += 1;
+        } catch (error: any) {
+            assetRecords.push({
+                ...assetHint,
+                status: "download_failed",
+                note: assetHint.note || error.message
+            });
+        }
+    }
+
+    const assetsManifestPath = getPaperAssetsManifestPath(safeDoi);
+    fs.writeFileSync(assetsManifestPath, JSON.stringify({
+        doi,
+        safe_doi: safeDoi,
+        generated_at: new Date().toISOString(),
+        assets: assetRecords
+    }, null, 2));
+
+    return {
+        assetRecords,
+        assetsDirectoryPath,
+        assetsManifestPath
+    };
+}
+
+function appendAssetSectionsToMarkdown(markdown: string, assetRecords: PaperAssetRecord[], markdownAbsolutePath?: string): string {
+    if (assetRecords.length === 0) return markdown;
+
+    const sections: string[] = [markdown.trimEnd()];
+    const figureAssets = assetRecords.filter((asset) => asset.kind === "figure" || asset.kind === "graphical_abstract");
+    const tableAssets = assetRecords.filter((asset) => asset.kind === "table");
+    const supplementaryAssets = assetRecords.filter((asset) => asset.kind === "supplementary_material");
+    const sourceDataAssets = assetRecords.filter((asset) => asset.kind === "source_data");
+
+    const renderAssetGroup = (title: string, assets: PaperAssetRecord[]) => {
+        if (assets.length === 0) return;
+        sections.push('', `## ${title}`, '');
+
+        for (const asset of assets) {
+            sections.push(`### ${asset.label}`);
+            if (asset.caption) sections.push('', asset.caption);
+            if (asset.relative_path) {
+                const renderedPath = markdownAbsolutePath && asset.absolute_path
+                    ? path.relative(path.dirname(markdownAbsolutePath), asset.absolute_path).split(path.sep).join('/')
+                    : asset.relative_path;
+                sections.push('', `- Asset file: \`${renderedPath}\``);
+            }
+            if (asset.mime_type) sections.push(`- MIME type: \`${asset.mime_type}\``);
+            if (asset.ref) sections.push(`- Source ref: \`${asset.ref}\``);
+            if (asset.source_url) sections.push(`- Source URL: ${asset.source_url}`);
+            sections.push(`- Capture status: \`${asset.status}\``);
+            if (asset.note) sections.push(`- Note: ${asset.note}`);
+            sections.push('');
+        }
+    };
+
+    renderAssetGroup("Figures", figureAssets);
+    renderAssetGroup("Tables", tableAssets);
+    renderAssetGroup("Supplementary Materials", supplementaryAssets);
+    renderAssetGroup("Source Data", sourceDataAssets);
+    return sections.join('\n').trimEnd() + '\n';
+}
+
+async function savePaperMarkdown(params: {
+    doi: string;
+    title?: string;
+    source: string;
+    markdown: string;
+    frontMatter?: Record<string, string | number | boolean | undefined>;
+    assetHints?: PaperAssetHint[];
+}): Promise<PaperSaveResult> {
+    const papersDir = getPapersDirectory();
+    ensureDirectory(papersDir);
+
+    const safeDoi = safeDoiFromDoi(params.doi);
+    const markdownPath = path.join(papersDir, `${safeDoi}.md`);
+    const assetPersistence = await persistPaperAssets(params.doi, safeDoi, params.assetHints || []);
+    const markdownWithAssets = appendAssetSectionsToMarkdown(params.markdown, assetPersistence.assetRecords, markdownPath);
+
+    const frontMatter = buildFrontMatter({
+        doi: params.doi,
+        title: params.title,
+        source: params.source,
+        fetched_at: new Date().toISOString(),
+        assets_count: assetPersistence.assetRecords.length,
+        figures_count: assetPersistence.assetRecords.filter((asset) => asset.kind === "figure" || asset.kind === "graphical_abstract").length,
+        tables_count: assetPersistence.assetRecords.filter((asset) => asset.kind === "table").length,
+        assets_dir: assetPersistence.assetsDirectoryPath ? toProjectRelative(assetPersistence.assetsDirectoryPath) : undefined,
+        assets_manifest: assetPersistence.assetsManifestPath ? toProjectRelative(assetPersistence.assetsManifestPath) : undefined,
+        ...(params.frontMatter || {})
+    });
+
+    fs.writeFileSync(markdownPath, frontMatter + markdownWithAssets, 'utf-8');
+    return {
+        markdownPath,
+        assetRecords: assetPersistence.assetRecords,
+        assetsDirectoryPath: assetPersistence.assetsDirectoryPath,
+        assetsManifestPath: assetPersistence.assetsManifestPath
+    };
+}
+
 function stripFrontMatter(text: string): string {
     return text.replace(/^---[\s\S]*?---\n*/, '');
 }
@@ -1209,10 +1652,16 @@ function buildPaperSavedSummary(params: {
     source: string;
     text: string;
     absolutePath: string;
+    assetRecords?: PaperAssetRecord[];
+    assetsDirectoryPath?: string;
+    assetsManifestPath?: string;
 }): PaperSavedSummary {
     const safeDoi = safeDoiFromDoi(params.doi);
     const metadata = parseFrontMatter(params.text);
     const title = params.title || metadata.title || "(unknown)";
+    const assetRecords = params.assetRecords || [];
+    const figuresCount = assetRecords.filter((asset) => asset.kind === "figure" || asset.kind === "graphical_abstract").length;
+    const tablesCount = assetRecords.filter((asset) => asset.kind === "table").length;
 
     return {
         kind: "paper_saved_summary",
@@ -1227,6 +1676,11 @@ function buildPaperSavedSummary(params: {
         char_count: params.text.length,
         preview_excerpt: extractPreviewExcerpt(params.text),
         section_headings: extractSectionHeadings(params.text),
+        assets_count: assetRecords.length,
+        figures_count: figuresCount,
+        tables_count: tablesCount,
+        ...(params.assetsDirectoryPath ? { assets_directory_relative_path: toProjectRelative(params.assetsDirectoryPath) } : {}),
+        ...(params.assetsManifestPath ? { assets_manifest_relative_path: toProjectRelative(params.assetsManifestPath) } : {}),
         full_text_saved: true,
         read_required_for_citation: true,
         preview_not_citable: true
@@ -1235,6 +1689,7 @@ function buildPaperSavedSummary(params: {
 
 function buildPaperSavedSummaryText(summary: PaperSavedSummary): string {
     const headings = summary.section_headings.length > 0 ? summary.section_headings.join(" | ") : "(none detected)";
+    const assetSummary = `${summary.assets_count} assets (${summary.figures_count} figures, ${summary.tables_count} tables)`;
     return [
         `# Paper Saved Successfully [Source: ${summary.source}]`,
         ``,
@@ -1245,6 +1700,8 @@ function buildPaperSavedSummaryText(summary: PaperSavedSummary): string {
         `| **File** | \`${summary.relative_path}\` |`,
         `| **URI** | \`${summary.canonical_uri}\` |`,
         `| **Length** | ${summary.word_count} words / ${summary.char_count} chars |`,
+        `| **Assets** | ${assetSummary} |`,
+        summary.assets_manifest_relative_path ? `| **Asset Manifest** | \`${summary.assets_manifest_relative_path}\` |` : "",
         ``,
         `## Preview (Not Citable)`,
         ``,
@@ -1409,56 +1866,638 @@ interface FetchResult {
     source: string;
     text?: string;       // If the API directly returns raw text/markdown
     pdfBuffer?: Buffer;  // If the API returns a PDF
+    metadata?: Record<string, string | undefined>;
+    assetHints?: PaperAssetHint[];
+    accessStatus?: string;
+}
+
+function buildElsevierMarkdown(params: {
+    title?: string;
+    abstract?: string;
+    rawText?: string;
+}): string {
+    const sections: string[] = [];
+    if (params.title) {
+        sections.push(`# ${params.title}`, '');
+    }
+    if (params.abstract) {
+        sections.push('## Abstract', '', normalizeWhitespace(params.abstract), '');
+    }
+
+    const bodyText = params.rawText ? cleanElsevierBodyText(params.rawText) : "";
+    if (bodyText) {
+        sections.push('## Full Text', '', bodyText, '');
+    }
+
+    return sections.join('\n').trim();
+}
+
+function extractElsevierAssetHints(articlePayload: any, rawText: string): PaperAssetHint[] {
+    const captionMap = extractCaptionMapFromText(rawText);
+    const objects = Array.isArray(articlePayload?.["full-text-retrieval-response"]?.objects?.object)
+        ? articlePayload["full-text-retrieval-response"].objects.object
+        : [];
+
+    const structuredHints = selectPreferredElsevierAssets(objects, captionMap);
+    const fallbackHints = structuredHints.length > 0 ? [] : extractElsevierAssetHintsFromText(rawText);
+    const combined = dedupeAssetHints([...structuredHints, ...fallbackHints]);
+
+    const existingLabels = new Set(combined.map((hint) => hint.label));
+    for (const [label, caption] of captionMap.entries()) {
+        if (!label.startsWith("Table ") || existingLabels.has(label)) continue;
+        combined.push({
+            kind: "table",
+            label,
+            caption,
+            note: "Caption extracted from Elsevier full text; no downloadable table object was exposed by the API."
+        });
+    }
+
+    return combined;
 }
 
 async function fetchFromElsevier(doi: string): Promise<FetchResult | null> {
     const apiKey = getApiKey("ELSEVIER_API_KEY");
     if (!apiKey) return null;
     try {
-        console.error(`Attempting Elsevier TDM API for DOI: ${doi}...`);
-        // Try getting plain text first to skip PDF parsing
-        const res = await axios.get(`https://api.elsevier.com/content/article/doi/${doi}`, {
+        console.error(`Attempting Elsevier Article Retrieval API (view=FULL JSON) for DOI: ${doi}...`);
+        const jsonRes = await axios.get(`https://api.elsevier.com/content/article/doi/${doi}`, {
+            params: { view: "FULL" },
+            headers: {
+                "X-ELS-APIKey": apiKey,
+                "Accept": "application/json"
+            }
+        });
+
+        const retrieval = jsonRes.data?.["full-text-retrieval-response"] || {};
+        const coredata = retrieval.coredata || {};
+        const originalText = typeof retrieval.originalText === "string" ? retrieval.originalText : "";
+        const title = coredata["dc:title"];
+        const abstract = coredata["dc:description"];
+        const markdown = buildElsevierMarkdown({ title, abstract, rawText: originalText });
+        if (markdown.length > 1000) {
+            return {
+                source: "Elsevier Article Retrieval (view=FULL JSON)",
+                text: markdown,
+                metadata: {
+                    title,
+                    pii: coredata.pii,
+                    eid: coredata.eid,
+                    doi: coredata["prism:doi"] || doi,
+                    publisher: "Elsevier",
+                    openaccess: coredata.openaccess,
+                    extraction_status: jsonRes.headers["x-els-status"] || "OK"
+                },
+                assetHints: extractElsevierAssetHints(jsonRes.data, originalText),
+                accessStatus: jsonRes.headers["x-els-status"] || "OK"
+            };
+        }
+    } catch (e: any) {
+        console.error(`Elsevier FULL JSON failed (${e.response?.status || e.message}). Trying text/plain fallback...`);
+    }
+
+    try {
+        const textRes = await axios.get(`https://api.elsevier.com/content/article/doi/${doi}`, {
             params: { httpAccept: "text/plain" },
             headers: { "X-ELS-APIKey": apiKey }
         });
-        
-        // text/plain returns a raw string; JSON returns a nested object
-        const rawText = typeof res.data === 'string'
-            ? res.data
-            : res.data?.["full-text-retrieval-response"]?.originalText;
-        if (rawText && typeof rawText === 'string' && rawText.length > 500) {
-             return { source: "Elsevier TDM", text: rawText };
+        const rawText = typeof textRes.data === 'string' ? textRes.data : "";
+        const markdown = buildElsevierMarkdown({ rawText });
+        if (markdown.length > 1000) {
+            return {
+                source: "Elsevier Article Retrieval (text/plain)",
+                text: markdown,
+                metadata: {
+                    doi,
+                    publisher: "Elsevier",
+                    extraction_status: textRes.headers["x-els-status"] || "OK"
+                },
+                assetHints: extractElsevierAssetHintsFromText(rawText),
+                accessStatus: textRes.headers["x-els-status"] || "OK"
+            };
         }
-    } catch(e: any) {
-        console.error(`Elsevier TDM text/plain failed (${e.response?.status}). Checking permissions...`);
+    } catch (e: any) {
+        console.error(`Elsevier text/plain failed (${e.response?.status || e.message}).`);
     }
     return null;
 }
 
-async function fetchFromSpringer(doi: string): Promise<FetchResult | null> {
-    const apiKey = getApiKey("SPRINGER_OA_API_KEY");
-    if (!apiKey) {
-        console.error("Springer OA API skipped: SPRINGER_OA_API_KEY not configured.");
-        return null;
+function normalizeSpringerAbstractContent(value: any): string {
+    if (typeof value === "string") return normalizeWhitespace(value);
+    if (value && typeof value === "object") {
+        return normalizeWhitespace(Object.values(value).map((part) => String(part)).join(" "));
     }
+    return "";
+}
+
+function buildSpringerArticleSegment(doi: string): string {
+    return `art%3A${encodeURIComponent(doi)}`;
+}
+
+function buildSpringerStaticAssetUrl(doi: string, relativePath: string): string {
+    return `https://static-content.springer.com/esm/${buildSpringerArticleSegment(doi)}/${relativePath.replace(/^\/+/, '')}`;
+}
+
+function buildSpringerImageAssetUrl(doi: string, relativePath: string, variant: string = "lw1200"): string {
+    return `https://media.springernature.com/${variant}/springer-static/image/${buildSpringerArticleSegment(doi)}/${relativePath.replace(/^\/+/, '')}`;
+}
+
+function normalizeSpringerAssetUrl(rawUrl: string | undefined, baseUrl: string): string | undefined {
+    if (!rawUrl || rawUrl.trim().length === 0) return undefined;
+    if (rawUrl.startsWith("//")) return `https:${rawUrl}`;
+
     try {
-        console.error(`Attempting Springer OA API for DOI: ${doi}...`);
-        // Springer OpenAccess API returns full text for OA articles
-        const res = await axios.get(`https://api.springernature.com/openaccess/json`, {
-            params: { q: `doi:${doi}`, api_key: apiKey }
+        return new URL(rawUrl, baseUrl).toString();
+    } catch {
+        return undefined;
+    }
+}
+
+function classifySpringerAssetKind(label: string, url?: string): PaperAssetKind {
+    const normalizedLabel = label.toLowerCase();
+    const normalizedUrl = url?.toLowerCase() || "";
+
+    if (normalizedLabel.startsWith("source data") || normalizedUrl.endsWith(".xlsx") || normalizedUrl.endsWith(".csv")) {
+        return "source_data";
+    }
+    if (normalizedLabel.includes("table")) return "table";
+    if (normalizedLabel.includes("graphical abstract")) return "graphical_abstract";
+    if (normalizedLabel.includes("supplementary") || normalizedLabel.includes("peer review file") || normalizedUrl.endsWith(".pdf") || normalizedUrl.endsWith(".mp4")) {
+        return "supplementary_material";
+    }
+    return "figure";
+}
+
+function renderMarkdownTable(rows: string[][]): string {
+    if (rows.length === 0) return "";
+
+    const width = Math.max(...rows.map((row) => row.length));
+    const normalizedRows = rows.map((row) => Array.from({ length: width }, (_, index) => row[index] || ""));
+    const header = normalizedRows[0];
+    const body = normalizedRows.slice(1);
+    const separator = Array.from({ length: width }, () => "---");
+
+    return [
+        `| ${header.join(" | ")} |`,
+        `| ${separator.join(" | ")} |`,
+        ...body.map((row) => `| ${row.join(" | ")} |`)
+    ].join('\n');
+}
+
+function extractTableRows($: cheerio.CheerioAPI, tableElement: any): string[][] {
+    const rows: string[][] = [];
+    $(tableElement).find('tr').each((_, row) => {
+        const cells = $(row).find('th, td').toArray().map((cell) => normalizeWhitespace($(cell).text()));
+        if (cells.some((cell) => cell.length > 0)) rows.push(cells);
+    });
+    return rows;
+}
+
+function renderSpringerJatsSection($: cheerio.CheerioAPI, sectionElement: any, level: number): string[] {
+    const blocks: string[] = [];
+    const heading = normalizeWhitespace($(sectionElement).children('title').first().text());
+    if (heading) {
+        blocks.push(`${'#'.repeat(Math.min(level, 6))} ${heading}`, '');
+    }
+
+    $(sectionElement).contents().each((_, node) => {
+        if (node.type !== 'tag') return;
+
+        const tagName = String((node as any).tagName || "").toLowerCase();
+        if (tagName === 'title') return;
+
+        if (tagName === 'p') {
+            const paragraph = normalizeWhitespace($(node).text());
+            if (paragraph) blocks.push(paragraph, '');
+            return;
+        }
+
+        if (tagName === 'sec') {
+            blocks.push(...renderSpringerJatsSection($, node, level + 1));
+            return;
+        }
+
+        if (tagName === 'table-wrap') {
+            const label = normalizeWhitespace($(node).children('label').first().text()) || "Table";
+            const caption = normalizeWhitespace($(node).find('caption').first().text());
+            const table = $(node).find('table').first();
+            const tableRows = table.length > 0 ? extractTableRows($, table) : [];
+
+            blocks.push(`### ${label}`, '');
+            if (caption) blocks.push(caption, '');
+            if (tableRows.length > 0) blocks.push(renderMarkdownTable(tableRows), '');
+        }
+    });
+
+    return blocks;
+}
+
+function extractSpringerJatsAssetHints(xml: string, doi: string): PaperAssetHint[] {
+    const $ = cheerio.load(xml, { xml: true });
+    const hints: PaperAssetHint[] = [];
+
+    $('article fig').each((index, fig) => {
+        const label = normalizeWhitespace($(fig).children('label').first().text()) || `Figure ${index + 1}`;
+        const caption = normalizeWhitespace($(fig).find('caption').first().text());
+        const ref = $(fig).attr('id');
+        const href = $(fig).find('graphic, media').first().attr('xlink:href') || $(fig).find('graphic, media').first().attr('href');
+
+        hints.push({
+            kind: classifySpringerAssetKind(label),
+            label,
+            caption,
+            ref,
+            source_url: href?.startsWith('MediaObjects/') ? buildSpringerImageAssetUrl(doi, href) : href
         });
-        const records = res.data?.records;
-        if (records && records.length > 0) {
-            const paragraphs = records[0].paragraphs;
-            if (paragraphs && Array.isArray(paragraphs)) {
-                // Combine paragraphs into markdown
-                const text = paragraphs.map((p: any) => p.text).join("\n\n");
-                return { source: "Springer OA API", text };
+    });
+
+    $('article table-wrap').each((index, tableWrap) => {
+        const label = normalizeWhitespace($(tableWrap).children('label').first().text()) || `Table ${index + 1}`;
+        const caption = normalizeWhitespace($(tableWrap).find('caption').first().text());
+        hints.push({
+            kind: "table",
+            label,
+            caption,
+            ref: $(tableWrap).attr('id'),
+            note: "Structured table extracted from Springer JATS."
+        });
+    });
+
+    $('article supplementary-material').each((index, item) => {
+        const label = normalizeWhitespace($(item).find('label').first().text())
+            || normalizeWhitespace($(item).attr('xlink:title') || "")
+            || `Supplementary Material ${index + 1}`;
+        const caption = normalizeWhitespace($(item).find('caption').first().text());
+        const media = $(item).find('media').first();
+        const href = media.attr('xlink:href') || media.attr('href');
+        hints.push({
+            kind: classifySpringerAssetKind(label, href),
+            label,
+            caption,
+            ref: $(item).attr('id'),
+            source_url: href?.startsWith('MediaObjects/') ? buildSpringerStaticAssetUrl(doi, href) : href,
+            mime_type: media.attr('mimetype') && media.attr('mime-subtype')
+                ? `${media.attr('mimetype')}/${media.attr('mime-subtype')}`
+                : undefined
+        });
+    });
+
+    return dedupeAssetHints(hints);
+}
+
+function extractSpringerJatsPayload(params: {
+    xml: string;
+    doi: string;
+    fallbackTitle?: string;
+    fallbackAbstract?: string;
+}): { markdown: string; title?: string; abstract?: string; assetHints: PaperAssetHint[] } | null {
+    const $ = cheerio.load(params.xml, { xml: true });
+    const article = $('records > article').first();
+    if (article.length === 0) return null;
+
+    const title = normalizeWhitespace(article.find('front article-title').first().text()) || params.fallbackTitle;
+    const abstract = normalizeWhitespace(article.find('front abstract').first().text()) || params.fallbackAbstract;
+    const sections: string[] = [];
+
+    if (title) sections.push(`# ${title}`, '');
+    if (abstract) sections.push('## Abstract', '', abstract, '');
+
+    const body = article.children('body').first();
+    if (body.length > 0) {
+        sections.push('## Full Text', '');
+        const bodySections = body.children('sec').toArray();
+        if (bodySections.length > 0) {
+            for (const section of bodySections) {
+                sections.push(...renderSpringerJatsSection($, section, 3));
+            }
+        } else {
+            const bodyText = normalizeWhitespace(body.text());
+            if (bodyText) sections.push(bodyText, '');
+        }
+    }
+
+    const markdown = sections.join('\n').trim();
+    if (markdown.length === 0) return null;
+
+    return {
+        markdown,
+        title,
+        abstract,
+        assetHints: extractSpringerJatsAssetHints(params.xml, params.doi)
+    };
+}
+
+function extractSpringerHtmlAssetHints(html: string, articleUrl: string): PaperAssetHint[] {
+    const $ = cheerio.load(html);
+    const hints: PaperAssetHint[] = [];
+
+    $('.c-article-supplementary__item').each((_, item) => {
+        const anchor = $(item).find('a[href]').first();
+        const rawLabel = normalizeWhitespace(anchor.text().replace(/\s*\(download[^)]*\)\s*$/i, ''));
+        const label = rawLabel || normalizeWhitespace($(item).attr('id') || "Supplementary Material");
+        const href = normalizeSpringerAssetUrl(anchor.attr('href'), articleUrl);
+        const imageHref = normalizeSpringerAssetUrl(anchor.attr('data-supp-info-image'), articleUrl);
+        const caption = normalizeWhitespace($(item).find('.c-article-supplementary__description').first().text());
+        const ref = $(item).attr('id');
+
+        if (href) {
+            hints.push({
+                kind: classifySpringerAssetKind(label, href),
+                label,
+                caption,
+                ref,
+                source_url: href
+            });
+        }
+
+        if (imageHref) {
+            hints.push({
+                kind: classifySpringerAssetKind(label, imageHref),
+                label,
+                caption,
+                ref,
+                source_url: imageHref
+            });
+        }
+    });
+
+    const mediaUrls = Array.from(new Set(html.match(/https:\/\/media\.springernature\.com\/[^"' \t\r\n<]+/g) || []));
+    for (const mediaUrl of mediaUrls) {
+        const figureMatch = mediaUrl.match(/_Fig(\d+)_/i);
+        const label = figureMatch ? `Figure ${figureMatch[1]}` : path.basename(new URL(mediaUrl).pathname);
+        hints.push({
+            kind: classifySpringerAssetKind(label, mediaUrl),
+            label,
+            source_url: mediaUrl
+        });
+    }
+
+    return dedupeAssetHints(hints);
+}
+
+function buildSpringerHtmlMarkdown(html: string, fallbackTitle?: string, fallbackAbstract?: string): string {
+    const $ = cheerio.load(html);
+    const title = normalizeWhitespace(
+        $('meta[name="citation_title"]').attr('content')
+        || $('h1.c-article-title').first().text()
+        || $('title').first().text().replace(/\s+\|\s+Nature.*$/i, '')
+        || fallbackTitle
+        || ""
+    );
+    const abstract = normalizeWhitespace(
+        $('section[data-title="Abstract"] .c-article-section__content').first().text()
+        || $('meta[name="dc.description"]').attr('content')
+        || fallbackAbstract
+        || ""
+    );
+
+    const skippedSections = new Set([
+        "Abstract",
+        "Extended data figures and tables",
+        "Supplementary information",
+        "Source data",
+        "Rights and permissions",
+        "About this article"
+    ]);
+
+    const sections: string[] = [];
+    if (title) sections.push(`# ${title}`, '');
+    if (abstract) sections.push('## Abstract', '', abstract, '');
+
+    $('section[data-title]').each((_, section) => {
+        const sectionTitle = normalizeWhitespace($(section).attr('data-title') || "");
+        if (!sectionTitle || skippedSections.has(sectionTitle)) return;
+
+        const contentText = normalizeWhitespace($(section).find('.c-article-section__content').first().text());
+        if (!contentText) return;
+
+        sections.push(`## ${sectionTitle}`, '', contentText, '');
+    });
+
+    if (sections.length <= 4) {
+        const bodyText = normalizeWhitespace($('.c-article-main-column').first().text());
+        if (bodyText) sections.push('## Full Text', '', bodyText, '');
+    }
+
+    return sections.join('\n').trim();
+}
+
+function isSpringerHtmlContentLikelyUseful(html: string, expectedTitle?: string): boolean {
+    const lowerHtml = html.toLowerCase();
+    if (!lowerHtml.includes("c-article-section__title") && !lowerHtml.includes("c-article-main-column")) {
+        return false;
+    }
+
+    if (expectedTitle) {
+        const normalizedExpected = expectedTitle.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+        const normalizedHtml = lowerHtml.replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ');
+        if (!normalizedHtml.includes(normalizedExpected.substring(0, Math.min(50, normalizedExpected.length)))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+async function fetchWithCookieRedirects(url: string, responseType: "text" | "arraybuffer" = "text"): Promise<{
+    data: string | Buffer;
+    headers: Record<string, any>;
+    finalUrl: string;
+}> {
+    const cookies = new Map<string, string>();
+    let currentUrl = url;
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+        const headers: Record<string, string> = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+        };
+        if (responseType === "arraybuffer") {
+            headers["Accept"] = "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8";
+        } else {
+            headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+        }
+        if (cookies.size > 0) {
+            headers["Cookie"] = Array.from(cookies.values()).join("; ");
+        }
+
+        const response = await axios.get(currentUrl, {
+            headers,
+            responseType: responseType === "arraybuffer" ? "arraybuffer" : "text",
+            validateStatus: () => true,
+            maxRedirects: 0
+        });
+
+        const setCookies = response.headers["set-cookie"];
+        if (Array.isArray(setCookies)) {
+            for (const cookie of setCookies) {
+                const cookiePair = cookie.split(';')[0];
+                const separatorIndex = cookiePair.indexOf('=');
+                if (separatorIndex <= 0) continue;
+                const cookieName = cookiePair.substring(0, separatorIndex).trim();
+                cookies.set(cookieName, cookiePair.trim());
             }
         }
-    } catch(e: any) {
-        console.error(`Springer OA failed (${e.response?.status}).`);
+
+        if (response.status >= 300 && response.status < 400 && response.headers.location) {
+            currentUrl = new URL(String(response.headers.location), currentUrl).toString();
+            continue;
+        }
+
+        if (response.status >= 200 && response.status < 300) {
+            return {
+                data: responseType === "arraybuffer" ? Buffer.from(response.data) : String(response.data),
+                headers: response.headers,
+                finalUrl: currentUrl
+            };
+        }
+
+        throw new Error(`HTTP ${response.status} while fetching ${currentUrl}`);
     }
+
+    throw new Error(`Too many redirects while fetching ${url}`);
+}
+
+async function fetchSpringerMetaRecord(doi: string): Promise<any | null> {
+    const apiKey = getApiKey("SPRINGER_meta_API_KEY");
+    if (!apiKey) return null;
+
+    try {
+        const response = await axios.get("https://api.springernature.com/meta/v2/json", {
+            params: { q: `doi:${doi}`, p: 1, api_key: apiKey }
+        });
+        return response.data?.records?.[0] || null;
+    } catch (error: any) {
+        console.error(`Springer Meta DOI lookup failed (${error.response?.status || error.message}).`);
+        return null;
+    }
+}
+
+function pickSpringerRecordUrl(record: any, format: "html" | "pdf"): string | undefined {
+    const urlEntry = Array.isArray(record?.url)
+        ? record.url.find((entry: any) => entry?.format === format && typeof entry?.value === "string")
+        : undefined;
+    return urlEntry?.value;
+}
+
+async function fetchFromSpringer(doi: string): Promise<FetchResult | null> {
+    const metaRecord = await fetchSpringerMetaRecord(doi);
+    const oaApiKey = getApiKey("SPRINGER_OA_API_KEY");
+    const title = metaRecord?.title;
+    const abstract = normalizeSpringerAbstractContent(metaRecord?.abstract);
+    const publisherName = metaRecord?.publisher || metaRecord?.publisherName || "Springer Nature";
+    const openaccessFlag = String(metaRecord?.openaccess ?? metaRecord?.openAccess ?? "").toLowerCase() === "true";
+    const htmlUrl = pickSpringerRecordUrl(metaRecord, "html");
+    const pdfUrl = pickSpringerRecordUrl(metaRecord, "pdf");
+
+    let htmlMarkdown = "";
+    let htmlAssetHints: PaperAssetHint[] = [];
+    let htmlAccessStatus: string | undefined;
+
+    if (oaApiKey && (openaccessFlag || !metaRecord)) {
+        try {
+            console.error(`Attempting Springer OA JATS for DOI: ${doi}...`);
+            const jatsResponse = await axios.get("https://api.springernature.com/openaccess/jats", {
+                params: { q: `doi:${doi}`, api_key: oaApiKey },
+                responseType: "text"
+            });
+
+            const jatsPayload = extractSpringerJatsPayload({
+                xml: String(jatsResponse.data),
+                doi,
+                fallbackTitle: title,
+                fallbackAbstract: abstract
+            });
+
+            if (htmlUrl) {
+                try {
+                    const htmlResponse = await fetchWithCookieRedirects(htmlUrl, "text");
+                    const rawHtml = String(htmlResponse.data);
+                    if (isSpringerHtmlContentLikelyUseful(rawHtml, title)) {
+                        htmlMarkdown = buildSpringerHtmlMarkdown(rawHtml, title, abstract);
+                        htmlAssetHints = extractSpringerHtmlAssetHints(rawHtml, htmlResponse.finalUrl);
+                        htmlAccessStatus = "direct_html_ok";
+                    }
+                } catch (htmlError: any) {
+                    console.error(`Springer HTML asset pass after JATS failed (${htmlError.message}).`);
+                }
+            }
+
+            if (jatsPayload && jatsPayload.markdown.length > 1000) {
+                return {
+                    source: "Springer OA JATS",
+                    text: jatsPayload.markdown,
+                    metadata: {
+                        title: jatsPayload.title || title,
+                        doi,
+                        publisher: publisherName,
+                        openaccess: metaRecord?.openaccess ?? metaRecord?.openAccess ?? "true",
+                        extraction_status: "oa_jats_ok"
+                    },
+                    assetHints: dedupeAssetHints([...jatsPayload.assetHints, ...htmlAssetHints]),
+                    accessStatus: htmlAccessStatus || "oa_jats_ok"
+                };
+            }
+        } catch (error: any) {
+            console.error(`Springer OA JATS failed (${error.response?.status || error.message}).`);
+        }
+    }
+
+    if (htmlUrl) {
+        try {
+            console.error(`Attempting Springer/Nature HTML for DOI: ${doi}...`);
+            const htmlResponse = await fetchWithCookieRedirects(htmlUrl, "text");
+            const rawHtml = String(htmlResponse.data);
+            if (isSpringerHtmlContentLikelyUseful(rawHtml, title)) {
+                htmlMarkdown = buildSpringerHtmlMarkdown(rawHtml, title, abstract);
+                htmlAssetHints = extractSpringerHtmlAssetHints(rawHtml, htmlResponse.finalUrl);
+                htmlAccessStatus = "direct_html_ok";
+
+                if (htmlMarkdown.length > 1000) {
+                    return {
+                        source: "Springer/Nature direct HTML",
+                        text: htmlMarkdown,
+                        metadata: {
+                            title,
+                            doi,
+                            publisher: publisherName,
+                            openaccess: metaRecord?.openaccess ?? metaRecord?.openAccess,
+                            extraction_status: "direct_html_ok"
+                        },
+                        assetHints: htmlAssetHints,
+                        accessStatus: "direct_html_ok"
+                    };
+                }
+            }
+        } catch (error: any) {
+            console.error(`Springer direct HTML failed (${error.message}).`);
+        }
+    }
+
+    if (pdfUrl) {
+        try {
+            console.error(`Attempting Springer/Nature direct PDF for DOI: ${doi}...`);
+            const pdfResponse = await fetchWithCookieRedirects(pdfUrl, "arraybuffer");
+            const pdfBuffer = Buffer.isBuffer(pdfResponse.data) ? pdfResponse.data : Buffer.from(pdfResponse.data);
+            if (pdfBuffer.length > 0) {
+                return {
+                    source: "Springer/Nature direct PDF",
+                    pdfBuffer,
+                    metadata: {
+                        title,
+                        doi,
+                        publisher: publisherName,
+                        openaccess: metaRecord?.openaccess ?? metaRecord?.openAccess,
+                        extraction_status: "direct_pdf_ok"
+                    },
+                    assetHints: htmlAssetHints,
+                    accessStatus: htmlAccessStatus || "direct_pdf_ok"
+                };
+            }
+        } catch (error: any) {
+            console.error(`Springer direct PDF failed (${error.message}).`);
+        }
+    }
+
     return null;
 }
 
@@ -1767,8 +2806,16 @@ async function fetchFromHeadlessBrowser(doi: string, extractConfig: any): Promis
             });
             try {
                 const page = await browser.newPage();
+
+                // Anti-detection: hide navigator.webdriver and fake plugins/chrome object
+                await page.evaluateOnNewDocument(() => {
+                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                    (window as any).chrome = { runtime: {} };
+                });
+
                 let foundCaptcha = false;
-                
+
                 // 1. Setup Interceptor to catch any downloaded PDF
                 page.on('response', async (response: any) => {
                     const contentType = response.headers()['content-type'];
@@ -2182,13 +3229,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let finalExtractedText = "";
         let successfulSource = "";
         let savedMarkdownPath = "";
+        let savedPaperArtifacts: PaperSaveResult | null = null;
         
-        // Define our waterfall strategies
-        const fetchStrategies: Array<{ name: string, run: () => Promise<FetchResult | null> }> = [];
-
-        // 1. TDM Layer
-        if (fetchStratEnabled["TDM"]) {
-            fetchStrategies.push({
+        // Define our waterfall strategies in config order
+        const strategyFactories: Record<string, { name: string; run: () => Promise<FetchResult | null> }> = {
+            TDM: {
                 name: "TDM",
                 run: async () => {
                     for (const tdmName of tdmOrder) {
@@ -2196,37 +3241,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         let res: FetchResult | null = null;
                         if (tdmName === "Elsevier") res = await fetchFromElsevier(doi);
                         if (tdmName === "Springer") res = await fetchFromSpringer(doi);
-                        
-                        if (res) return res; // Return the first successful TDM fetch
+
+                        if (res) return res;
                     }
                     return null;
                 }
-            });
-        }
-
-        // 2. Open Access Aggregators
-        if (fetchStratEnabled["OA"]) {
-            fetchStrategies.push({
+            },
+            OA: {
                 name: "OA Aggregators",
                 run: async () => await fetchFromOA(doi)
-            });
-        }
-
-        // 3. Sci-Hub
-        if (fetchStratEnabled["SciHub"]) {
-            fetchStrategies.push({
+            },
+            SciHub: {
                 name: "SciHub",
                 run: async () => await fetchFromSciHub(doi, extractConfig)
-            });
-        }
-
-        // 4. Headless Browser Scrape
-        if (fetchStratEnabled["Headless"]) {
-            fetchStrategies.push({
+            },
+            Headless: {
                 name: "Headless Scraper",
                 run: async () => await fetchFromHeadlessBrowser(doi, extractConfig)
-            });
-        }
+            }
+        };
+
+        const fetchStrategies = fetchStratOrder
+            .filter((strategyName) => fetchStratEnabled[strategyName] !== false && strategyFactories[strategyName])
+            .map((strategyName) => strategyFactories[strategyName]);
 
         for (const strategy of fetchStrategies) {
             console.error(`=> Executing Fetch Strategy: [${strategy.name}]`);
@@ -2314,23 +3351,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     // 4. Save parsed Markdown to papersDirectory for mcp-local-rag indexing
                     //    Separate from downloadDirectory (PDF) to avoid duplicate RAG ingestion
                     try {
-                        const papersDir = getPapersDirectory();
-                        if (!fs.existsSync(papersDir)) fs.mkdirSync(papersDir, { recursive: true });
-                        const safeDoi = safeDoiFromDoi(doi);
-                        const mdFilePath = path.join(papersDir, `${safeDoi}.md`);
-                        // Prepend YAML front-matter with metadata for RAG enrichment
-                        const frontMatter = [
-                            '---',
-                            `doi: "${doi}"`,
-                            expectedTitle ? `title: "${expectedTitle.replace(/"/g, '\\"')}"` : '',
-                            `source: "${fetchRes.source}"`,
-                            `fetched_at: "${new Date().toISOString()}"`,
-                            '---',
-                            ''
-                        ].filter(Boolean).join('\n');
-                        fs.writeFileSync(mdFilePath, frontMatter + parsedMarkdown, 'utf-8');
-                        savedMarkdownPath = mdFilePath;
-                        console.error(`📚 Saved Markdown for RAG indexing: ${mdFilePath}`);
+                        savedPaperArtifacts = await savePaperMarkdown({
+                            doi,
+                            title: expectedTitle || fetchRes.metadata?.title,
+                            source: fetchRes.source,
+                            markdown: parsedMarkdown,
+                            frontMatter: {
+                                publisher: fetchRes.metadata?.publisher || (publisher ? publisher : undefined),
+                                pii: fetchRes.metadata?.pii,
+                                eid: fetchRes.metadata?.eid,
+                                openaccess: fetchRes.metadata?.openaccess,
+                                extraction_status: fetchRes.metadata?.extraction_status || fetchRes.accessStatus
+                            },
+                            assetHints: fetchRes.assetHints
+                        });
+                        savedMarkdownPath = savedPaperArtifacts.markdownPath;
+                        console.error(`📚 Saved Markdown for RAG indexing: ${savedMarkdownPath}`);
                     } catch (saveErr: any) {
                         console.error(`❌ Failed to save Markdown: ${saveErr.message}`);
                         throw new Error(`Failed to save extracted markdown for DOI ${doi}: ${saveErr.message}`);
@@ -2365,7 +3401,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             title: expectedTitle,
             source: successfulSource,
             text: fs.readFileSync(savedMarkdownPath, 'utf-8'),
-            absolutePath: savedMarkdownPath
+            absolutePath: savedMarkdownPath,
+            assetRecords: savedPaperArtifacts?.assetRecords,
+            assetsDirectoryPath: savedPaperArtifacts?.assetsDirectoryPath,
+            assetsManifestPath: savedPaperArtifacts?.assetsManifestPath
         });
 
         return buildPaperSavedSummaryResult(summary);
@@ -2446,24 +3485,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Save to papers directory if DOI is provided
         let savedPath = "";
+        let savedPaperArtifacts: PaperSaveResult | null = null;
         if (doi) {
             try {
-                const papersDir = getPapersDirectory();
-                if (!fs.existsSync(papersDir)) fs.mkdirSync(papersDir, { recursive: true });
-                const safeDoi = safeDoiFromDoi(doi);
-                const mdFilePath = path.join(papersDir, `${safeDoi}.md`);
-                const frontMatter = [
-                    '---',
-                    `doi: "${doi}"`,
-                    expectedTitle ? `title: "${expectedTitle.replace(/"/g, '\\"')}"` : '',
-                    `source: "Local PDF (parse_pdf_file)"`,
-                    `fetched_at: "${new Date().toISOString()}"`,
-                    '---',
-                    ''
-                ].filter(Boolean).join('\n');
-                fs.writeFileSync(mdFilePath, frontMatter + parsedMarkdown, 'utf-8');
-                savedPath = mdFilePath;
-                console.error(`📚 Saved Markdown for RAG indexing: ${mdFilePath}`);
+                savedPaperArtifacts = await savePaperMarkdown({
+                    doi,
+                    title: expectedTitle,
+                    source: "Local PDF (parse_pdf_file)",
+                    markdown: parsedMarkdown
+                });
+                savedPath = savedPaperArtifacts.markdownPath;
+                console.error(`📚 Saved Markdown for RAG indexing: ${savedPath}`);
             } catch (saveErr: any) {
                 return {
                     content: [{ type: "text", text: `Error: Parsed PDF content but failed to save markdown for DOI ${doi}: ${saveErr.message}` }],
@@ -2478,7 +3510,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 title: expectedTitle,
                 source: "Local PDF (parse_pdf_file)",
                 text: fs.readFileSync(savedPath, 'utf-8'),
-                absolutePath: savedPath
+                absolutePath: savedPath,
+                assetRecords: savedPaperArtifacts?.assetRecords,
+                assetsDirectoryPath: savedPaperArtifacts?.assetsDirectoryPath,
+                assetsManifestPath: savedPaperArtifacts?.assetsManifestPath
             });
             return buildPaperSavedSummaryResult(summary);
         }
@@ -2617,6 +3652,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
                 "Canonical saved-paper summaries with structured outputs and resource links",
                 "Deep paper reading via read_saved_paper and grados://papers/{safe_doi}",
                 "Full-text extraction via TDM APIs, Open Access, Sci-Hub, and headless browser",
+                "Elsevier API-first full-text capture with sidecar figure/table asset manifests",
                 "Progressive PDF parsing (LlamaParse → Marker → Native)",
                 "QA validation to reject paywalls and truncated content",
                 "Automatic Markdown output with YAML front-matter and install-agnostic path resolution",
