@@ -145,7 +145,7 @@ function resolveConfigPath(): string {
 const CONFIG_PATH = resolveConfigPath();
 
 // PROJECT_ROOT: directory containing the config file. All user-project relative paths
-// (papers/, downloads/, mirror store) resolve against this, NOT process.cwd().
+// (markdown/, downloads/, mirror store) resolve against this, NOT process.cwd().
 const PROJECT_ROOT = path.dirname(CONFIG_PATH);
 
 // Load Configuration
@@ -276,6 +276,35 @@ interface PaperIndexEntry {
     relative_path: string;
     absolute_path: string;
     last_modified: string;
+}
+
+interface SavedPaperSearchHit {
+    safe_doi: string;
+    doi: string;
+    title: string;
+    canonical_uri: string;
+    relative_path: string;
+    score: number;
+    match_count: number;
+    top_snippet: string;
+    matched_sections: string[];
+}
+
+interface SavedPaperSearchResult {
+    kind: "saved_paper_search_result";
+    query: string;
+    retrieval_mode: "local_rag_cli" | "lexical_fallback";
+    papers: SavedPaperSearchHit[];
+    warnings: string[];
+}
+
+interface LocalRagCliQueryHit {
+    filePath: string;
+    chunkIndex: number;
+    text: string;
+    score: number;
+    fileTitle?: string | null;
+    source?: string;
 }
 
 const PAPER_METADATA_SCHEMA: JsonSchema = {
@@ -432,6 +461,67 @@ const PAPER_READ_RESULT_SCHEMA: JsonSchema = {
     additionalProperties: false
 };
 
+const SAVED_PAPER_SEARCH_INPUT_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        query: {
+            type: "string",
+            description: "Natural-language query for the local saved-paper library. Chinese and English are both supported."
+        },
+        limit: {
+            type: "number",
+            description: "Maximum number of papers to return (default: 5, clamped to 8).",
+            default: 5
+        }
+    },
+    required: ["query"],
+    additionalProperties: false
+};
+
+const SAVED_PAPER_SEARCH_OUTPUT_SCHEMA: JsonSchema = {
+    type: "object",
+    properties: {
+        kind: { type: "string", const: "saved_paper_search_result" },
+        query: { type: "string" },
+        retrieval_mode: { type: "string", enum: ["local_rag_cli", "lexical_fallback"] },
+        papers: {
+            type: "array",
+            items: {
+                type: "object",
+                properties: {
+                    safe_doi: { type: "string" },
+                    doi: { type: "string" },
+                    title: { type: "string" },
+                    canonical_uri: { type: "string" },
+                    relative_path: { type: "string" },
+                    score: { type: "number" },
+                    match_count: { type: "number" },
+                    top_snippet: { type: "string" },
+                    matched_sections: { type: "array", items: { type: "string" } }
+                },
+                required: [
+                    "safe_doi",
+                    "doi",
+                    "title",
+                    "canonical_uri",
+                    "relative_path",
+                    "score",
+                    "match_count",
+                    "top_snippet",
+                    "matched_sections"
+                ],
+                additionalProperties: false
+            }
+        },
+        warnings: {
+            type: "array",
+            items: { type: "string" }
+        }
+    },
+    required: ["kind", "query", "retrieval_mode", "papers", "warnings"],
+    additionalProperties: false
+};
+
 const EXTRACT_INPUT_SCHEMA: JsonSchema = {
     type: "object",
     properties: {
@@ -580,8 +670,17 @@ const TOOL_REGISTRY: ToolRegistryEntry[] = [
         outputSchema: SEARCH_OUTPUT_SCHEMA
     },
     {
+        name: "search_saved_papers",
+        description: "Searches the local saved-paper library in the configured Markdown directory (default: markdown/). When a compatible mcp-local-rag index is available, GRaDOS uses that semantic+keyword retrieval path through the local CLI. Otherwise it falls back to a compact lexical search over saved Markdown papers. Returns paper-level hits (DOI, URI, snippet, matched sections) instead of raw chunks to keep context small.",
+        purpose: "Search previously saved papers with a compact, paper-aware result format that is friendly to agent workflows",
+        returns: "SavedPaperSearchResult with retrieval mode, compact paper hits, snippets, and warnings.",
+        commonFailures: ["No saved papers exist yet", "Companion local-rag index is missing or incompatible, causing lexical fallback", "Malformed local-rag CLI output"],
+        inputSchema: SAVED_PAPER_SEARCH_INPUT_SCHEMA,
+        outputSchema: SAVED_PAPER_SEARCH_OUTPUT_SCHEMA
+    },
+    {
         name: "extract_paper_full_text",
-        description: "Given a DOI, attempts to fetch the full text of the paper using a waterfall strategy. Saves full text to papers/{safe_doi}.md, captures available figures/tables into papers/assets/{safe_doi}/ with a JSON manifest, and returns a compact, non-citable summary with canonical paths and URI. Use read_saved_paper or the paper resource to access the full text when needed. Includes QA validation to ensure it's not a paywall.",
+        description: "Given a DOI, attempts to fetch the full text of the paper using a waterfall strategy. Saves full text to the configured Markdown directory (default: markdown/{safe_doi}.md), captures available figures/tables into its sibling assets directory, and returns a compact, non-citable summary with canonical paths and URI. Use read_saved_paper or the paper resource to access the full text when needed. Includes QA validation to ensure it's not a paywall.",
         purpose: "Fetch full-text paper content by DOI, save it to disk, and return a canonical saved-paper summary",
         returns: "PaperSavedSummary with canonical path, URI, preview excerpt, and section headings.",
         commonFailures: ["Paywall blocks all strategies", "PDF parsing fails", "QA validation rejects truncated content", "Saved markdown file could not be written"],
@@ -590,7 +689,7 @@ const TOOL_REGISTRY: ToolRegistryEntry[] = [
     },
     {
         name: "parse_pdf_file",
-        description: "Parses a local PDF file using the configured parsing waterfall (LlamaParse → Marker → Native). Use this when you have already downloaded a PDF (e.g., via Playwright MCP browser automation) and need GRaDOS to parse it. If a DOI is provided, the parsed Markdown is saved to the papers directory with YAML front-matter and returned as a canonical saved-paper summary.",
+        description: "Parses a local PDF file using the configured parsing waterfall (LlamaParse → Marker → Native). Use this when you have already downloaded a PDF (e.g., via Playwright MCP browser automation) and need GRaDOS to parse it. If a DOI is provided, the parsed Markdown is saved to the configured Markdown directory with YAML front-matter and returned as a canonical saved-paper summary.",
         purpose: "Parse a local PDF file and optionally save it into the canonical papers store",
         returns: "Full parsed text for ad-hoc PDFs, or PaperSavedSummary when DOI-backed saving is requested.",
         commonFailures: ["File not found", "Not a valid PDF", "All parsers fail", "QA validation rejects content", "Saved markdown file could not be written"],
@@ -598,7 +697,7 @@ const TOOL_REGISTRY: ToolRegistryEntry[] = [
     },
     {
         name: "read_saved_paper",
-        description: "Reads a previously saved paper from papers/{safe_doi}.md. This is the canonical deep-reading tool for synthesis and citation verification. It supports DOI, safe_doi, or grados://papers/{safe_doi} identifiers plus paragraph windows and section queries.",
+        description: "Reads a previously saved paper from the configured Markdown directory. This is the canonical deep-reading tool for synthesis and citation verification. It supports DOI, safe_doi, or grados://papers/{safe_doi} identifiers plus paragraph windows and section queries.",
         purpose: "Read canonical paper markdown from the saved papers store for synthesis and citation checking",
         returns: "PaperReadResult with the canonical URI, resolved paths, paragraph window metadata, and returned text.",
         commonFailures: ["Identifier is missing or ambiguous", "Requested paper file does not exist", "URI is not a valid grados paper URI"],
@@ -1134,7 +1233,7 @@ function isValidPaperContent(text: string, doi: string, minCharacters: number = 
 
 function getPapersDirectory(): string {
     const papersDirectory = config?.extract?.papersDirectory;
-    return papersDirectory ? path.resolve(PROJECT_ROOT, papersDirectory) : path.join(PROJECT_ROOT, "papers");
+    return papersDirectory ? path.resolve(PROJECT_ROOT, papersDirectory) : path.join(PROJECT_ROOT, "markdown");
 }
 
 function getDownloadsDirectory(): string {
@@ -1584,7 +1683,7 @@ function parseFrontMatter(text: string): Record<string, string> {
 }
 
 function normalizeComparable(value: string): string {
-    return value.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    return value.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function splitIntoParagraphs(text: string, includeFrontMatter: boolean = false): string[] {
@@ -1859,6 +1958,444 @@ function listSavedPaperIndex(): PaperIndexEntry[] {
         .sort()
         .map((fileName) => buildPaperIndexEntry(fileName))
         .filter((entry): entry is PaperIndexEntry => entry !== null);
+}
+
+function resolveProjectPath(configuredPath: unknown, fallbackRelativePath: string): string {
+    if (typeof configuredPath === "string" && configuredPath.trim().length > 0) {
+        return path.isAbsolute(configuredPath)
+            ? configuredPath
+            : path.resolve(PROJECT_ROOT, configuredPath);
+    }
+    return path.join(PROJECT_ROOT, fallbackRelativePath);
+}
+
+function getLocalRagDbPath(): string {
+    return resolveProjectPath(config?.localRag?.dbPath, "lancedb");
+}
+
+function getLocalRagCacheDir(): string {
+    return resolveProjectPath(config?.localRag?.cacheDir, "models");
+}
+
+function getLocalRagModelName(): string {
+    const configured = config?.localRag?.modelName;
+    return typeof configured === "string" && configured.trim().length > 0
+        ? configured.trim()
+        : "Xenova/all-MiniLM-L6-v2";
+}
+
+function getLocalRagCliCommand(): { command: string; args: string[] } {
+    const command = typeof config?.localRag?.command === "string" && config.localRag.command.trim().length > 0
+        ? config.localRag.command.trim()
+        : "npx";
+    const args = Array.isArray(config?.localRag?.args)
+        ? config.localRag.args.map((value: unknown) => String(value))
+        : ["-y", "mcp-local-rag"];
+
+    return {
+        command,
+        args: args.length > 0 ? args : ["-y", "mcp-local-rag"]
+    };
+}
+
+function directoryHasEntries(dirPath: string): boolean {
+    return fs.existsSync(dirPath) && fs.readdirSync(dirPath).length > 0;
+}
+
+async function runCommandCapture(params: {
+    command: string;
+    args: string[];
+    cwd: string;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+}): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; error?: Error }> {
+    return await new Promise((resolve) => {
+        let stdout = "";
+        let stderr = "";
+        let settled = false;
+        let timedOut = false;
+        let timeoutId: NodeJS.Timeout | undefined;
+
+        const finalize = (result: { stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; error?: Error }) => {
+            if (settled) return;
+            settled = true;
+            if (timeoutId) clearTimeout(timeoutId);
+            resolve(result);
+        };
+
+        const child = spawn(params.command, params.args, {
+            cwd: params.cwd,
+            env: params.env,
+            stdio: ["ignore", "pipe", "pipe"]
+        });
+
+        child.stdout.on("data", (chunk) => {
+            stdout += chunk.toString();
+        });
+        child.stderr.on("data", (chunk) => {
+            stderr += chunk.toString();
+        });
+
+        child.on("error", (error) => {
+            finalize({ stdout, stderr, exitCode: null, timedOut, error });
+        });
+
+        child.on("close", (code) => {
+            finalize({ stdout, stderr, exitCode: code, timedOut });
+        });
+
+        timeoutId = setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGTERM");
+        }, params.timeoutMs ?? 180000);
+    });
+}
+
+function compactWarningMessage(message: string, maxChars: number = 220): string {
+    const normalized = message.replace(/\s+/g, " ").trim();
+    if (normalized.length <= maxChars) return normalized;
+    return `${normalized.slice(0, maxChars - 3).trimEnd()}...`;
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+    if (!needle) return 0;
+    let count = 0;
+    let index = 0;
+    while (true) {
+        const nextIndex = haystack.indexOf(needle, index);
+        if (nextIndex === -1) break;
+        count += 1;
+        index = nextIndex + needle.length;
+    }
+    return count;
+}
+
+function extractSearchTokens(query: string): string[] {
+    const normalized = normalizeComparable(query);
+    if (!normalized) return [];
+
+    return Array.from(new Set(
+        normalized
+            .split(/\s+/)
+            .map((token) => token.trim())
+            .filter((token) => token.length > 0)
+            .filter((token) => token.length > 1 || /[^\x00-\x7F]/.test(token))
+    ));
+}
+
+function scoreTextAgainstQuery(text: string, query: string, tokens: string[]): number {
+    const normalizedText = normalizeComparable(text);
+    if (!normalizedText) return 0;
+
+    const normalizedQuery = normalizeComparable(query);
+    let score = 0;
+
+    if (normalizedQuery && normalizedText.includes(normalizedQuery)) {
+        score += 6;
+    }
+
+    for (const token of tokens) {
+        const occurrences = countOccurrences(normalizedText, token);
+        if (occurrences > 0) {
+            score += Math.min(occurrences, 3);
+        }
+    }
+
+    return score;
+}
+
+function findNearestHeadingBeforeParagraph(paragraphs: string[], paragraphIndex: number): string | null {
+    for (let index = Math.min(paragraphIndex, paragraphs.length - 1); index >= 0; index -= 1) {
+        const match = paragraphs[index].match(/^#{1,6}\s+(.+)$/);
+        if (match?.[1]) {
+            return match[1].trim();
+        }
+    }
+    return null;
+}
+
+function extractMatchingHeadings(text: string, query: string, maxHeadings: number = 3): string[] {
+    const headings = extractSectionHeadings(text, 20);
+    const normalizedQuery = normalizeComparable(query);
+    const tokens = extractSearchTokens(query);
+
+    const matches = headings.filter((heading) => {
+        const normalizedHeading = normalizeComparable(heading);
+        if (!normalizedHeading) return false;
+        if (normalizedQuery && normalizedHeading.includes(normalizedQuery)) return true;
+        return tokens.some((token) => normalizedHeading.includes(token));
+    });
+
+    return matches.slice(0, maxHeadings);
+}
+
+function extractBestParagraphMatch(text: string, query: string): {
+    snippet: string;
+    matchedSections: string[];
+    matchCount: number;
+    paragraphScore: number;
+} {
+    const paragraphs = splitIntoParagraphs(text, false);
+    const tokens = extractSearchTokens(query);
+    let bestParagraph = "";
+    let bestScore = 0;
+    let bestIndex = -1;
+    let matchCount = 0;
+
+    paragraphs.forEach((paragraph, index) => {
+        const paragraphScore = scoreTextAgainstQuery(paragraph, query, tokens);
+        if (paragraphScore > 0) {
+            matchCount += 1;
+        }
+        if (paragraphScore > bestScore) {
+            bestScore = paragraphScore;
+            bestParagraph = paragraph;
+            bestIndex = index;
+        }
+    });
+
+    const matchedSections: string[] = [];
+    if (bestIndex >= 0) {
+        const nearestHeading = findNearestHeadingBeforeParagraph(paragraphs, bestIndex);
+        if (nearestHeading) {
+            matchedSections.push(nearestHeading);
+        }
+    }
+
+    if (matchedSections.length === 0) {
+        matchedSections.push(...extractMatchingHeadings(text, query, 3));
+    }
+
+    return {
+        snippet: truncateText(bestParagraph || extractPreviewExcerpt(text, 260), 260),
+        matchedSections: Array.from(new Set(matchedSections)).slice(0, 3),
+        matchCount,
+        paragraphScore: bestScore
+    };
+}
+
+function resolveSavedPaperEntryFromPath(filePath: string): PaperIndexEntry | null {
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(PROJECT_ROOT, filePath);
+    const papersDir = getPapersDirectory();
+    const relativeToPapers = path.relative(papersDir, absolutePath);
+
+    if (relativeToPapers.startsWith("..") || path.isAbsolute(relativeToPapers)) {
+        return null;
+    }
+
+    if (path.extname(absolutePath).toLowerCase() !== ".md") {
+        return null;
+    }
+
+    if (relativeToPapers.includes(path.sep)) {
+        return null;
+    }
+
+    return buildPaperIndexEntry(path.basename(absolutePath));
+}
+
+function buildLexicalSavedPaperSearchResult(query: string, limit: number, warnings: string[] = []): SavedPaperSearchResult {
+    const papers = listSavedPaperIndex()
+        .map((entry) => {
+            const text = fs.readFileSync(entry.absolute_path, "utf-8");
+            const titleScore = scoreTextAgainstQuery(entry.title, query, extractSearchTokens(query)) * 4;
+            const headingScore = extractMatchingHeadings(text, query, 5).length * 3;
+            const paragraphMatch = extractBestParagraphMatch(text, query);
+            const score = titleScore + headingScore + paragraphMatch.paragraphScore;
+
+            if (score <= 0) {
+                return null;
+            }
+
+            return {
+                safe_doi: entry.safe_doi,
+                doi: entry.doi,
+                title: entry.title,
+                canonical_uri: entry.canonical_uri,
+                relative_path: entry.relative_path,
+                score,
+                match_count: paragraphMatch.matchCount,
+                top_snippet: paragraphMatch.snippet,
+                matched_sections: paragraphMatch.matchedSections
+            } satisfies SavedPaperSearchHit;
+        })
+        .filter((entry): entry is SavedPaperSearchHit => entry !== null)
+        .sort((left, right) => right.score - left.score)
+        .slice(0, limit);
+
+    return {
+        kind: "saved_paper_search_result",
+        query,
+        retrieval_mode: "lexical_fallback",
+        papers,
+        warnings
+    };
+}
+
+function buildSemanticSavedPaperSearchResult(query: string, hits: LocalRagCliQueryHit[], limit: number, warnings: string[] = []): SavedPaperSearchResult {
+    const grouped = new Map<string, {
+        entry: PaperIndexEntry;
+        score: number;
+        matchCount: number;
+        snippet: string;
+        matchedSections: string[];
+    }>();
+
+    for (const hit of hits) {
+        const entry = resolveSavedPaperEntryFromPath(hit.filePath);
+        if (!entry) continue;
+
+        const current = grouped.get(entry.safe_doi);
+        const paperRecord = readSavedPaperFileBySafeDoi(entry.safe_doi);
+        const matchedSections = paperRecord ? extractMatchingHeadings(paperRecord.text, query, 3) : [];
+
+        if (!current) {
+            grouped.set(entry.safe_doi, {
+                entry,
+                score: hit.score,
+                matchCount: 1,
+                snippet: truncateText(hit.text.trim(), 260),
+                matchedSections
+            });
+            continue;
+        }
+
+        current.matchCount += 1;
+        current.score = Math.max(current.score, hit.score);
+        if (hit.score >= current.score && hit.text.trim().length > 0) {
+            current.snippet = truncateText(hit.text.trim(), 260);
+        }
+        current.matchedSections = Array.from(new Set([...current.matchedSections, ...matchedSections])).slice(0, 3);
+    }
+
+    const papers = Array.from(grouped.values())
+        .sort((left, right) => right.score - left.score)
+        .slice(0, limit)
+        .map((group) => ({
+            safe_doi: group.entry.safe_doi,
+            doi: group.entry.doi,
+            title: group.entry.title,
+            canonical_uri: group.entry.canonical_uri,
+            relative_path: group.entry.relative_path,
+            score: group.score,
+            match_count: group.matchCount,
+            top_snippet: group.snippet,
+            matched_sections: group.matchedSections
+        }));
+
+    return {
+        kind: "saved_paper_search_result",
+        query,
+        retrieval_mode: "local_rag_cli",
+        papers,
+        warnings
+    };
+}
+
+function buildSavedPaperSearchText(result: SavedPaperSearchResult): string {
+    const lines = [
+        `# Saved Paper Search`,
+        ``,
+        `| Field | Value |`,
+        `|-------|-------|`,
+        `| **Query** | ${result.query} |`,
+        `| **Retrieval Mode** | ${result.retrieval_mode} |`,
+        `| **Results** | ${result.papers.length} |`,
+        result.warnings.length > 0 ? `| **Warnings** | ${result.warnings.join(" | ")} |` : "",
+        ``
+    ].filter(Boolean);
+
+    if (result.papers.length === 0) {
+        lines.push(`No saved papers matched this query.`);
+    } else {
+        result.papers.forEach((paper, index) => {
+            lines.push(
+                `## ${index + 1}. ${paper.title}`,
+                ``,
+                `- DOI: ${paper.doi || "(unknown)"}`,
+                `- URI: \`${paper.canonical_uri}\``,
+                `- File: \`${paper.relative_path}\``,
+                `- Score: ${paper.score.toFixed(3)}`,
+                `- Match Count: ${paper.match_count}`,
+                `- Matched Sections: ${paper.matched_sections.length > 0 ? paper.matched_sections.join(" | ") : "(none)"}`,
+                ``,
+                paper.top_snippet || "(empty snippet)",
+                ``
+            );
+        });
+        lines.push(`---`, `> Use \`read_saved_paper\` with the DOI, safe_doi, or URI above before synthesis or citation verification.`);
+    }
+
+    return lines.join('\n');
+}
+
+async function trySemanticSavedPaperSearch(query: string, limit: number): Promise<SavedPaperSearchResult | null> {
+    if (config?.localRag?.enabled === false) {
+        return null;
+    }
+
+    const dbPath = getLocalRagDbPath();
+    if (!fs.existsSync(dbPath)) {
+        return null;
+    }
+
+    const cacheDir = getLocalRagCacheDir();
+    if (!directoryHasEntries(cacheDir)) {
+        return buildLexicalSavedPaperSearchResult(query, limit, ["Local semantic cache was not found; returned lexical matches instead."]);
+    }
+
+    const { command, args } = getLocalRagCliCommand();
+    const commandResult = await runCommandCapture({
+        command,
+        args: [
+            ...args,
+            "--db-path", dbPath,
+            "--cache-dir", cacheDir,
+            "--model-name", getLocalRagModelName(),
+            "query",
+            "--limit", String(limit),
+            query
+        ],
+        cwd: PROJECT_ROOT,
+        env: {
+            ...process.env,
+            BASE_DIR: getPapersDirectory(),
+            DB_PATH: dbPath,
+            CACHE_DIR: cacheDir,
+            MODEL_NAME: getLocalRagModelName()
+        },
+        timeoutMs: 180000
+    });
+
+    if (commandResult.timedOut) {
+        return buildLexicalSavedPaperSearchResult(query, limit, ["Local semantic search timed out; returned lexical matches instead."]);
+    }
+
+    if (commandResult.error) {
+        return buildLexicalSavedPaperSearchResult(query, limit, [`Local semantic search failed to start (${compactWarningMessage(commandResult.error.message)}); returned lexical matches instead.`]);
+    }
+
+    if (commandResult.exitCode !== 0) {
+        const reason = compactWarningMessage(commandResult.stderr || commandResult.stdout || `exit code ${commandResult.exitCode}`);
+        return buildLexicalSavedPaperSearchResult(query, limit, [`Local semantic search failed (${reason}); returned lexical matches instead.`]);
+    }
+
+    try {
+        const parsed = JSON.parse(commandResult.stdout) as LocalRagCliQueryHit[];
+        const semanticResult = buildSemanticSavedPaperSearchResult(query, Array.isArray(parsed) ? parsed : [], limit);
+        if (semanticResult.papers.length > 0) {
+            return semanticResult;
+        }
+        return buildLexicalSavedPaperSearchResult(query, limit, ["Local semantic search returned no saved-paper hits; returned lexical matches instead."]);
+    } catch (error: any) {
+        return buildLexicalSavedPaperSearchResult(query, limit, [`Local semantic search returned unreadable JSON (${compactWarningMessage(error?.message || String(error))}); returned lexical matches instead.`]);
+    }
+}
+
+async function searchSavedPapers(query: string, limit: number): Promise<SavedPaperSearchResult> {
+    const semanticResult = await trySemanticSavedPaperSearch(query, limit);
+    if (semanticResult) return semanticResult;
+    return buildLexicalSavedPaperSearchResult(query, limit);
 }
 
 // --- Fetch Strategies (Phase 1) ---
@@ -3190,6 +3727,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 continuation_applied: searchResult.continuationApplied
             }
         };
+    } else if (name === "search_saved_papers") {
+        const query = String(args?.query || "").trim();
+        const requestedLimit = Number(args?.limit ?? 5);
+        const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+            ? Math.min(8, Math.floor(requestedLimit))
+            : 5;
+
+        if (!query) {
+            return {
+                content: [{ type: "text", text: "Error: search_saved_papers requires a non-empty 'query'." }],
+                isError: true
+            };
+        }
+
+        const result = await searchSavedPapers(query, limit);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: buildSavedPaperSearchText(result)
+                }
+            ],
+            structuredContent: result
+        };
     } else if (name === "extract_paper_full_text") {
         const doi = String(args?.doi || "");
         const publisher = String(args?.publisher || "").toLowerCase();
@@ -3366,7 +3927,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         if (!savedMarkdownPath) {
             return {
-                content: [{ type: "text", text: `Error: Extracted text for DOI ${doi} but failed to persist it into the papers directory.` }],
+                content: [{ type: "text", text: `Error: Extracted text for DOI ${doi} but failed to persist it into the Markdown directory.` }],
                 isError: true
             };
         }
@@ -3625,6 +4186,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
             capabilities: [
                 "Waterfall search across academic databases (Crossref, PubMed, Web of Science, Elsevier, Springer)",
                 "Canonical saved-paper summaries with structured outputs and resource links",
+                "Compact saved-paper search via search_saved_papers (semantic through local-rag CLI when available, lexical fallback otherwise)",
                 "Deep paper reading via read_saved_paper and grados://papers/{safe_doi}",
                 "Full-text extraction via TDM APIs, Open Access, Sci-Hub, and headless browser",
                 "Elsevier API-first full-text capture with sidecar figure/table asset manifests",
@@ -3680,6 +4242,14 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
             zotero: {
                 configured: !!(config?.zotero?.libraryId && getApiKey("ZOTERO_API_KEY")),
                 libraryType: config?.zotero?.libraryType || "not set"
+            },
+            localRag: {
+                enabled: config?.localRag?.enabled !== false,
+                papersBaseDir: getPapersDirectory(),
+                dbPath: getLocalRagDbPath(),
+                cacheDir: getLocalRagCacheDir(),
+                modelName: getLocalRagModelName(),
+                integratedSearchTool: "search_saved_papers"
             },
             academicEtiquetteEmail: getEtiquetteEmail(),
             searchSources: config?.search?.order || ["Elsevier", "Springer", "WebOfScience", "Crossref", "PubMed"],

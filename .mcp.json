@@ -8,7 +8,10 @@
       "command": "npx",
       "args": ["-y", "mcp-local-rag"],
       "env": {
-        "BASE_DIR": "${CLAUDE_PLUGIN_DATA}/papers"
+        "BASE_DIR": "${CLAUDE_PLUGIN_DATA}/markdown",
+        "DB_PATH": "${CLAUDE_PLUGIN_DATA}/lancedb",
+        "CACHE_DIR": "${CLAUDE_PLUGIN_DATA}/models",
+        "MODEL_NAME": "Xenova/all-MiniLM-L6-v2"
       }
     },
     "playwright": {

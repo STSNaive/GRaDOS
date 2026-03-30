@@ -12,14 +12,15 @@
 | Tool | Purpose |
 |---|---|
 | `grados:search_academic_papers` | Waterfall search across academic databases (Crossref, PubMed, Web of Science, Elsevier, Springer). Returns deduplicated paper metadata with DOIs and abstracts. |
-| `grados:extract_paper_full_text` | Fetch full-text paper by DOI via TDM -> OA -> Sci-Hub -> Headless waterfall, then parse PDF via LlamaParse -> Marker -> Native. Auto-saves `.md` to `papers/` directory. **Returns a compact, non-citable saved-paper summary** (title, DOI, canonical path/URI, short preview, section headings), not the full text. |
-| `grados:parse_pdf_file` | Parse a local PDF file using the configured parsing waterfall (LlamaParse -> Marker -> Native). Use when you have downloaded a PDF via browser automation (e.g., Playwright MCP) and need to extract text. If DOI is provided, saves `.md` to `papers/` with front-matter and returns the same saved-paper summary contract as `extract_paper_full_text`. |
-| `grados:read_saved_paper` | Canonical deep-reading tool for previously saved paper Markdown in `papers/`. Accepts `doi`, `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis/citation verification. |
+| `grados:search_saved_papers` | Compact paper-level search over the saved-paper store in the configured Markdown directory (default: `markdown/`). Uses semantic+keyword retrieval through the local `mcp-local-rag` CLI when a compatible index exists, otherwise falls back to lexical Markdown search. Returns `doi`, `safe_doi`, `canonical_uri`, snippets, and matched sections instead of raw chunks. |
+| `grados:extract_paper_full_text` | Fetch full-text paper by DOI via TDM -> OA -> Sci-Hub -> Headless waterfall, then parse PDF via LlamaParse -> Marker -> Native. Auto-saves `.md` to the configured Markdown directory (default: `markdown/`). **Returns a compact, non-citable saved-paper summary** (title, DOI, canonical path/URI, short preview, section headings), not the full text. |
+| `grados:parse_pdf_file` | Parse a local PDF file using the configured parsing waterfall (LlamaParse -> Marker -> Native). Use when you have downloaded a PDF via browser automation (e.g., Playwright MCP) and need to extract text. If DOI is provided, saves `.md` to the configured Markdown directory (default: `markdown/`) with front-matter and returns the same saved-paper summary contract as `extract_paper_full_text`. |
+| `grados:read_saved_paper` | Canonical deep-reading tool for previously saved paper Markdown in the configured Markdown directory. Accepts `doi`, `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis/citation verification. |
 | `grados:save_paper_to_zotero` | Save cited paper metadata to Zotero web library. Requires ZOTERO_API_KEY and zotero.libraryId in config. |
 
 ## Local RAG Server Tools
 
-> If `local-rag` tools are not available (mcp-local-rag not installed), skip all local library steps and proceed directly to remote search.
+> `grados:search_saved_papers` is the preferred Step 0 entrypoint because it keeps outputs compact and can fall back gracefully. Use the direct `local-rag:*` tools when you specifically need raw chunks or index-management operations.
 
 | Tool | Purpose |
 |---|---|
@@ -51,5 +52,5 @@ If your client supports resource reading (Claude Code `@` mentions, Codex resour
 | `grados://about` | Service overview: name, version, capabilities, and tool list |
 | `grados://status` | Health check: config loaded, directories exist, API keys configured |
 | `grados://tools` | Read-only mirror of tool schemas with parameter details and common failure modes |
-| `grados://papers/index` | Lightweight index of saved papers in the configured `papers/` directory |
+| `grados://papers/index` | Lightweight index of saved papers in the configured Markdown directory (default: `markdown/`) |
 | `grados://papers/{safe_doi}` | Canonical full Markdown content for one saved paper |

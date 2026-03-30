@@ -24,18 +24,19 @@ GRaDOS gives AI agents (Claude, Codex, etc.) the ability to search academic data
 
 GRaDOS is designed to sit inside an agent workflow:
 
-1. Check a local paper library first when paired with `mcp-local-rag`
+1. Check the local paper library first via `search_saved_papers`; when a compatible `mcp-local-rag` index exists, GRaDOS reuses semantic retrieval, otherwise it falls back to compact Markdown search
 2. Search remote academic sources in configured priority order
 3. Fetch full text with a waterfall: `TDM -> OA -> Sci-Hub -> Headless`
 4. Parse PDFs with `LlamaParse -> Marker -> Native`
 5. Run QA checks before returning content
-6. Save raw PDFs to `downloads/` and parsed Markdown to `papers/` for later reuse
+6. Save raw PDFs to `downloads/` and parsed Markdown to `markdown/` for later reuse
 
 ### MCP Tools 🔧
 
 | Server | Tool | Description |
 |---|---|---|
 | GRaDOS | `search_academic_papers` | Waterfall search across Scopus, Web of Science, Springer, Crossref, and PubMed. Deduplicates by DOI and can continue later with `continuation_token` to fetch more unseen papers. |
+| GRaDOS | `search_saved_papers` | Compact paper-level search over the saved-paper store in `markdown/` by default. If a compatible `mcp-local-rag` CLI + index is available, GRaDOS uses semantic+keyword retrieval; otherwise it automatically falls back to lexical search over saved Markdown. Returns `doi`, `safe_doi`, `canonical_uri`, snippets, and matched sections instead of raw chunks. |
 | GRaDOS | `extract_paper_full_text` | 4-stage fetch + 3-stage parse + QA validation. Auto-saves full-text `.md` to the papers directory and returns a **compact, non-citable saved-paper summary** (title, DOI, canonical path/URI, short preview, section headings) to keep the agent's context window clean. |
 | GRaDOS | `parse_pdf_file` | Parse a local PDF via configured waterfall (LlamaParse → Marker → Native). Use after downloading PDFs with Playwright MCP. If a DOI is provided, it returns the same saved-paper summary contract as `extract_paper_full_text`. |
 | GRaDOS | `read_saved_paper` | Canonical deep-reading tool for saved papers. Accepts `doi`, `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis and citation verification. |
@@ -48,7 +49,7 @@ GRaDOS is designed to sit inside an agent workflow:
 
 ### SKILL.md (Companion Skill) 🤖
 
-`skills/grados/SKILL.md` is the companion structured prompt that describes the research workflow around GRaDOS and `mcp-local-rag`. Copy it into your agent's skill/prompt directory to enable the full workflow.
+`skills/grados/SKILL.md` is the companion structured prompt that describes the research workflow around GRaDOS and optional `mcp-local-rag` acceleration. Copy it into your agent's skill/prompt directory to enable the full workflow.
 
 ### Local Paper Knowledge Base 🗂️
 
@@ -57,7 +58,7 @@ After extracting a paper, GRaDOS stores the PDF and the parsed Markdown separate
 | Directory | Content | Purpose | Configured by |
 |---|---|---|---|
 | `downloads/` | Raw `.pdf` files | Archival only, not indexed | `extract.downloadDirectory` |
-| `papers/` | Parsed `.md` files (with YAML front-matter) | Available for semantic and keyword retrieval | `extract.papersDirectory` |
+| `markdown/` | Parsed `.md` files (with YAML front-matter) | Available for semantic and keyword retrieval | `extract.papersDirectory` |
 
 Each Markdown file includes structured front-matter:
 
@@ -70,14 +71,14 @@ fetched_at: "2026-03-17T12:00:00.000Z"
 ---
 ```
 
-Pair with [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag) to build a vector index over `papers/` for local semantic and keyword retrieval. The full workflow:
+Pair with [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag) to build a vector index over `markdown/` for local semantic and keyword retrieval. GRaDOS's `search_saved_papers` tool will reuse that index when available, and automatically fall back to compact lexical search when it is not. The full workflow:
 
-1. **Extract** - GRaDOS downloads a PDF and parses it, saves `.pdf` to `downloads/` and `.md` to `papers/`
+1. **Extract** - GRaDOS downloads a PDF and parses it, saves `.pdf` to `downloads/` and `.md` to `markdown/`
 2. **Ingest** - The AI agent calls `ingest_file` on the new `.md` file, which embeds it into a local LanceDB vector store
-3. **Query** - On future questions, the workflow can check the local library first via `query_documents`, avoiding redundant API calls and re-extraction
+3. **Query** - On future questions, the workflow can check the local library first via `search_saved_papers`; if raw chunk access is needed, `query_documents` remains available
 4. **Manage** - Use `list_files` to see all indexed papers and `delete_file` to remove outdated entries
 
-> **Note:** `mcp-local-rag` does not auto-scan directories. Papers must be explicitly ingested via the `ingest_file` tool. The included `SKILL.md` workflow can handle this automatically.
+> **Note:** `mcp-local-rag` does not auto-scan directories. Papers must still be explicitly ingested via `ingest_file` to enter the semantic index. Even without that index, `search_saved_papers` can still search saved Markdown lexically.
 
 GRaDOS also exposes the saved paper store as installation-agnostic MCP surfaces:
 
@@ -107,7 +108,7 @@ If you use [Claude Code](https://code.claude.com/) (CLI or Desktop), install GRa
 /grados:setup
 ```
 
-This creates `${CLAUDE_PLUGIN_DATA}/grados-config.json` and guides you through setting API keys. The plugin also points `local-rag` at `${CLAUDE_PLUGIN_DATA}/papers`, so no environment variables or shell profile editing are required for the default setup.
+This creates `${CLAUDE_PLUGIN_DATA}/grados-config.json` and guides you through setting API keys. The plugin also preconfigures `local-rag` with `BASE_DIR=${CLAUDE_PLUGIN_DATA}/markdown`, `DB_PATH=${CLAUDE_PLUGIN_DATA}/lancedb`, `CACHE_DIR=${CLAUDE_PLUGIN_DATA}/models`, and `MODEL_NAME=Xenova/all-MiniLM-L6-v2`, so no environment variables or shell profile editing are required for the default setup.
 
 **3. Reload and verify:**
 
@@ -255,7 +256,7 @@ Marker successfully converted PDF to Markdown.
 
 ### Optional: Install mcp-local-rag (local paper library with RAG) 🔎
 
-[mcp-local-rag](https://github.com/shinpr/mcp-local-rag) provides semantic and keyword retrieval for local papers. Pure Node.js, no Python required.
+[mcp-local-rag](https://github.com/shinpr/mcp-local-rag) provides semantic and keyword retrieval for local papers. Pure Node.js, no Python required. GRaDOS's built-in `search_saved_papers` tool can reuse the same CLI + DB for semantic retrieval when available, and otherwise falls back to lexical saved-paper search.
 
 > **Version note:** the current `mcp-local-rag` 0.10.x line requires Node.js 20 or newer.
 >
@@ -267,11 +268,16 @@ Marker successfully converted PDF to Markdown.
 # Claude Code
 claude mcp add local-rag -- npx -y mcp-local-rag
 
-# Codex (set BASE_DIR explicitly)
-codex mcp add local-rag --env BASE_DIR=/absolute/path/to/papers -- npx -y mcp-local-rag
+# Codex (fully align the standalone server with GRaDOS localRag defaults)
+codex mcp add local-rag \
+  --env BASE_DIR=/absolute/path/to/markdown \
+  --env DB_PATH=/absolute/path/to/lancedb \
+  --env CACHE_DIR=/absolute/path/to/models \
+  --env MODEL_NAME=Xenova/all-MiniLM-L6-v2 \
+  -- npx -y mcp-local-rag
 ```
 
-For Claude Code, the manual config below is the clearest way to ensure `BASE_DIR` matches your `papers` directory.
+For Claude Code, the manual config below is the clearest way to ensure `BASE_DIR`, `DB_PATH`, `CACHE_DIR`, and `MODEL_NAME` stay aligned with `grados-config.json`.
 
 Or configure manually - Claude Code (`.claude/settings.json`):
 
@@ -287,7 +293,10 @@ Or configure manually - Claude Code (`.claude/settings.json`):
       "command": "npx",
       "args": ["-y", "mcp-local-rag"],
       "env": {
-        "BASE_DIR": "/absolute/path/to/papers"
+        "BASE_DIR": "/absolute/path/to/markdown",
+        "DB_PATH": "/absolute/path/to/lancedb",
+        "CACHE_DIR": "/absolute/path/to/models",
+        "MODEL_NAME": "Xenova/all-MiniLM-L6-v2"
       }
     }
   }
@@ -305,10 +314,10 @@ cwd = "/path/to/project-or-config-directory"
 [mcp_servers.local-rag]
 command = "npx"
 args = ["-y", "mcp-local-rag"]
-env = { BASE_DIR = "/absolute/path/to/papers" }
+env = { BASE_DIR = "/absolute/path/to/markdown", DB_PATH = "/absolute/path/to/lancedb", CACHE_DIR = "/absolute/path/to/models", MODEL_NAME = "Xenova/all-MiniLM-L6-v2" }
 ```
 
-> **Important:** `BASE_DIR` must point to the same absolute directory as `extract.papersDirectory` in `grados-config.json`. If `extract.papersDirectory` is relative, resolve it from `PROJECT_ROOT` first (usually the config file's directory).
+> **Important:** `BASE_DIR` must point to the same absolute directory as `extract.papersDirectory` in `grados-config.json`. If `extract.papersDirectory` is relative, resolve it from `PROJECT_ROOT` first (usually the config file's directory). To keep direct `local-rag:*` calls and `grados:search_saved_papers` on the same semantic index, align `DB_PATH`, `CACHE_DIR`, and `MODEL_NAME` with `localRag.dbPath`, `localRag.cacheDir`, and `localRag.modelName`.
 
 
 ### Optional: Zotero web library integration 📚
@@ -381,7 +390,7 @@ The `SKILL.md` workflow (Step 3b) automatically guides the agent to use Playwrig
 
 ### Configuration Example: GRaDOS + mcp-local-rag + Playwright 🧩
 
-If you want to wire up the most common end-to-end research workflow in one shot, configure these three MCP services together. This example assumes your config file lives at `D:/Projects/Papers/grados-config.json`, and that `extract.papersDirectory` uses the default relative path `./papers`, so `mcp-local-rag` should point `BASE_DIR` to `D:/Projects/Papers/papers`.
+If you want to wire up the most common end-to-end research workflow in one shot, configure these three MCP services together. This example assumes your config file lives at `D:/Projects/Papers/grados-config.json`, that `extract.papersDirectory` uses the default relative path `./markdown`, and that `localRag.dbPath` / `localRag.cacheDir` keep their default relative values `./lancedb` / `./models`. With those defaults, `mcp-local-rag` should point to the paths below.
 
 Claude Code (`.claude/settings.json`):
 
@@ -396,7 +405,10 @@ Claude Code (`.claude/settings.json`):
       "command": "npx",
       "args": ["-y", "mcp-local-rag"],
       "env": {
-        "BASE_DIR": "D:/Projects/Papers/papers"
+        "BASE_DIR": "D:/Projects/Papers/markdown",
+        "DB_PATH": "D:/Projects/Papers/lancedb",
+        "CACHE_DIR": "D:/Projects/Papers/models",
+        "MODEL_NAME": "Xenova/all-MiniLM-L6-v2"
       }
     },
     "playwright": {
@@ -417,7 +429,7 @@ args = ["-y", "grados", "--config", "D:/Projects/Papers/grados-config.json"]
 [mcp_servers.local-rag]
 command = "npx"
 args = ["-y", "mcp-local-rag"]
-env = { BASE_DIR = "D:/Projects/Papers/papers" }
+env = { BASE_DIR = "D:/Projects/Papers/markdown", DB_PATH = "D:/Projects/Papers/lancedb", CACHE_DIR = "D:/Projects/Papers/models", MODEL_NAME = "Xenova/all-MiniLM-L6-v2" }
 
 [mcp_servers.playwright]
 command = "npx"
@@ -474,9 +486,9 @@ The `extract.fetchStrategy.order` controls the full-text extraction priority:
 ### Storage Directories 🗄️
 
 - `extract.downloadDirectory` defaults to `./downloads` and stores raw PDF files for archival use
-- `extract.papersDirectory` defaults to `./papers` and stores parsed Markdown for local indexing
+- `extract.papersDirectory` defaults to `./markdown` and stores parsed Markdown for local indexing
 - relative paths are resolved from `PROJECT_ROOT` (the config file's directory); the "Tip: Path Resolution" below shows the full rule set and examples
-- `mcp-local-rag`'s `BASE_DIR` must point to the same absolute directory as `extract.papersDirectory`
+- `mcp-local-rag`'s `BASE_DIR` must point to the same absolute directory as `extract.papersDirectory`; align `DB_PATH`, `CACHE_DIR`, and `MODEL_NAME` with `localRag.dbPath`, `localRag.cacheDir`, and `localRag.modelName` when you want shared semantic search
 
 #### Tip: Path Resolution 💡
 
@@ -485,7 +497,7 @@ GRaDOS resolves paths in two separate scopes:
 | Scope | Resolved from | Examples |
 |---|---|---|
 | **Package assets** | npm install directory (`PACKAGE_ROOT`) | `marker-worker/` |
-| **Project files** | Config file's parent directory (`PROJECT_ROOT`) | `downloads/`, `papers/`, `scihub-mirrors.txt` |
+| **Project files** | Config file's parent directory (`PROJECT_ROOT`) | `downloads/`, `markdown/`, `scihub-mirrors.txt` |
 
 **Config file discovery** (in priority order):
 
@@ -493,7 +505,7 @@ GRaDOS resolves paths in two separate scopes:
 2. `GRADOS_CONFIG_PATH` environment variable
 3. `cwd/grados-config.json` (default fallback)
 
-The directory containing the resolved config file becomes `PROJECT_ROOT`. All relative paths in `grados-config.json` (like `./papers`, `./downloads`) resolve from there — not from `cwd`.
+The directory containing the resolved config file becomes `PROJECT_ROOT`. All relative paths in `grados-config.json` (like `./markdown`, `./downloads`) resolve from there — not from `cwd`.
 
 **Examples:**
 
@@ -533,7 +545,7 @@ If you want storage in a different directory, use absolute paths in config:
 {
   "extract": {
     "downloadDirectory": "E:/academic-cache/downloads",
-    "papersDirectory": "E:/academic-cache/papers"
+    "papersDirectory": "E:/academic-cache/markdown"
   }
 }
 ```
@@ -556,7 +568,7 @@ GRaDOS is available as a Claude Code plugin, providing a skill, slash commands, 
 The bundled `.mcp.json` wires the plugin up like this:
 
 - `grados` is launched with `--config ${CLAUDE_PLUGIN_DATA}/grados-config.json`
-- `local-rag` is launched with `BASE_DIR=${CLAUDE_PLUGIN_DATA}/papers`
+- `local-rag` is launched with `BASE_DIR=${CLAUDE_PLUGIN_DATA}/markdown`, `DB_PATH=${CLAUDE_PLUGIN_DATA}/lancedb`, `CACHE_DIR=${CLAUDE_PLUGIN_DATA}/models`, and `MODEL_NAME=Xenova/all-MiniLM-L6-v2`
 - `playwright` is launched in headless mode
 
 Run `/grados:setup` to create `${CLAUDE_PLUGIN_DATA}/grados-config.json`, edit that file with the API keys you want to use, then run `/reload-plugins` so the bundled MCP servers pick up the updated config. No shell environment variables are required for the default plugin workflow.

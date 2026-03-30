@@ -18,7 +18,7 @@
     "extract": {
         "downloadDirectory": "./downloads",
         "_comment_downloadDirectory": "Where raw PDF files are saved (archival only). NOT indexed by mcp-local-rag.",
-        "papersDirectory": "./papers",
+        "papersDirectory": "./markdown",
         "_comment_papersDirectory": "Where parsed Markdown (.md) files are saved. This is the BASE_DIR for mcp-local-rag. Agent uses ingest_file / query_documents on files here.",
         "fetchStrategy": {
             "order": ["TDM", "OA", "SciHub", "Headless"],
@@ -65,9 +65,19 @@
     "localRag": {
         "enabled": true,
         "_comment_enabled": "Set to false to skip local paper library steps in the agent workflow (Step 0 in SKILL.md). The mcp-local-rag server must still be separately registered in your MCP client.",
-        "_comment": "Reference config for mcp-local-rag. Current 0.10.x requires Node.js 20+. Install: npx -y mcp-local-rag. Register: claude mcp add local-rag -- npx -y mcp-local-rag",
-        "baseDirShouldMatch": "./papers",
-        "_comment_baseDirShouldMatch": "Set mcp-local-rag's BASE_DIR env var to the same absolute path as extract.papersDirectory above."
+        "_comment": "Reference config for mcp-local-rag. Current 0.10.x requires Node.js 20+. Install: npx -y mcp-local-rag. For direct local-rag:* calls to share the same index as GRaDOS search_saved_papers, keep BASE_DIR/DB_PATH/CACHE_DIR/MODEL_NAME aligned with the MCP client config shown in the README.",
+        "baseDirShouldMatch": "./markdown",
+        "_comment_baseDirShouldMatch": "Set mcp-local-rag's BASE_DIR env var to the same absolute path as extract.papersDirectory above.",
+        "dbPath": "./lancedb",
+        "_comment_dbPath": "Optional but recommended. Keep this aligned with the companion mcp-local-rag DB_PATH so GRaDOS search_saved_papers and direct local-rag tools see the same semantic index.",
+        "cacheDir": "./models",
+        "_comment_cacheDir": "Optional model cache directory for both mcp-local-rag and GRaDOS's built-in semantic saved-paper search.",
+        "modelName": "Xenova/all-MiniLM-L6-v2",
+        "_comment_modelName": "Optional embedding model for mcp-local-rag CLI usage. Changing it requires rebuilding the local RAG index.",
+        "command": "npx",
+        "_comment_command": "Optional CLI command GRaDOS should use when search_saved_papers attempts semantic retrieval through mcp-local-rag.",
+        "args": ["-y", "mcp-local-rag"],
+        "_comment_args": "Optional CLI args paired with localRag.command above."
     },
     "playwrightMcp": {
         "_comment": "Optional companion: Playwright MCP provides LLM-friendly browser automation as a fallback when the built-in headless browser fails. Install: npm install -g @playwright/mcp. Register: claude mcp add playwright -- npx @playwright/mcp --headless",

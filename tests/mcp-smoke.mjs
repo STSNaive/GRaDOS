@@ -36,6 +36,15 @@ async function test() {
     const templateUris = resourceTemplates.map(t => t.uriTemplate);
     console.log(`   Resource templates: ${templateUris.join(', ')}\n`);
 
+    console.log('2b. Searching saved papers (local library)...');
+    const savedSearchResult = await client.callTool({
+        name: 'search_saved_papers',
+        arguments: { query: 'elastic metamaterial', limit: 3 }
+    });
+    const savedSearchStructured = savedSearchResult.structuredContent;
+    console.log(`   retrieval_mode: ${savedSearchStructured?.retrieval_mode || '(none)'}`);
+    console.log(`   paper hits: ${savedSearchStructured?.papers?.length || 0}\n`);
+
     // 3. Search
     console.log('3. Searching "elastic metamaterial" (limit 5)...');
     const searchResult = await client.callTool({
@@ -90,12 +99,12 @@ async function test() {
     // 5. Check file storage
     console.log('5. Checking file storage...');
     const safeDoi = testDoi.replace(/[^a-z0-9]/gi, '_');
-    const mdFile = join(process.cwd(), 'papers', `${safeDoi}.md`);
+    const mdFile = join(process.cwd(), 'markdown', `${safeDoi}.md`);
     const pdfFile = join(process.cwd(), 'downloads', `${safeDoi}.pdf`);
 
     const mdExists = existsSync(mdFile);
     const pdfExists = existsSync(pdfFile);
-    console.log(`   papers/${safeDoi}.md:    ${mdExists ? '✅ ' + statSync(mdFile).size + ' bytes' : '⚠️  not found'}`);
+    console.log(`   markdown/${safeDoi}.md: ${mdExists ? '✅ ' + statSync(mdFile).size + ' bytes' : '⚠️  not found'}`);
     console.log(`   downloads/${safeDoi}.pdf: ${pdfExists ? '✅ ' + statSync(pdfFile).size + ' bytes' : '⚠️  not found (text-only source)'}`);
     console.log();
 
@@ -136,12 +145,12 @@ async function test() {
 
     // Summary
     console.log('=== Summary ===');
-    console.log(`   Tools registered:     ${toolNames.length === 5 ? '✅' : '❌'} (${toolNames.length}/5)`);
+    console.log(`   Tools registered:     ${toolNames.length === 6 ? '✅' : '❌'} (${toolNames.length}/6)`);
     console.log(`   Resources listed:     ${resourceUris.includes('grados://papers/index') ? '✅' : '❌'} (${resourceUris.length} resources)`);
     console.log(`   Resource template:    ${templateUris.includes('grados://papers/{safe_doi}') ? '✅' : '❌'}`);
     console.log(`   Search works:         ${dois.length > 0 ? '✅' : '❌'} (${dois.length} results)`);
     console.log(`   Extraction contract:  ${!isError && extractSummary?.kind === 'paper_saved_summary' ? '✅' : (isError ? '⚠️  live extraction failed' : '❌')}`);
-    console.log(`   MD saved to papers/:  ${mdExists ? '✅' : (isError ? '⚠️  extraction failed' : '❌')}`);
+    console.log(`   MD saved to markdown/: ${mdExists ? '✅' : (isError ? '⚠️  extraction failed' : '❌')}`);
     console.log(`   Read-back works:      ${mdExists ? (readOk ? '✅' : '❌') : '⚠️  skipped'}`);
     console.log(`   Zotero graceful fail: ${zoteroIsError ? '✅' : '❌'}`);
 

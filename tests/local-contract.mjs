@@ -46,7 +46,7 @@ function createFixtureMarkdown() {
 
 async function run() {
     const tempDir = mkdtempSync(join(tmpdir(), 'grados-contract-'));
-    const papersDir = join(tempDir, 'papers');
+    const papersDir = join(tempDir, 'markdown');
     const downloadsDir = join(tempDir, 'downloads');
     mkdirSync(papersDir, { recursive: true });
     mkdirSync(downloadsDir, { recursive: true });
@@ -54,8 +54,11 @@ async function run() {
     const configPath = join(tempDir, 'grados-config.json');
     writeFileSync(configPath, JSON.stringify({
         extract: {
-            papersDirectory: './papers',
+            papersDirectory: './markdown',
             downloadDirectory: './downloads'
+        },
+        localRag: {
+            enabled: false
         },
         search: {
             order: ['Crossref'],
@@ -78,14 +81,19 @@ async function run() {
         await client.connect(transport);
 
         const { tools } = await client.listTools();
-        assert.equal(tools.length, 5, 'expected five tools');
+        assert.equal(tools.length, 6, 'expected six tools');
         assert(tools.some((tool) => tool.name === 'read_saved_paper'), 'read_saved_paper should be listed');
+        assert(tools.some((tool) => tool.name === 'search_saved_papers'), 'search_saved_papers should be listed');
 
         const searchTool = tools.find((tool) => tool.name === 'search_academic_papers');
         assert.equal(searchTool?.inputSchema?.properties?.limit?.default, 15, 'search limit default should be 15');
         assert.equal(searchTool?.inputSchema?.properties?.continuation_token?.type, 'string', 'search continuation token should be exposed in the tool schema');
         assert.equal(searchTool?.outputSchema?.properties?.has_more?.type, 'boolean', 'search output should expose has_more');
         assert.equal(searchTool?.outputSchema?.properties?.next_continuation_token?.type, 'string', 'search output should expose next_continuation_token');
+
+        const savedSearchTool = tools.find((tool) => tool.name === 'search_saved_papers');
+        assert.equal(savedSearchTool?.inputSchema?.properties?.limit?.default, 5, 'saved search limit default should be 5');
+        assert.equal(savedSearchTool?.outputSchema?.properties?.retrieval_mode?.type, 'string', 'saved search output should expose retrieval_mode');
 
         const { resources } = await client.listResources();
         assert(resources.some((resource) => resource.uri === 'grados://papers/index'), 'papers index resource should be listed');
@@ -108,6 +116,15 @@ async function run() {
         const paperIndex = JSON.parse(paperIndexResource.contents[0].text);
         assert.equal(paperIndex.length, 1, 'papers index should list one fixture paper');
         assert.equal(paperIndex[0].canonical_uri, FIXTURE_URI, 'papers index should expose canonical URI');
+
+        const savedSearch = await client.callTool({
+            name: 'search_saved_papers',
+            arguments: { query: 'discussion paragraph', limit: 3 }
+        });
+        assert.equal(savedSearch.structuredContent?.kind, 'saved_paper_search_result');
+        assert.equal(savedSearch.structuredContent?.retrieval_mode, 'lexical_fallback');
+        assert.equal(savedSearch.structuredContent?.papers?.[0]?.canonical_uri, FIXTURE_URI);
+        assert(savedSearch.structuredContent?.papers?.[0]?.top_snippet.includes('Discussion paragraph one.'), 'saved search should return a compact matching snippet');
 
         const safeDoiRead = await client.callTool({
             name: 'read_saved_paper',
