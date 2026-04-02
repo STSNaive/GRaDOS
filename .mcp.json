@@ -1,18 +1,8 @@
 {
   "mcpServers": {
     "grados": {
-      "command": "npx",
-      "args": ["-y", "grados", "--config", "${CLAUDE_PLUGIN_DATA}/grados-config.json"]
-    },
-    "local-rag": {
-      "command": "npx",
-      "args": ["-y", "mcp-local-rag"],
-      "env": {
-        "BASE_DIR": "${CLAUDE_PLUGIN_DATA}/markdown",
-        "DB_PATH": "${CLAUDE_PLUGIN_DATA}/lancedb",
-        "CACHE_DIR": "${CLAUDE_PLUGIN_DATA}/models",
-        "MODEL_NAME": "Xenova/all-MiniLM-L6-v2"
-      }
+      "command": "uvx",
+      "args": ["grados[all]"]
     },
     "playwright": {
       "command": "npx",

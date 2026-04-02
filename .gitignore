@@ -1,6 +1,12 @@
 # Dependencies & build
 node_modules/
 dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+python/
 
 # Secrets & user config
 .env
@@ -18,7 +24,10 @@ marker-worker/uv.lock
 
 # Runtime artifacts
 papers/
+.grados/
+markdown/
 downloads/
+lancedb/
 scihub-mirrors.txt
 node-out.txt
 temp_*.html
@@ -43,6 +52,9 @@ Thumbs.db
 # Plan docs (local only)
 *_plan.md
 *_strategy.md
+status.md
+grados-issues-checklist.md
+grados-python-migration-plan.md
 TODO.md
 plan.md
 docs/

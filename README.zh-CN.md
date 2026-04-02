@@ -2,596 +2,213 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-<div align="center">
-  <pre style="display:inline-block; margin:0; font-family:'Bitstream Vera Sans Mono', 'SF Mono', Consolas, monospace; font-size:15px; line-height:1.02; font-weight:bold; white-space:pre; text-align:left;">&nbsp;&nbsp;.oooooo.&nbsp;&nbsp;&nbsp;&nbsp;ooooooooo.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;oooooooooo.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.oooooo.&nbsp;&nbsp;&nbsp;&nbsp;.oooooo..o
-&nbsp;d8P'&nbsp;&nbsp;`Y8b&nbsp;&nbsp;&nbsp;`888&nbsp;&nbsp;&nbsp;`Y88.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`888'&nbsp;&nbsp;&nbsp;`Y8b&nbsp;&nbsp;&nbsp;d8P'&nbsp;&nbsp;`Y8b&nbsp;&nbsp;d8P'&nbsp;&nbsp;&nbsp;&nbsp;`Y8
-888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;.d88'&nbsp;&nbsp;.oooo.&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;Y88bo.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888ooo88P'&nbsp;&nbsp;`P&nbsp;&nbsp;)88b&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;`"Y8888o.&nbsp;
-888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ooooo&nbsp;&nbsp;888`88b.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.oP"888&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`"Y88b
-`88.&nbsp;&nbsp;&nbsp;&nbsp;.88'&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;`88b.&nbsp;&nbsp;d8(&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d88'&nbsp;`88b&nbsp;&nbsp;&nbsp;&nbsp;d88'&nbsp;oo&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.d8P
-&nbsp;`Y8bood8P'&nbsp;&nbsp;&nbsp;o888o&nbsp;&nbsp;o888o&nbsp;`Y888""8o&nbsp;o888bood8P'&nbsp;&nbsp;&nbsp;&nbsp;`Y8bood8P'&nbsp;&nbsp;8""88888P'&nbsp;</pre>
-</div>
+GRaDOS 是一个面向学术检索、全文提取、本地论文存储与 ChromaDB 语义检索的 Python MCP 服务器。
 
-<p align="center">
-  <strong style="font-size:1.75rem;">Graduate Research and Document Operating System</strong>
-</p>
+Python 化之后，GRaDOS 不再依赖 `mcp-local-rag` 或 LanceDB。未来安装形态统一为一个 Python 包、一个可见数据根目录、一个本地语义数据库：ChromaDB。
 
-面向学术检索与全文提取的 MCP 服务器，适合 Codex、Claude 等 AI agent 使用。
+## 文档地图
 
-GRaDOS 可以帮助 agent 检索学术数据库、按 DOI 走多级回退链路抓取全文、解析 PDF，并把结果保存到本地目录，方便后续复用、RAG 检索和文献整理。它尤其适合校园网或已有机构访问权限的环境，但即使不配置任何 API Key，也仍然可以使用 Crossref、PubMed、Unpaywall 和 Sci-Hub 等路径。
+当前权威文档：
 
-## 架构概览 🧭
+- `README.md` / `README.zh-CN.md`：主要的用户安装与使用说明
+- `.mcp.json`：仓库内置的 MCP 服务器配置示例
+- `skills/grados/SKILL.md`：构建在 MCP 工具之上的结构化科研工作流
+- `grados-python-implementation-plan.md`：权威工程计划与完成度台账
+- `TODO.md`：从实施计划提炼出的简明执行快照
 
-GRaDOS 通常运行在一个 agent 工作流里：
+保留但降级为本地开发或历史参考：
 
-1. 先用 `search_saved_papers` 查本地论文库；若存在兼容的 `mcp-local-rag` 索引则自动走语义检索，否则回退为本地 Markdown 紧凑检索
-2. 按配置顺序检索远程学术数据源
-3. 按 `TDM -> OA -> Sci-Hub -> Headless` 的顺序抓取全文
-4. 按 `LlamaParse -> Marker -> Native` 的顺序解析 PDF
-5. 对提取结果做 QA 校验后再返回
-6. 将原始 PDF 保存到 `downloads/`，将解析后的 Markdown 保存到 `markdown/`
+- `grados-python-migration-plan.md`：更早期的设计草案，现已并入实施计划
+- `status.md`：Python 化前 Elsevier / 浏览器工程日志
+- `docs/global-install-guide.md`：Python 化前的旧运维文档，仅保留作参考
 
-### MCP 工具 🔧
+## 功能概览
 
-| 服务 | 工具 | 说明 |
-|---|---|---|
-| GRaDOS | `search_academic_papers` | 按优先级串行搜索 Scopus、Web of Science、Springer、Crossref、PubMed，并按 DOI 去重；可通过 `continuation_token` 续搜下一批未见论文 |
-| GRaDOS | `search_saved_papers` | 对默认 `markdown/` 目录中的已保存论文做紧凑的 paper-level 检索。若本地 `mcp-local-rag` CLI + 索引可用，则优先走语义/关键词混合检索；否则自动回退为本地 Markdown 词法检索。返回 `doi`、`safe_doi`、`canonical_uri`、命中片段和匹配章节，而不是原始 chunks。 |
-| GRaDOS | `extract_paper_full_text` | 按 4 级抓取策略 + 3 级解析策略提取全文，并做 QA 校验。全文自动保存到默认 `markdown/` 目录，返回给 agent 的是**紧凑且不可直接引用的已保存论文摘要**（标题、DOI、规范路径/URI、短 preview、section headings），以减少上下文窗口占用 |
-| GRaDOS | `parse_pdf_file` | 解析本地 PDF 文件，复用已有的解析 waterfall（LlamaParse → Marker → Native）。用于浏览器辅助下载 PDF 后的解析；如果提供 DOI，则返回与 `extract_paper_full_text` 相同的已保存论文摘要契约 |
-| GRaDOS | `read_saved_paper` | 已保存论文的标准深读工具。接受 `doi`、`safe_doi` 或 `grados://papers/{safe_doi}`，返回用于综合和引文核查的段落窗口 |
-| GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 保存已引用论文的元数据 |
-| mcp-local-rag | `query_documents` | 对本地已索引论文做语义检索和关键词检索 |
-| mcp-local-rag | `ingest_file` | 把 Markdown 论文索引进本地 RAG 数据库 |
-| mcp-local-rag | `list_files` | 查看已索引文件及状态 |
-| mcp-local-rag | `delete_file` | 删除过期或不再需要的本地索引条目 |
-| mcp-local-rag | `status` | 检查本地 RAG 数据库状态与配置告警 |
+- 检索 Crossref、PubMed、Elsevier、Springer、Web of Science
+- 按 `TDM -> OA -> Sci-Hub -> Browser` 瀑布抓取全文
+- 按 `PyMuPDF -> Marker -> Docling` 瀑布解析 PDF
+- 把论文保存为带 YAML front-matter 的 Markdown
+- 用内置 ChromaDB 对已保存论文做语义检索
+- 作为单一 stdio MCP 服务接入 Claude、Codex、Cursor 等客户端
 
-### SKILL.md（配套 Skill） 🤖
+## 安装
 
-`skills/grados/SKILL.md` 是配套的结构化提示词，描述了围绕 GRaDOS 和可选 `mcp-local-rag` 的研究流程。把它放到 agent 的技能目录后，agent 就可以优先通过 `search_saved_papers` 走本地库，再按需调用远程检索与全文提取。
-
-### 本地论文知识库 🗂️
-
-GRaDOS 提取论文后，会将 PDF 和解析后的 Markdown 分开保存，避免重复索引：
-
-| 目录 | 内容 | 作用 | 对应配置 |
-|---|---|---|---|
-| `downloads/` | 原始 `.pdf` 文件 | 归档，不参与索引 | `extract.downloadDirectory` |
-| `markdown/` | 解析后的 `.md` 文件（带 YAML front-matter） | 可供语义检索和关键词检索 | `extract.papersDirectory` |
-
-Markdown 文件会带上结构化 front-matter，例如：
-
-```yaml
----
-doi: "10.1038/s41598-025-29656-1"
-title: "Triple-negative complementary metamaterial..."
-source: "Unpaywall OA"
-fetched_at: "2026-03-17T12:00:00.000Z"
----
-```
-
-配合 [`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag)，可以对 `markdown/` 中的文件建立向量索引，实现本地论文语义检索和关键词检索；而 `search_saved_papers` 会优先复用这个索引，并在索引/CLI 不可用时自动回退到紧凑词法检索。完整工作流如下：
-
-1. **Extract** - GRaDOS 下载 PDF、解析内容，并把 `.pdf` 保存到 `downloads/`，`.md` 保存到 `markdown/`
-2. **Ingest** - agent 调用 `ingest_file`，把新的 `.md` 建立向量索引
-3. **Query** - 后续问题可以先用 `search_saved_papers` 查本地库；如需直接拿 raw chunk，也可以调用 `query_documents`
-4. **Manage** - 用 `list_files` / `delete_file` 管理索引文件
-
-> **注意：** `mcp-local-rag` 不会自动扫描目录。新论文仍然需要显式调用 `ingest_file` 才能进入语义索引；不过即使没有索引，`search_saved_papers` 仍然可以对已保存的 Markdown 做词法回退检索。
-
-此外，GRaDOS 还会把已保存论文暴露为与安装方式无关的 MCP 能力：
-
-- `read_saved_paper`：模型驱动的标准深读入口
-- `grados://papers/index`：已保存论文索引
-- `grados://papers/{safe_doi}`：单篇已保存论文的规范 Markdown resource
-
-## 安装 🚀
-
-### 安装 GRaDOS
-
-#### 方式 A：Claude Code 插件（最省事） 🔌
-
-如果你使用 [Claude Code](https://code.claude.com/)（CLI 或 Desktop），可以把 GRaDOS 安装成 plugin。它会自动注册 GRaDOS、mcp-local-rag 和 Playwright 三个 MCP 服务，无需手工配置。
-
-> Plugin 中运行的是与下文相同的 GRaDOS stdio MCP server，并不是另一套独立的论文读取 API。
-
-**1. 添加 marketplace 并安装：**
+推荐方式：
 
 ```bash
-# 在 Claude Code 中
-/plugin marketplace add https://github.com/STSNaive/GRaDOS.git
-/plugin install grados@grados-marketplace
+uv tool install "grados[all]"
+grados setup --all
 ```
 
-**2. 运行 setup 命令：**
-
-```
-/grados:setup
-```
-
-这会生成 `${CLAUDE_PLUGIN_DATA}/grados-config.json`，并引导你填写 API Key。Plugin 还会把 `local-rag` 预配置为 `BASE_DIR=${CLAUDE_PLUGIN_DATA}/markdown`、`DB_PATH=${CLAUDE_PLUGIN_DATA}/lancedb`、`CACHE_DIR=${CLAUDE_PLUGIN_DATA}/models`、`MODEL_NAME=Xenova/all-MiniLM-L6-v2`，所以默认流程下不需要再配置环境变量或 shell profile。
-
-**3. 重载并验证：**
-
-```
-/reload-plugins
-/grados:status
-```
-
-> **Plugin 内含内容：** GRaDOS MCP server、[mcp-local-rag](https://github.com/shinpr/mcp-local-rag)（本地论文检索）、[Playwright MCP](https://github.com/microsoft/playwright-mcp)（浏览器辅助下载 PDF）、研究工作流 skill，以及 setup/status 命令。
-
-#### 方式 B：npm（手动配置） 📦
+其他方式：
 
 ```bash
-npm install -g grados
+# 核心安装
+uv tool install grados
 
-# 在当前工作目录生成配置文件
-grados --init
+# 全量安装，包含更重的 PDF 解析器
+uv tool install "grados[full]"
 
-# 编辑配置并填入 API Key
-# （所有选项见 grados-config.example.json）
+# 零安装运行
+uvx "grados[all]" version
+
+# 传统 Python 安装
+pip install "grados[all]"
 ```
 
-检查更新：`npm outdated -g grados`——如果有新版本，重新运行 `npm install -g grados` 即可。
+## 快速开始
 
-#### 方式 C：源码安装 🛠️
+1. 运行 `uv tool install "grados[all]"`。
+2. 运行 `grados setup --all`。
+3. 编辑生成的配置文件 `~/GRaDOS/config.json`。
+4. 运行 `grados status` 检查依赖、浏览器资产和 API Key。
+5. 在 MCP 客户端中用 `grados` 或 `uvx "grados[all]"` 启动服务。
 
-```bash
-git clone https://github.com/STSNaive/GRaDOS.git
-cd GRaDOS
-npm install
-npm run build
+## 命令
 
-cp grados-config.example.json grados-config.json
-# 编辑 grados-config.json 并填入 API Key
-```
+| 命令 | 作用 |
+| --- | --- |
+| `grados` | 启动 MCP stdio 服务器 |
+| `grados setup --all` | 创建目录、生成 `config.json`、安装浏览器资产、预热模型 |
+| `grados status` | 查看配置、依赖、运行时资产和 API Key 状态 |
+| `grados paths` | 查看当前解析到的 GRaDOS 文件布局 |
+| `grados update-db` | 从 `papers/` 构建或刷新 ChromaDB 索引 |
+| `grados migrate-config --from /path/to/legacy` | 把 TypeScript 时代的安装迁到 Python 布局 |
+| `grados version` | 查看版本信息 |
 
-### 配置 MCP 客户端 🔌
+## 文件布局
 
-**Claude Code：**
-
-```bash
-claude mcp add --transport stdio grados -- npx -y grados
-```
-
-**Codex：**
-
-```bash
-codex mcp add grados -- npx -y grados
-```
-
-如果你希望 GRaDOS 加载一个固定的 `grados-config.json`，请使用 `--config`（推荐）或 `GRADOS_CONFIG_PATH`：
-
-Claude Code（`.claude/settings.json`）：
-
-```json
-{
-  "mcpServers": {
-    "grados": {
-      "command": "npx",
-      "args": ["-y", "grados", "--config", "/path/to/papers/grados-config.json"]
-    }
-  }
-}
-```
-
-Codex（`~/.codex/config.toml`）：
-
-```toml
-[mcp_servers.grados]
-command = "npx"
-args = ["-y", "grados", "--config", "/path/to/papers/grados-config.json"]
-```
-
-无论 GRaDOS 是通过 `npx`、源码目录，还是 Claude plugin 内置方式启动，暴露给模型的核心 MCP API 都相同；差别只在于 stdio server 的启动方式和配置文件所在位置。
-
-### 可选：安装 Marker（更高质量的本地 PDF 解析） 🧠
-
-Marker 使用深度学习模型把 PDF 转成 Markdown，相比内置 `pdf-parse` 精度更高，适合生产使用。
-
-> **路径行为：** 如果配置了 `extract.parsing.markerWorkerDirectory`，GRaDOS 就直接使用它；否则回退到 `PROJECT_ROOT/marker-worker`（如果存在），再回退到 `PACKAGE_ROOT/marker-worker`。`markerWorkerDirectory` 必须指向 **`marker-worker` 这一层目录本身**，也就是包含 `worker.py`、`install.sh` / `install.ps1`、`local.env` 的目录，而不是它的上级目录。
-
-**前置要求：** Python 3.12。可选：Windows/Linux 上的 NVIDIA GPU + CUDA 加速。
-
-如果你通过 `npx` 启动 GRaDOS，推荐先把 `marker-worker/` 脚手架落到项目目录，再把配置指过去：
-
-```bash
-npx -y grados --config /path/to/papers/grados-config.json --init-marker
-```
-
-这条命令会在 `grados-config.json` 同级目录创建 `marker-worker/`。如果你的配置文件在 `/path/to/papers/grados-config.json`，那么建议最终目录就是：
+默认情况下，GRaDOS 会把所有内容放在一个可见目录里：
 
 ```text
-/path/to/papers/marker-worker
+~/GRaDOS/
+├── config.json
+├── papers/
+├── downloads/
+├── browser/
+│   ├── chromium/
+│   ├── profile/
+│   └── extensions/
+├── models/
+├── database/
+│   └── chroma/
+├── logs/
+└── cache/
 ```
 
-**安装（macOS/Linux）：**
+数据根目录优先级：
 
-```bash
-cd marker-worker
-chmod +x ./install.sh
-./install.sh               # 统一走 uv；Linux 检测到 NVIDIA 时会询问是否安装 CUDA 版
-./install.sh --device cpu  # 强制使用 CPU
-./install.sh --device cuda # 仅 Linux
-```
+1. `GRADOS_HOME`
+2. `~/GRaDOS`
 
-**安装（Windows PowerShell）：**
+## MCP 客户端配置
 
-```powershell
-cd marker-worker
-.\install.ps1              # 统一走 uv；检测到 NVIDIA 时会询问是否安装 CUDA 版
-.\install.ps1 -Device cpu  # 强制使用 CPU
-.\install.ps1 -Device cuda # 强制使用 CUDA
-```
-
-安装脚本会：
-1. 通过 `uv` 创建或同步 Python 3.12 虚拟环境
-2. 写入 `marker-worker/local.env`，记录 `MARKER_PYTHON` 和可选的 `TORCH_DEVICE`
-3. 把模型权重和字体预热到 `marker-worker/.cache/`（除非使用 `--skip-prewarm`）
-4. 运行 `verify.py` 做真实握手验证，只有 GRaDOS 能成功拉起本地 Marker worker 时才算安装成功
-
-默认情况下，Marker 会自动选择合适的 torch 设备。对 macOS 来说，这意味着在可用时可以自动使用 PyTorch 的 MPS。CUDA 仍然是显式可选分支；如果 CUDA 安装后的验证失败，安装脚本会自动回退到 CPU 兼容模式，确保 GRaDOS 仍然可以使用 Marker。
-
-> **local.env 行为：** GRaDOS 会先根据 `extract.parsing.markerWorkerDirectory`（或默认查找顺序）定位 `marker-worker/`，再优先读取该目录里的 `local.env` 中的 `MARKER_PYTHON`；只有没有配置时才回退到标准 `.venv/` 解释器路径。
-
-**启用配置：** 安装完成后，在 `grados-config.json` 中启用 Marker：
-
-```json
-{
-  "extract": {
-    "parsing": {
-      "markerWorkerDirectory": "./marker-worker",
-      "markerTimeout": 120000,
-      "order": ["Marker", "Native"],
-      "enabled": {
-        "LlamaParse": false,
-        "Marker": true,
-        "Native": true
-      }
-    }
-  }
-}
-```
-
-Marker 属于渐进式解析回退链路的一部分；如果失败或超时，GRaDOS 会自动回退到 `Native`（`pdf-parse`）。`markerTimeout` 的单位是毫秒，用来控制回退前的最长等待时间，默认 120 秒。
-
-**验证：**
-
-```bash
-node tests/mcp-smoke.mjs
-```
-
-如果 Marker 正常启用，日志里会出现：
-
-```text
-[Marker] Converting PDF with local Marker worker...
-Marker successfully converted PDF to Markdown.
-```
-
-### 可选：安装 mcp-local-rag（本地 RAG 论文库） 🔎
-
-[`mcp-local-rag`](https://github.com/shinpr/mcp-local-rag) 为本地论文提供语义检索和关键词检索能力。纯 Node.js，不需要 Python。GRaDOS 内置的 `search_saved_papers` 在检测到兼容的本地索引后，也会复用这套 CLI/DB；没有索引时则自动回退为词法检索。
-
-> **版本说明：** 当前 `mcp-local-rag` 0.10.x 需要 Node.js 20 或更高版本。
->
-> **检查更新：** `npm outdated -g mcp-local-rag`——如果有新版本，重新运行 `npm install -g mcp-local-rag` 即可。
-
-**注册到 MCP 客户端：**
-
-```bash
-# Claude Code
-claude mcp add local-rag -- npx -y mcp-local-rag
-
-# Codex（完整对齐 GRaDOS 的 localRag 默认值）
-codex mcp add local-rag \
-  --env BASE_DIR=/path/to/papers/markdown \
-  --env DB_PATH=/path/to/papers/lancedb \
-  --env CACHE_DIR=/path/to/papers/models \
-  --env MODEL_NAME=Xenova/all-MiniLM-L6-v2 \
-  -- npx -y mcp-local-rag
-```
-
-对 Claude Code 来说，下面的手动配置方式更容易保证 `BASE_DIR`、`DB_PATH`、`CACHE_DIR`、`MODEL_NAME` 和 `grados-config.json` 完全一致。
-
-也可以手动配置。
-
-Claude Code（`.claude/settings.json`）：
+Claude Code / Claude Desktop：
 
 ```json
 {
   "mcpServers": {
     "grados": {
-      "command": "npx",
-      "args": ["-y", "grados"],
-      "cwd": "/path/to/papers"
-    },
-    "local-rag": {
-      "command": "npx",
-      "args": ["-y", "mcp-local-rag"],
-      "env": {
-        "BASE_DIR": "/path/to/papers/markdown",
-        "DB_PATH": "/path/to/papers/lancedb",
-        "CACHE_DIR": "/path/to/papers/models",
-        "MODEL_NAME": "Xenova/all-MiniLM-L6-v2"
-      }
+      "command": "uvx",
+      "args": ["grados[all]"]
     }
   }
 }
 ```
 
-Codex（`~/.codex/config.toml`）：
+Codex：
 
 ```toml
 [mcp_servers.grados]
-command = "npx"
-args = ["-y", "grados"]
-cwd = "/path/to/papers"
-
-[mcp_servers.local-rag]
-command = "npx"
-args = ["-y", "mcp-local-rag"]
-env = { BASE_DIR = "/path/to/papers/markdown", DB_PATH = "/path/to/papers/lancedb", CACHE_DIR = "/path/to/papers/models", MODEL_NAME = "Xenova/all-MiniLM-L6-v2" }
+command = "uvx"
+args = ["grados[all]"]
 ```
 
-> **重要：** `BASE_DIR` 必须和 `grados-config.json` 里的 `extract.papersDirectory` 指向同一个绝对目录。如果 `extract.papersDirectory` 写的是相对路径，请先按 `PROJECT_ROOT`（通常是配置文件所在目录）把它解析成绝对路径。为了让直接调用 `local-rag:*` 和 `grados:search_saved_papers` 共享同一套语义索引，也请同步对齐 `DB_PATH`、`CACHE_DIR`、`MODEL_NAME` 与 `grados-config.json` 中的 `localRag.dbPath`、`localRag.cacheDir`、`localRag.modelName`。
+`uvx` 适合零安装 MCP 启动场景；长期本地使用仍以 `uv tool install "grados[all]"` 加 `grados` 可执行命令为主。
 
+如果你想指定自定义数据根目录，请在 MCP 客户端环境变量里设置 `GRADOS_HOME`。
 
-### 可选：Zotero Web Library 集成 📚
+## MCP + Skill 结构
 
-GRaDOS 可以在每次研究任务结束后，把引用过的论文自动保存到你的 [Zotero](https://www.zotero.org/) Web Library。无需桌面客户端，直接通过 Zotero Web API 即可完成。
+当前仓库保留的是轻量级的 MCP + skill 集成方式，而不是 Claude plugin 打包：
 
-**配置方法：**
+- `.mcp.json` 提供仓库级 `grados` MCP 配置示例，并保留可选的 `playwright`
+- `skills/grados/SKILL.md` 提供结构化科研工作流
+- `skills/grados/references/tools.md` 记录 skill 依赖的工具契约
 
-1. 在 `https://www.zotero.org/settings/keys` 创建一个 **有写权限的 API Key**
-2. 记录同页显示的 **library ID**（也就是 “Your userID for use in API calls” 中的数字）
-3. 把它们写进 `grados-config.json`
+如果你不使用仓库内置的 MCP 配置文件，可以把同样的 `grados` 服务器定义复制到自己的客户端设置中，再把 skill 文件放进 agent 的技能目录。
 
-```json
-{
-  "zotero": {
-    "libraryId": "1234567",
-    "libraryType": "user",
-    "defaultCollectionKey": ""
-  },
-  "apiKeys": {
-    "ZOTERO_API_KEY": "your-api-key-here"
-  }
-}
-```
+## 从 TypeScript 版迁移
 
-保存到 Zotero 的条目类型为 `journalArticle`，包含标题、DOI、作者、摘要、期刊、年份、URL 和标签。研究主题会自动作为标签写入，方便按课题整理文献。
+这部分面向旧版 Node.js / TypeScript 用户，也就是还在使用 `grados-config.json`、`markdown/`、`lancedb/` 那套布局的用户。
 
-### 可选：Playwright MCP（LLM 友好的浏览器回退） 🌐
+### 发生了什么变化
 
-当 GRaDOS 内置的无头浏览器（Patchright）无法提取 PDF 时——通常是因为复杂的出版商页面布局或 CAPTCHA 验证——AI agent 可以回退到 [Playwright MCP](https://github.com/microsoft/playwright-mcp)，它通过 accessibility tree 快照让 LLM 直接控制浏览器。
+- 安装方式从 `npm` 切到 `uv` / `pip`
+- 运行时变成一个单独的 Python 包
+- 本地语义检索统一改为 ChromaDB
+- 默认数据根目录变成 `~/GRaDOS/`
+- 主配置文件改成 `config.json`
 
-**为什么选 Playwright MCP 而不是内置浏览器？** 内置浏览器使用硬编码的 CSS 选择器，遇到不熟悉的出版商页面就会失败。而 Playwright MCP 让 LLM 看到页面结构，自适应地点击正确的下载按钮，不受页面布局限制。由于会消耗 token（~13.7K base + 页面内容），所以仅在零成本的内置路径失败时才使用。
+`mcp-local-rag` 和 LanceDB 不再属于推荐方案。
 
-内置无头浏览器使用 **Patchright**（Playwright fork，内置 CDP 级反检测补丁），支持 **Windows、macOS 和 Linux**。需要 Chromium 内核浏览器（`msedge` 或 `chrome`）。GRaDOS 会探测当前系统上配置的浏览器路径；如果找不到，也可以在 `grados-config.json` 中显式设置 `headlessBrowser.executablePath`。
-
-**安装：**
+### 推荐迁移流程
 
 ```bash
-npm install -g @playwright/mcp
+uv tool install "grados[all]"
+grados migrate-config --from /path/to/legacy
+grados status
 ```
 
-检查更新：`npm outdated -g @playwright/mcp`——如果有新版本，重新运行 `npm install -g @playwright/mcp` 即可。
-
-**注册到 MCP 客户端：**
+如果你还想顺手把浏览器资产和模型一起准备好：
 
 ```bash
-# Claude Code
-claude mcp add playwright -- npx @playwright/mcp --headless
-
-# Codex
-codex mcp add playwright -- npx @playwright/mcp --headless
+grados setup --all
 ```
 
-也可以手动配置。Claude Code（`.claude/settings.json`）：
+### `grados migrate-config` 会做什么
 
-```json
-{
-  "mcpServers": {
-    "playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp", "--headless"]
-    }
-  }
-}
-```
+- 读取旧版 `grados-config.json`
+- 在当前 GRaDOS 数据根目录中写入 Python 版 `config.json`
+- 把已保存 Markdown 论文复制到 `papers/`
+- 把 PDF 归档复制到 `downloads/`
+- 把托管浏览器资产复制到 `browser/`
+- 把模型缓存复制到 `models/`
+- 忽略旧版 LanceDB 数据
 
-`SKILL.md` 中的工作流（Step 3b）会自动引导 agent 在 `extract_paper_full_text` 失败时使用 Playwright MCP 工具。流程为：`browser_navigate` → `browser_snapshot` → `browser_click` → 下载完成 → `parse_pdf_file`。
+迁移命令的目标是保留有价值的内容，而不是继续沿用旧运行时结构。
 
-> **注意：** Playwright MCP 完全是可选的。不安装它，GRaDOS 仍然通过内置的 waterfall（TDM → OA → Sci-Hub → Headless Patchright）正常工作。Playwright MCP 只是为内置浏览器无法处理的情况添加了一层 LLM 驱动的安全网。
+### 路径映射
 
-### 配置示例：GRaDOS + mcp-local-rag + Playwright 🧩
+| 旧版 | Python 版 |
+| --- | --- |
+| `grados-config.json` | `config.json` |
+| `markdown/` | `papers/` |
+| `downloads/` | `downloads/` |
+| `.grados/browser/` | `browser/` |
+| `models/` | `models/` |
+| `lancedb/` | 删除 |
 
-如果你希望一次性接入最常见的完整研究工作流，可以把这三个 MCP 服务一起配置。下面这个例子假设配置文件在 `/path/to/papers/grados-config.json`，`extract.papersDirectory` 使用默认相对路径 `./markdown`，并且 `localRag.dbPath` / `localRag.cacheDir` 保持默认相对路径 `./lancedb` / `./models`。在这组默认值下，`mcp-local-rag` 对应的路径如下。
+### 配置差异
 
-Claude Code（`.claude/settings.json`）：
+需要特别注意的变化：
 
-```json
-{
-  "mcpServers": {
-    "grados": {
-      "command": "npx",
-      "args": ["-y", "grados", "--config", "/path/to/papers/grados-config.json"]
-    },
-    "local-rag": {
-      "command": "npx",
-      "args": ["-y", "mcp-local-rag"],
-      "env": {
-        "BASE_DIR": "/path/to/papers/markdown",
-        "DB_PATH": "/path/to/papers/lancedb",
-        "CACHE_DIR": "/path/to/papers/models",
-        "MODEL_NAME": "Xenova/all-MiniLM-L6-v2"
-      }
-    },
-    "playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp", "--headless"]
-    }
-  }
-}
-```
+- 现在用 `GRADOS_HOME` 选择整个数据根目录
+- `--config` / `GRADOS_CONFIG_PATH` 属于旧模型，建议改成稳定的 GRaDOS home
+- PDF 解析栈改为 `PyMuPDF -> Marker -> Docling`
+- 语义检索改为内置 ChromaDB
 
-Codex（`~/.codex/config.toml`）：
+迁移命令会自动把兼容的搜索、提取、Zotero 和 API Key 设置转换到新 schema。
 
-```toml
-[mcp_servers.grados]
-command = "npx"
-args = ["-y", "grados", "--config", "/path/to/papers/grados-config.json"]
+### 如果你仍然需要旧布局
 
-[mcp_servers.local-rag]
-command = "npx"
-args = ["-y", "mcp-local-rag"]
-env = { BASE_DIR = "/path/to/papers/markdown", DB_PATH = "/path/to/papers/lancedb", CACHE_DIR = "/path/to/papers/models", MODEL_NAME = "Xenova/all-MiniLM-L6-v2" }
+旧的 TypeScript 版本已经独立归档。当前主仓库就是 Python 主线；只有在你明确需要历史 TypeScript 代码时，才使用 `GRaDOS-legacy`。
 
-[mcp_servers.playwright]
-command = "npx"
-args = ["@playwright/mcp", "--headless"]
-```
-
-## 配置说明 ⚙️
-
-所有配置都在 `grados-config.json` 中。可以先运行 `grados --init` 生成模板，再按需修改。
-
-### API Keys 🔑
-
-| Key | 来源 | 必填 | 免费 |
-|---|---|---|---|
-| `ELSEVIER_API_KEY` | [Elsevier Developer Portal](https://dev.elsevier.com/) | 否 | 是（机构访问） |
-| `WOS_API_KEY` | [Clarivate Developer Portal](https://developer.clarivate.com/) | 否 | 是（starter） |
-| `SPRINGER_meta_API_KEY` | [Springer Nature API](https://dev.springernature.com/) | 否 | 是 |
-| `SPRINGER_OA_API_KEY` | 同上（OpenAccess endpoint） | 否 | 是 |
-| `LLAMAPARSE_API_KEY` | [LlamaCloud](https://cloud.llamaindex.ai/) | 否 | 有免费额度 |
-| `ZOTERO_API_KEY` | [Zotero Settings -> Keys](https://www.zotero.org/settings/keys) | 否 | 是 |
-
-Crossref、PubMed、Sci-Hub、Unpaywall 不需要 API Key。
-
-**没有任何 API Key 也能运行**。GRaDOS 会自动跳过未配置的服务，至少可以走 Crossref + PubMed + Sci-Hub 这几条路径。
-
-### 搜索优先级 🔎
-
-`search.order` 控制优先搜索哪些数据库；一旦拿到足够多的唯一 DOI，GRaDOS 就会停止继续搜索。
-
-```json
-{
-  "search": {
-    "order": ["Elsevier", "Springer", "WebOfScience", "Crossref", "PubMed"]
-  }
-}
-```
-
-如果第一次筛过一批论文后还需要继续获取“下一批”，请使用相同的 `query` 再次调用 `search_academic_papers`，并传入上一次 `structuredContent` 返回的 `next_continuation_token`。只要 `has_more` 仍然是 `true`，后续调用就会继续返回尚未见过的新论文。
-
-### 全文抓取优先级 🌊
-
-`extract.fetchStrategy.order` 控制全文抓取的回退顺序：
-
-```json
-{
-  "extract": {
-    "fetchStrategy": {
-      "order": ["TDM", "OA", "SciHub", "Headless"]
-    }
-  }
-}
-```
-
-### 存储目录 🗄️
-
-- `extract.downloadDirectory` 默认是 `./downloads`，用于保存原始 PDF
-- `extract.papersDirectory` 默认是 `./markdown`，用于保存解析后的 Markdown
-- 相对路径都基于 `PROJECT_ROOT`（配置文件所在目录）解析；下面的“提示：路径解析”会给出完整规则和实例
-- `mcp-local-rag` 的 `BASE_DIR` 必须和 `extract.papersDirectory` 指向同一个绝对目录；如果希望共享同一套语义检索，还应把 `DB_PATH`、`CACHE_DIR`、`MODEL_NAME` 对齐到 `localRag.dbPath`、`localRag.cacheDir`、`localRag.modelName`
-
-#### 提示：路径解析 💡
-
-GRaDOS 会在两个独立作用域中解析路径：
-
-| 作用域 | 解析基准 | 示例 |
-|---|---|---|
-| **包内资源** | npm 安装目录（`PACKAGE_ROOT`） | 默认回退的 `marker-worker/` |
-| **项目文件** | 配置文件所在目录（`PROJECT_ROOT`） | `downloads/`、`markdown/`、`scihub-mirrors.txt`、可选的 `marker-worker/` |
-
-**配置文件发现顺序**（按优先级）：
-
-1. 命令行参数 `--config <path>`
-2. 环境变量 `GRADOS_CONFIG_PATH`
-3. 默认回退到 `cwd/grados-config.json`
-
-最终解析出的配置文件所在目录会成为 `PROJECT_ROOT`。`grados-config.json` 中所有相对路径（例如 `./markdown`、`./downloads`）都会相对于这个目录解析，而不是相对于进程当前工作目录。
-
-**示例：**
+## 开发
 
 ```bash
-# 显式指定配置文件（推荐给 MCP 客户端使用）
-grados --config /path/to/papers/grados-config.json
-
-# 或通过环境变量
-GRADOS_CONFIG_PATH=/path/to/papers/grados-config.json grados
+uv sync --all-extras
+uv run grados version
+uv run pytest
+uv build
 ```
-
-Claude Code（`.claude/settings.json`）—— 使用 `--config`，而不是依赖 `cwd`：
-
-```json
-{
-  "mcpServers": {
-    "grados": {
-      "command": "npx",
-      "args": ["-y", "grados", "--config", "/path/to/papers/grados-config.json"]
-    }
-  }
-}
-```
-
-Codex（`~/.codex/config.toml`）—— 使用环境变量：
-
-```toml
-[mcp_servers.grados]
-command = "npx"
-args = ["-y", "grados"]
-env = { GRADOS_CONFIG_PATH = "/path/to/papers/grados-config.json" }
-```
-
-如果你想把数据存到别处，请在配置里使用绝对路径：
-
-```json
-{
-  "extract": {
-    "downloadDirectory": "/path/to/custom-storage/downloads",
-    "papersDirectory": "/path/to/custom-storage/markdown"
-  }
-}
-```
-
-## Claude Code 插件 🔌
-
-GRaDOS 可以作为 Claude Code 插件使用，开箱即用地提供 skill、斜杠命令和 MCP 服务配置。安装方式请使用前文“安装 > 方式 A”中的那一套命令。
-
-### 包含内容
-
-| 组件 | 说明 |
-|---|---|
-| **Skill** (`/grados:grados`) | 完整的学术研究流程 — 检索、提取、综合、引用 |
-| **命令** (`/grados:setup`) | 交互式配置向导，引导设置 API Key 和依赖 |
-| **命令** (`/grados:status`) | 诊断检查：服务状态、API Key、存储目录 |
-| **MCP 服务** | 自动配置的 `grados` 服务，通过 `npx -y grados` 启动 |
-
-### 配置如何工作
-
-打包进 plugin 的 `.mcp.json` 会这样连线：
-
-- `grados` 通过 `--config ${CLAUDE_PLUGIN_DATA}/grados-config.json` 启动
-- `local-rag` 通过 `BASE_DIR=${CLAUDE_PLUGIN_DATA}/markdown`、`DB_PATH=${CLAUDE_PLUGIN_DATA}/lancedb`、`CACHE_DIR=${CLAUDE_PLUGIN_DATA}/models`、`MODEL_NAME=Xenova/all-MiniLM-L6-v2` 启动
-- `playwright` 以 headless 模式启动
-
-先运行 `/grados:setup` 生成 `${CLAUDE_PLUGIN_DATA}/grados-config.json`，再在这个文件里填写你要用的 API Key，之后执行 `/reload-plugins` 让内置 MCP 服务重新加载配置。默认 plugin 流程下不需要再单独设置 shell 环境变量。
-
-运行 `/grados:status` 可以查看最终配置状态。
-
-## License 📄
-
-MIT

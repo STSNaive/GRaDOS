@@ -11,7 +11,7 @@ description: >-
 
 # GRaDOS: Strict Academic Research Protocol
 
-Academic research agent operating the **GRaDOS** (Graduate Research and Document Operating System) MCP server, with optional **local paper library** powered by mcp-local-rag.
+Academic research agent operating the **GRaDOS** (Graduate Research and Document Operating System) MCP server, with a built-in **local paper library** backed by ChromaDB.
 
 Directive: **rigorous, citation-grounded, hallucination-free** answers. Never guess. Never fill gaps with pre-trained knowledge.
 
@@ -24,7 +24,7 @@ For tool details and parameters, see [references/tools.md](references/tools.md).
 This skill uses a **three-tier information strategy** to keep your context window clean:
 
 1. **Search** (Step 1) returns paper metadata (title, abstract, DOI) — ~200-500 tokens each.
-2. **Extract** (Step 3) saves full text to the configured Markdown directory (default: `markdown/{safe_doi}.md`) but returns only a **compact, non-citable summary** (title, DOI, canonical path/URI, short preview, section headings) — ~500-800 tokens each.
+2. **Extract** (Step 3) saves full text to the configured papers directory (default: `papers/{safe_doi}.md`) but returns only a **compact, non-citable summary** (title, DOI, canonical path/URI, short preview, section headings) — ~500-800 tokens each.
 3. **Synthesis** (Step 4) requires you to call **`grados:read_saved_paper`** (or read the canonical paper resource) — never synthesize from compact summaries alone.
 
 This design keeps Steps 1-3 lightweight (~10K tokens total for 8 papers) while preserving full text on disk for deep reading in Step 4.
@@ -37,8 +37,8 @@ Before querying remote databases, check if relevant papers already exist in the 
 
 1. Call `grados:search_saved_papers` with the user's key terms in English.
 2. Review the returned paper-level hits:
-   - If `retrieval_mode` is `local_rag_cli`, GRaDOS has successfully reused a local semantic+keyword index.
-   - If `retrieval_mode` is `lexical_fallback`, GRaDOS searched the saved Markdown papers directly without relying on a semantic index.
+   - If the tool says `semantic search`, GRaDOS is using the built-in ChromaDB index.
+   - If the tool says `keyword`, GRaDOS is falling back to lexical matching over saved papers.
    - In both cases, treat the returned snippets as **screening hints**, not final citation evidence.
 3. If the local library fully answers the user's question (>= 3 relevant papers with good coverage), you may **skip Steps 1-3** and go directly to Step 4 (Synthesis).
 4. If not, proceed to Step 1 but **exclude DOIs already found locally** from extraction in Step 3.
@@ -61,17 +61,14 @@ After receiving search results, screen every paper for relevance:
 ## Step 3: Full-Text Extraction & Indexing
 
 1. For each relevant DOI from Step 2, call `grados:extract_paper_full_text`. **Always pass `expected_title`** (the paper's title from the search results) so the server can validate the extracted content.
-   - If `markdown/{safe_doi}.md` already exists (from a previous query or the local library), skip re-extraction for that DOI.
-2. Successfully extracted papers are automatically saved as `.md` files to the configured Markdown directory (default: `markdown/`).
-3. **The tool returns a compact, non-citable summary** (title, DOI, canonical path/URI, short preview, section headings), NOT the full text. Full text is saved to `markdown/{safe_doi}.md` by default.
+   - If `papers/{safe_doi}.md` already exists (from a previous query or the local library), skip re-extraction for that DOI.
+2. Successfully extracted papers are automatically saved as `.md` files to the configured papers directory (default: `papers/`) and indexed into ChromaDB by GRaDOS itself.
+3. **The tool returns a compact, non-citable summary** (title, DOI, canonical path/URI, short preview, section headings), NOT the full text. Full text is saved to `papers/{safe_doi}.md` by default.
 4. In Step 4, use **`grados:read_saved_paper`** as the canonical deep-reading path. If your client supports MCP resource reading, you may alternatively read `grados://papers/{safe_doi}` directly.
-5. If direct `local-rag` tools are available, call `local-rag:ingest_file` on the saved `.md` file to index it for future semantic reuse. The default file path follows the pattern `markdown/{safe_doi}.md`, where `safe_doi` replaces non-alphanumeric characters with `_`.
-   - **Only ingest `.md` files**, never `.pdf` — this prevents duplicate content in the vector database.
-   - If `local-rag` tools are unavailable, continue anyway: `grados:search_saved_papers` can still fall back to lexical search over saved Markdown files.
-6. **If extraction fails** (the tool returns an error):
+5. **If extraction fails** (the tool returns an error):
    - If the paper seemed **strongly relevant** based on its abstract, record it in a failed-extraction section at the end of your report, including its title, DOI, and abstract summary.
    - If the paper was only marginally relevant, silently skip it.
-7. **Do NOT attempt to extract more than 8 papers** in a single query to conserve API quota and time.
+6. **Do NOT attempt to extract more than 8 papers** in a single query to conserve API quota and time.
 
 ## Step 3b: Browser-Assisted Extraction (Playwright MCP Fallback)
 
@@ -82,7 +79,7 @@ If `extract_paper_full_text` fails for a strongly relevant paper (returns error 
 3. Call `browser_click` on the most likely PDF download element (e.g., "Download PDF", "View PDF", "Full Text PDF"). Use the accessibility tree to identify the correct element — this is the key advantage over hardcoded selectors.
 4. If the click triggers a file download, Playwright MCP automatically saves it. Note the downloaded file path from the tool response.
 5. If you encounter a CAPTCHA or Cloudflare challenge, call `browser_take_screenshot` to see the current state. Report to the user that manual intervention may be needed.
-6. Once the PDF is downloaded, call `grados:parse_pdf_file` with the downloaded file path and the paper's DOI and title. This parses the PDF and saves the Markdown to the configured Markdown directory (default: `markdown/`) for RAG indexing.
+6. Once the PDF is downloaded, call `grados:parse_pdf_file` with the downloaded file path and the paper's DOI and title. This parses the PDF and saves the Markdown to the configured papers directory (default: `papers/`) for future ChromaDB search.
 
 > If Playwright MCP tools are not available, skip this step. The paper will be recorded in the "未能获取全文" section.
 
