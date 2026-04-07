@@ -185,7 +185,7 @@ async def launch_browser_session(
                 executable_path=executable_path,
                 headless=headless,
                 args=args,
-                viewport=viewport,
+                viewport=viewport,  # type: ignore[arg-type]
                 accept_downloads=True,
             )
             root_page = context.pages[0] if context.pages else await context.new_page()
@@ -201,7 +201,7 @@ async def launch_browser_session(
                 headless=headless,
                 args=args,
             )
-            context = await browser.new_context(viewport=viewport, accept_downloads=True)
+            context = await browser.new_context(viewport=viewport, accept_downloads=True)  # type: ignore[arg-type]
             root_page = await context.new_page()
 
             async def cleanup() -> None:

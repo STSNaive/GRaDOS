@@ -22,6 +22,7 @@ class FetchResult:
     outcome: str = ""  # native_full_text | pdf_obtained | metadata_only | failed
     source: str = ""  # e.g. "Elsevier TDM", "Unpaywall OA", "Sci-Hub"
     metadata: Any = None
+    asset_hints: list[dict[str, str]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -32,6 +33,7 @@ async def fetch_paper(
     fetch_order: list[str] | None = None,
     fetch_enabled: dict[str, bool] | None = None,
     tdm_order: list[str] | None = None,
+    tdm_enabled: dict[str, bool] | None = None,
     sci_hub_config: dict[str, Any] | None = None,
     headless_config: HeadlessBrowserConfig | None = None,
     paths: GRaDOSPaths | None = None,
@@ -47,7 +49,7 @@ async def fetch_paper(
                 continue
 
             if strategy == "TDM":
-                result = await _fetch_tdm(doi, api_keys, client, tdm_order)
+                result = await _fetch_tdm(doi, api_keys, client, tdm_order, tdm_enabled)
                 if result.outcome in ("native_full_text", "pdf_obtained"):
                     result.warnings = warnings
                     return result
@@ -91,16 +93,26 @@ async def _fetch_tdm(
     api_keys: dict[str, str],
     client: httpx.AsyncClient,
     tdm_order: list[str] | None = None,
+    tdm_enabled: dict[str, bool] | None = None,
 ) -> FetchResult:
     order = tdm_order or ["Elsevier", "Springer"]
+    enabled = tdm_enabled or {publisher: True for publisher in order}
     for publisher in order:
+        if not enabled.get(publisher, True):
+            continue
         if publisher == "Elsevier":
             key = api_keys.get("ELSEVIER_API_KEY", "")
             if not key:
                 continue
             r: ElsevierFetchResult = await fetch_elsevier_article(doi, key, client)
             if r.outcome == "native_full_text":
-                return FetchResult(text=r.text, outcome="native_full_text", source="Elsevier TDM", metadata=r.metadata)
+                return FetchResult(
+                    text=r.text,
+                    outcome="native_full_text",
+                    source="Elsevier TDM",
+                    metadata=r.metadata,
+                    asset_hints=r.asset_hints,
+                )
             if r.outcome == "metadata_only":
                 # Save metadata signal but don't return yet — try other strategies
                 pass
@@ -112,9 +124,19 @@ async def _fetch_tdm(
                 continue
             r2: SpringerFetchResult = await fetch_springer_article(doi, meta_key, oa_key, client)
             if r2.outcome == "native_full_text":
-                return FetchResult(text=r2.text, outcome="native_full_text", source="Springer TDM")
+                return FetchResult(
+                    text=r2.text,
+                    outcome="native_full_text",
+                    source="Springer TDM",
+                    asset_hints=r2.asset_hints,
+                )
             if r2.outcome == "pdf_obtained":
-                return FetchResult(pdf_buffer=r2.pdf_buffer, outcome="pdf_obtained", source="Springer TDM")
+                return FetchResult(
+                    pdf_buffer=r2.pdf_buffer,
+                    outcome="pdf_obtained",
+                    source="Springer TDM",
+                    asset_hints=r2.asset_hints,
+                )
 
     return FetchResult(outcome="failed")
 
@@ -202,17 +224,17 @@ def _extract_scihub_pdf_url(html: str, mirror: str) -> str | None:
     # embed[type=application/pdf]
     embed = soup.find("embed", attrs={"type": "application/pdf"})
     if embed and embed.get("src"):
-        return _normalize_scihub_url(embed["src"], mirror)
+        return _normalize_scihub_url(str(embed["src"]), mirror)
 
     # iframe src
     iframe = soup.find("iframe")
     if iframe and iframe.get("src"):
-        return _normalize_scihub_url(iframe["src"], mirror)
+        return _normalize_scihub_url(str(iframe["src"]), mirror)
 
     # button onclick
     button = soup.find("button")
     if button and button.get("onclick"):
-        match = re.search(r"location\.href='([^']+\.pdf[^']*)'", button["onclick"])
+        match = re.search(r"location\.href='([^']+\.pdf[^']*)'", str(button["onclick"]))
         if match:
             return _normalize_scihub_url(match.group(1), mirror)
 

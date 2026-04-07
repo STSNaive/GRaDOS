@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Annotated
 
 from fastmcp import FastMCP
 
 from grados import __version__
-from grados.config import GRaDOSPaths, load_config
+from grados.config import GRaDOSConfig, GRaDOSPaths, load_config
+
+__all__ = ["mcp"]
 
 mcp = FastMCP(
     "GRaDOS",
@@ -18,15 +19,83 @@ mcp = FastMCP(
 )
 
 
-def _get_paths_and_config():
+def _get_paths_and_config() -> tuple[GRaDOSPaths, GRaDOSConfig]:
     paths = GRaDOSPaths()
     config = load_config(paths)
     return paths, config
 
 
-def _get_api_keys(config) -> dict[str, str]:
+def _get_api_keys(config: GRaDOSConfig) -> dict[str, str]:
     keys = config.api_keys
     return {k: v for k, v in keys.model_dump().items() if v}
+
+
+def _format_paper_index_resource(papers: list[dict[str, str]]) -> str:
+    lines = ["# GRaDOS Saved Papers Index", ""]
+    if not papers:
+        lines.append("No saved papers found.")
+        return "\n".join(lines)
+
+    lines.append(f"Total papers: {len(papers)}")
+    lines.append("")
+    for item in papers:
+        title = item.get("title") or "(untitled)"
+        lines.append(f"## {title}")
+        lines.append(f"- DOI: {item.get('doi', '')}")
+        lines.append(f"- URI: grados://papers/{item.get('safe_doi', '')}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def _format_paper_overview_resource(structure: dict[str, object]) -> str:
+    lines = [f"# {structure.get('title') or structure.get('safe_doi')}", ""]
+    lines.append(f"- DOI: {structure.get('doi', '')}")
+    lines.append(f"- URI: {structure.get('canonical_uri', '')}")
+    if structure.get("year"):
+        lines.append(f"- Year: {structure.get('year')}")
+    if structure.get("journal"):
+        lines.append(f"- Journal: {structure.get('journal')}")
+    if structure.get("source"):
+        lines.append(f"- Source: {structure.get('source')}")
+    if structure.get("word_count"):
+        lines.append(f"- Word count: {structure.get('word_count')}")
+    if structure.get("paragraph_count"):
+        lines.append(f"- Paragraph count: {structure.get('paragraph_count')}")
+
+    preview = str(structure.get("preview_excerpt", "") or "")
+    if preview:
+        lines.extend(["", "## Preview", "", preview])
+
+    raw_headings = structure.get("section_headings")
+    headings: list[object] = list(raw_headings) if isinstance(raw_headings, (list, tuple)) else []
+    if headings:
+        lines.extend(["", "## Sections", ""])
+        lines.extend(f"- {heading}" for heading in headings)
+
+    assets_summary = structure.get("assets_summary") or {}
+    if isinstance(assets_summary, dict) and assets_summary.get("has_assets"):
+        lines.extend(
+            [
+                "",
+                "## Assets",
+                "",
+                f"- Manifest: {assets_summary.get('manifest_path', '')}",
+                f"- Figures: {assets_summary.get('figures', 0)}",
+                f"- Tables: {assets_summary.get('tables', 0)}",
+                f"- Objects: {assets_summary.get('objects', 0)}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Next Step",
+            "",
+            "Use `read_saved_paper` for canonical deep reading and citation verification.",
+        ]
+    )
+    return "\n".join(lines).strip()
 
 
 # ── search_academic_papers ───────────────────────────────────────────────────
@@ -90,7 +159,7 @@ async def search_academic_papers(
     if result.exhausted_sources:
         header += f"\nExhausted sources: {', '.join(result.exhausted_sources)}"
     if result.warnings:
-        header += f"\n\nWarnings:\n" + "\n".join(f"- {w}" for w in result.warnings)
+        header += "\n\nWarnings:\n" + "\n".join(f"- {w}" for w in result.warnings)
 
     body = "\n\n".join(papers_md)
 
@@ -100,6 +169,36 @@ async def search_academic_papers(
         footer += "Pass this token to get more results."
 
     return header + "\n\n" + body + footer
+
+
+# ── paper resources ──────────────────────────────────────────────────────────
+
+
+@mcp.resource("grados://papers/index", mime_type="text/markdown")
+def papers_index_resource() -> str:
+    """Low-token index of saved papers."""
+    from grados.storage.papers import list_saved_papers
+
+    paths, _ = _get_paths_and_config()
+    papers = list_saved_papers(paths.papers, chroma_dir=paths.database_chroma)
+    return _format_paper_index_resource(papers)
+
+
+@mcp.resource("grados://papers/{safe_doi}", mime_type="text/markdown")
+def paper_overview_resource(safe_doi: str) -> str:
+    """Overview card for a saved paper resource."""
+    from grados.storage.papers import get_paper_structure
+
+    paths, _ = _get_paths_and_config()
+    structure = get_paper_structure(
+        papers_dir=paths.papers,
+        safe_doi=safe_doi,
+        chroma_dir=paths.database_chroma,
+    )
+    if not structure:
+        return f"# Paper Not Found\n\nCould not resolve grados://papers/{safe_doi}"
+
+    return _format_paper_overview_resource(structure.__dict__)
 
 
 # ── extract_paper_full_text ──────────────────────────────────────────────────
@@ -119,7 +218,7 @@ async def extract_paper_full_text(
     from grados.extract.fetch import fetch_paper
     from grados.extract.parse import parse_pdf
     from grados.extract.qa import is_valid_paper_content
-    from grados.storage.papers import save_paper_markdown, save_pdf
+    from grados.storage.papers import save_asset_manifest, save_paper_markdown, save_pdf
 
     paths, config = _get_paths_and_config()
     api_keys = _get_api_keys(config)
@@ -131,6 +230,8 @@ async def extract_paper_full_text(
         etiquette_email=config.academic_etiquette_email,
         fetch_order=extract_cfg.fetch_strategy.order,
         fetch_enabled=extract_cfg.fetch_strategy.enabled,
+        tdm_order=extract_cfg.tdm.order,
+        tdm_enabled=extract_cfg.tdm.enabled,
         sci_hub_config=extract_cfg.sci_hub.model_dump(),
         headless_config=extract_cfg.headless_browser,
         paths=paths,
@@ -164,6 +265,13 @@ async def extract_paper_full_text(
     if not is_valid_paper_content(markdown, extract_cfg.qa.min_characters, expected_title):
         warnings.append("QA validation failed — content may be incomplete or paywalled.")
 
+    assets_manifest_path = save_asset_manifest(
+        doi=doi,
+        papers_dir=paths.papers,
+        source=fetch_result.source,
+        asset_hints=fetch_result.asset_hints,
+    )
+
     # Save
     summary = save_paper_markdown(
         doi=doi,
@@ -173,10 +281,11 @@ async def extract_paper_full_text(
         source=fetch_result.source,
         publisher=publisher or "",
         fetch_outcome=fetch_result.outcome,
+        extra_frontmatter={"assets_manifest_path": assets_manifest_path} if assets_manifest_path else None,
         chroma_dir=paths.database_chroma,
     )
 
-    result = f"## Paper Extracted Successfully\n\n"
+    result = "## Paper Extracted Successfully\n\n"
     result += f"- **DOI:** {doi}\n"
     result += f"- **URI:** {summary.uri}\n"
     result += f"- **File:** {summary.file_path}\n"
@@ -185,9 +294,9 @@ async def extract_paper_full_text(
     result += f"- **Source:** {fetch_result.source}\n"
     result += f"- **Outcome:** {fetch_result.outcome}\n"
     if summary.section_headings:
-        result += f"\n### Sections\n" + "\n".join(f"- {h}" for h in summary.section_headings)
+        result += "\n### Sections\n" + "\n".join(f"- {h}" for h in summary.section_headings)
     if warnings:
-        result += f"\n\n### Warnings\n" + "\n".join(f"- {w}" for w in warnings)
+        result += "\n\n### Warnings\n" + "\n".join(f"- {w}" for w in warnings)
 
     return result
 
@@ -222,6 +331,7 @@ async def read_saved_paper(
         max_paragraphs=max_paragraphs,
         section_query=section_query,
         include_front_matter=include_front_matter,
+        chroma_dir=paths.database_chroma,
     )
 
     if not result:
@@ -239,6 +349,87 @@ async def read_saved_paper(
         footer = "\n\n---\n### Available Sections\n" + "\n".join(f"- {h}" for h in result.section_headings)
 
     return header + result.text + footer
+
+
+# ── get_saved_paper_structure ────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def get_saved_paper_structure(
+    doi: Annotated[str | None, "Paper DOI"] = None,
+    safe_doi: Annotated[str | None, "Sanitized DOI filename"] = None,
+    uri: Annotated[str | None, "Paper URI (grados://papers/...)"] = None,
+) -> dict[str, object]:
+    """Return a compact structure card for a saved paper.
+
+    This is the low-token navigation path. Use read_saved_paper for canonical deep reading.
+    """
+    from grados.storage.papers import get_paper_structure
+
+    paths, _ = _get_paths_and_config()
+    structure = get_paper_structure(
+        papers_dir=paths.papers,
+        doi=doi,
+        safe_doi=safe_doi,
+        uri=uri,
+        chroma_dir=paths.database_chroma,
+    )
+    if not structure:
+        return {
+            "found": False,
+            "message": f"Paper not found. doi={doi}, safe_doi={safe_doi}, uri={uri}",
+        }
+
+    payload = structure.__dict__.copy()
+    payload["found"] = True
+    return payload
+
+
+# ── import_local_pdf_library ─────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def import_local_pdf_library(
+    source_path: Annotated[str, "Path to a PDF file or a directory containing PDFs"],
+    recursive: Annotated[bool, "Recursively scan subdirectories"] = False,
+    glob_pattern: Annotated[str, "Glob pattern for PDF discovery"] = "*.pdf",
+    copy_to_library: Annotated[bool, "Copy raw PDFs into the managed downloads archive"] = True,
+) -> dict[str, object]:
+    """Import a local PDF library into GRaDOS canonical storage."""
+    from grados.importing import import_local_pdf_library as run_import
+
+    paths, _ = _get_paths_and_config()
+    result = await run_import(
+        source_path=Path(source_path),
+        paths=paths,
+        recursive=recursive,
+        glob_pattern=glob_pattern,
+        copy_to_library=copy_to_library,
+    )
+
+    item_limit = 25
+    items = [
+        {
+            "source_path": item.source_path,
+            "status": item.status,
+            "doi": item.doi,
+            "safe_doi": item.safe_doi,
+            "title": item.title,
+            "detail": item.detail,
+            "copied_pdf_path": item.copied_pdf_path,
+        }
+        for item in result.items[:item_limit]
+    ]
+    return {
+        "source_path": result.source_path,
+        "scanned": result.scanned,
+        "imported": result.imported,
+        "skipped": result.skipped,
+        "failed": result.failed,
+        "warnings": result.warnings,
+        "items": items,
+        "truncated_items": max(0, len(result.items) - item_limit),
+    }
 
 
 # ── parse_pdf_file ───────────────────────────────────────────────────────────
@@ -291,12 +482,12 @@ async def parse_pdf_file(
             fetch_outcome="local_parse",
             chroma_dir=paths.database_chroma,
         )
-        result = f"## PDF Parsed & Saved\n\n"
+        result = "## PDF Parsed & Saved\n\n"
         result += f"- **URI:** {summary.uri}\n"
         result += f"- **File:** {summary.file_path}\n"
         result += f"- **Words:** {summary.word_count:,}\n"
     else:
-        result = f"## PDF Parsed\n\n"
+        result = "## PDF Parsed\n\n"
         result += f"- **Words:** {len(parsed.split()):,}\n"
         result += f"- **Characters:** {len(parsed):,}\n"
         result += f"\n---\n\n{parsed[:3000]}"
@@ -352,69 +543,84 @@ async def save_paper_to_zotero(
         return f"## Zotero Save Failed\n\n- **Error:** {result.message}"
 
 
-# ── search_saved_papers (placeholder for Phase 3) ────────────────────────────
+# ── search_saved_papers ──────────────────────────────────────────────────────
 
 
 @mcp.tool()
 async def search_saved_papers(
     query: Annotated[str, "Search query"],
     limit: Annotated[int, "Maximum results"] = 10,
+    doi: Annotated[str | None, "Exact DOI filter"] = None,
+    authors: Annotated[str | None, "Author substring filter"] = None,
+    year_from: Annotated[int | None, "Inclusive lower bound for publication year"] = None,
+    year_to: Annotated[int | None, "Inclusive upper bound for publication year"] = None,
+    journal: Annotated[str | None, "Journal substring filter"] = None,
+    source: Annotated[str | None, "Source substring filter"] = None,
+    use_reranking: Annotated[bool, "Apply lightweight lexical reranking after dense retrieval"] = True,
 ) -> str:
     """Search previously saved papers by keyword or semantic similarity.
 
-    Uses ChromaDB for semantic search when available, falls back to keyword matching.
+    Uses metadata prefiltering, ChromaDB retrieval, and paper-level reranking.
     """
     from grados.storage.papers import list_saved_papers
     from grados.storage.vector import get_index_stats, search_papers
 
     paths, _ = _get_paths_and_config()
-
-    # Try ChromaDB semantic search first
     stats = get_index_stats(paths.database_chroma)
-    if stats["total_chunks"] > 0:
-        results = search_papers(paths.database_chroma, query, limit)
-        if results:
-            lines = [f"## Saved Paper Search: {query}\n"]
-            lines.append(f"Found **{len(results)}** matches (semantic search, {stats['unique_papers']} papers indexed):\n")
-            for i, r in enumerate(results, 1):
-                lines.append(f"{i}. **{r['title'] or '(untitled)'}**  (score: {r['score']:.2f})")
-                lines.append(f"   - DOI: {r['doi']}")
-                lines.append(f"   - URI: grados://papers/{r['safe_doi']}")
-                if r.get("snippet"):
-                    snippet = r["snippet"][:150].replace("\n", " ")
-                    lines.append(f"   - Snippet: {snippet}...")
-            return "\n".join(lines)
+    results = search_papers(
+        paths.database_chroma,
+        query,
+        limit,
+        doi=doi or "",
+        authors=authors or "",
+        year_from=year_from,
+        year_to=year_to,
+        journal=journal or "",
+        source=source or "",
+        use_reranking=use_reranking,
+    )
 
-    # Keyword fallback
-    papers = list_saved_papers(paths.papers)
+    papers = list_saved_papers(paths.papers, chroma_dir=paths.database_chroma)
+    filter_parts = []
+    if doi:
+        filter_parts.append(f"doi={doi}")
+    if authors:
+        filter_parts.append(f"authors~{authors}")
+    if year_from is not None or year_to is not None:
+        filter_parts.append(f"year={year_from or '-'}..{year_to or '-'}")
+    if journal:
+        filter_parts.append(f"journal~{journal}")
+    if source:
+        filter_parts.append(f"source~{source}")
+    filters_suffix = f" | filters: {', '.join(filter_parts)}" if filter_parts else ""
 
     if not papers:
         return "No saved papers found. Use extract_paper_full_text to save papers first."
 
-    query_lower = query.lower()
-    matches = []
-    for p in papers:
-        score = 0
-        for word in query_lower.split():
-            if word in p.get("title", "").lower():
-                score += 2
-            if word in p.get("doi", "").lower():
-                score += 1
-        if score > 0:
-            matches.append((score, p))
-
-    matches.sort(key=lambda x: x[0], reverse=True)
-    results_kw = matches[:limit]
-
-    if not results_kw:
-        hint = " Run `grados update-db` to enable semantic search." if stats["total_chunks"] == 0 else ""
+    if not results:
+        hint = " Run `grados update-db` to build retrieval chunks." if stats["total_chunks"] == 0 else ""
         return f"No papers matching '{query}' found among {len(papers)} saved papers.{hint}"
 
-    lines = [f"## Saved Paper Search: {query}\n\nFound **{len(results_kw)}** matches (keyword):\n"]
-    for i, (score, p) in enumerate(results_kw, 1):
-        lines.append(f"{i}. **{p.get('title', '(untitled)')}**")
-        lines.append(f"   - DOI: {p.get('doi', '')}")
-        lines.append(f"   - URI: grados://papers/{p.get('safe_doi', '')}")
+    mode = "hybrid reranked" if use_reranking else "dense"
+    lines = [f"## Saved Paper Search: {query}{filters_suffix}\n"]
+    lines.append(
+        f"Found **{len(results)}** matches "
+        f"({mode}, {stats['unique_papers']} papers / {stats['total_chunks']} chunks indexed):\n"
+    )
+    for i, paper in enumerate(results, 1):
+        lines.append(f"{i}. **{paper.get('title') or '(untitled)'}**  (score: {paper.get('score', 0.0):.2f})")
+        lines.append(f"   - DOI: {paper.get('doi', '')}")
+        lines.append(f"   - URI: grados://papers/{paper.get('safe_doi', '')}")
+        if paper.get("authors"):
+            lines.append(f"   - Authors: {', '.join(paper['authors'][:4])}")
+        if paper.get("year"):
+            lines.append(f"   - Year: {paper.get('year')}")
+        if paper.get("journal"):
+            lines.append(f"   - Journal: {paper.get('journal')}")
+        if paper.get("source"):
+            lines.append(f"   - Source: {paper.get('source')}")
+        if paper.get("snippet"):
+            lines.append(f"   - Snippet: {paper['snippet']}")
 
     return "\n".join(lines)
 

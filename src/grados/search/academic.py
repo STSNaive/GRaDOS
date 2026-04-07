@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
 
 from grados.publisher.common import looks_like_doi
-
 
 # ── Shared types ─────────────────────────────────────────────────────────────
 
@@ -106,7 +105,7 @@ async def search_crossref(
         cursor=next_cursor or state.cursor,
         rows=state.rows,
         pages_fetched=state.pages_fetched + 1,
-        cursor_issued_at=state.cursor_issued_at or datetime.now(timezone.utc).isoformat(),
+        cursor_issued_at=state.cursor_issued_at or datetime.now(UTC).isoformat(),
     )
     return SearchPageResult(papers, exhausted), new_state
 
@@ -131,7 +130,13 @@ async def search_pubmed(
         # Step 1: ESearch
         esearch_resp = await client.get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
-            params={"db": "pubmed", "term": query, "retmode": "json", "retstart": state.retstart, "retmax": state.page_size},
+            params={
+                "db": "pubmed",
+                "term": query,
+                "retmode": "json",
+                "retstart": state.retstart,
+                "retmax": state.page_size,
+            },
             timeout=30,
         )
         esearch_resp.raise_for_status()
@@ -257,7 +262,11 @@ async def search_wos(
             source="Web of Science",
         ))
 
-    exhausted = len(hits) == 0 or len(hits) < state.page_size or (total > 0 and state.page * state.page_size >= total)
+    exhausted = (
+        len(hits) == 0
+        or len(hits) < state.page_size
+        or (total > 0 and state.page * state.page_size >= total)
+    )
     new_state = WoSState(state.page + 1, state.page_size)
     return SearchPageResult(papers, exhausted), new_state
 
@@ -284,7 +293,12 @@ async def search_elsevier(
     try:
         resp = await client.get(
             "https://api.elsevier.com/content/search/scopus",
-            params={"query": query, "count": state.page_size, "start": state.start, "view": "COMPLETE"},
+            params={
+                "query": query,
+                "count": state.page_size,
+                "start": state.start,
+                "view": "COMPLETE",
+            },
             headers={"X-ELS-APIKey": api_key, "Accept": "application/json"},
             timeout=30,
         )
@@ -312,7 +326,11 @@ async def search_elsevier(
             source="Elsevier (Scopus)",
         ))
 
-    exhausted = len(entries) == 0 or len(entries) < state.page_size or (total > 0 and state.start + state.page_size >= total)
+    exhausted = (
+        len(entries) == 0
+        or len(entries) < state.page_size
+        or (total > 0 and state.start + state.page_size >= total)
+    )
     new_state = ElsevierState(state.start + state.page_size, state.page_size)
     return SearchPageResult(papers, exhausted), new_state
 
@@ -395,7 +413,7 @@ def build_search_adapters(
             "init": lambda: CrossrefState(
                 cursor="*",
                 rows=_clamp_page_size(limit, 100),
-                cursor_issued_at=datetime.now(timezone.utc).isoformat(),
+                cursor_issued_at=datetime.now(UTC).isoformat(),
             ),
             "fetch": lambda q, lim, st, cl: search_crossref(q, lim, st, etiquette_email, cl),
             "max_page_size": 100,

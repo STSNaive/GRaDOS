@@ -1,15 +1,15 @@
-"""Paper storage: save/read markdown with YAML frontmatter, paragraph windowing."""
+"""Paper storage: mirror markdown files plus canonical Chroma-backed reading."""
 
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from grados.publisher.common import safe_doi_filename
-
 
 # ── Frontmatter ──────────────────────────────────────────────────────────────
 
@@ -29,12 +29,12 @@ def build_front_matter(
         lines.append(f'title: "{title.replace(chr(34), chr(39))}"')
     if source:
         lines.append(f'source: "{source}"')
-    lines.append(f'fetched_at: "{datetime.now(timezone.utc).isoformat()}"')
+    lines.append(f'fetched_at: "{datetime.now(UTC).isoformat()}"')
     if publisher:
         lines.append(f'publisher: "{publisher}"')
     if fetch_outcome:
         lines.append(f'fetch_outcome: "{fetch_outcome}"')
-    lines.append(f'extraction_status: "OK"')
+    lines.append('extraction_status: "OK"')
     if extra:
         for k, v in extra.items():
             lines.append(f'{k}: "{v}"')
@@ -66,29 +66,47 @@ def save_paper_markdown(
     fetch_outcome: str = "",
     extra_frontmatter: dict[str, str] | None = None,
     chroma_dir: Path | None = None,
+    *,
+    authors: list[str] | None = None,
+    year: str = "",
+    journal: str = "",
+    write_mirror: bool = True,
 ) -> PaperSavedSummary:
     """Save parsed paper as markdown with YAML frontmatter.
 
-    If chroma_dir is provided, also indexes the paper into ChromaDB.
+    If chroma_dir is provided, the canonical document is persisted into ChromaDB.
+    When write_mirror is true, a human-readable markdown mirror is also written.
     """
-    papers_dir.mkdir(parents=True, exist_ok=True)
     safe = safe_doi_filename(doi)
     file_path = papers_dir / f"{safe}.md"
-
-    front = build_front_matter(doi, title, source, publisher, fetch_outcome, extra_frontmatter)
-    content = f"{front}\n\n{markdown}"
-    file_path.write_text(content, encoding="utf-8")
-
     headings = re.findall(r"^#{1,6}\s+(.+)$", markdown, re.MULTILINE)
 
-    # Auto-index into ChromaDB if configured
     if chroma_dir:
         try:
             from grados.storage.vector import index_paper
 
-            index_paper(chroma_dir, doi, safe, title, markdown)
+            index_paper(
+                chroma_dir,
+                doi,
+                safe,
+                title,
+                markdown,
+                source=source,
+                fetch_outcome=fetch_outcome,
+                authors=authors,
+                year=year,
+                journal=journal,
+                section_headings=headings[:20],
+                assets_manifest_path=(extra_frontmatter or {}).get("assets_manifest_path", ""),
+            )
         except Exception:
-            pass  # Non-fatal: indexing failure should not break paper saving
+            pass  # Canonical indexing failure should not block mirror persistence
+
+    if write_mirror:
+        papers_dir.mkdir(parents=True, exist_ok=True)
+        front = build_front_matter(doi, title, source, publisher, fetch_outcome, extra_frontmatter)
+        content = f"{front}\n\n{markdown}"
+        file_path.write_text(content, encoding="utf-8")
 
     return PaperSavedSummary(
         doi=doi,
@@ -110,6 +128,46 @@ def save_pdf(doi: str, pdf_buffer: bytes, downloads_dir: Path) -> Path:
     return path
 
 
+def save_asset_manifest(
+    doi: str,
+    papers_dir: Path,
+    *,
+    source: str = "",
+    asset_hints: list[dict[str, Any]] | None = None,
+) -> str:
+    """Persist asset hints as a paper-bound sidecar manifest.
+
+    Returns a path relative to papers_dir for frontmatter / canonical metadata use.
+    """
+    hints = asset_hints or []
+    if not hints:
+        return ""
+
+    safe = safe_doi_filename(doi)
+    assets_dir = papers_dir / "_assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = assets_dir / f"{safe}.json"
+
+    figures = [hint for hint in hints if "figure" in str(hint.get("kind", "")).lower()]
+    tables = [hint for hint in hints if "table" in str(hint.get("kind", "")).lower()]
+    objects = [
+        hint for hint in hints
+        if hint not in figures and hint not in tables
+    ]
+
+    payload = {
+        "doi": doi,
+        "safe_doi": safe,
+        "source": source,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "figures": figures,
+        "tables": tables,
+        "objects": objects,
+    }
+    manifest_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return str(manifest_path.relative_to(papers_dir))
+
+
 # ── Paper reading with paragraph windowing ───────────────────────────────────
 
 
@@ -124,6 +182,26 @@ class PaperReadResult:
     section_headings: list[str]
 
 
+@dataclass
+class PaperStructureResult:
+    doi: str
+    safe_doi: str
+    canonical_uri: str
+    title: str
+    source: str
+    fetch_outcome: str
+    authors: list[str]
+    year: str
+    journal: str
+    word_count: int
+    char_count: int
+    paragraph_count: int
+    preview_excerpt: str
+    section_headings: list[str]
+    section_outline: list[dict[str, Any]]
+    assets_summary: dict[str, Any]
+
+
 def read_paper(
     papers_dir: Path,
     doi: str | None = None,
@@ -133,9 +211,9 @@ def read_paper(
     max_paragraphs: int = 20,
     section_query: str | None = None,
     include_front_matter: bool = False,
+    chroma_dir: Path | None = None,
 ) -> PaperReadResult | None:
     """Read a saved paper with paragraph windowing."""
-    # Resolve file
     if uri and uri.startswith("grados://papers/"):
         safe_doi = uri.replace("grados://papers/", "").strip("/")
     elif doi and not safe_doi:
@@ -144,32 +222,142 @@ def read_paper(
     if not safe_doi:
         return None
 
-    file_path = papers_dir / f"{safe_doi}.md"
-    if not file_path.is_file():
-        return None
+    canonical_record = None
+    if chroma_dir:
+        try:
+            from grados.storage.vector import get_paper_document
 
-    content = file_path.read_text(encoding="utf-8")
-    paragraphs = _split_paragraphs(content, include_front_matter)
+            canonical_record = get_paper_document(chroma_dir, safe_doi)
+        except Exception:
+            canonical_record = None
+
+    if canonical_record:
+        content = canonical_record["content_markdown"]
+        if include_front_matter:
+            content = _prepend_front_matter(content, canonical_record)
+        paragraphs = _split_paragraphs(content, include_front_matter)
+        headings = canonical_record["section_headings"] or [
+            re.sub(r"^#{1,6}\s+", "", p).strip()
+            for p in paragraphs
+            if re.match(r"^#{1,6}\s+", p)
+        ]
+        resolved_doi = canonical_record["doi"] or doi or safe_doi
+    else:
+        file_path = papers_dir / f"{safe_doi}.md"
+        if not file_path.is_file():
+            return None
+
+        content = file_path.read_text(encoding="utf-8")
+        paragraphs = _split_paragraphs(content, include_front_matter)
+        headings = [
+            re.sub(r"^#{1,6}\s+", "", p).strip()
+            for p in paragraphs
+            if re.match(r"^#{1,6}\s+", p)
+        ]
+        metadata = _read_frontmatter_metadata(content)
+        resolved_doi = metadata.get("doi", doi or safe_doi)
 
     if not paragraphs:
         return None
 
-    # Section query matching
     if section_query:
         start_paragraph = _find_section_start(paragraphs, section_query)
 
     start_paragraph = max(0, min(start_paragraph, len(paragraphs) - 1))
     window = paragraphs[start_paragraph : start_paragraph + max_paragraphs]
-    headings = [p for p in paragraphs if re.match(r"^#{1,6}\s+", p)]
 
     return PaperReadResult(
-        doi=doi or safe_doi,
+        doi=resolved_doi,
         text="\n\n".join(window),
         start_paragraph=start_paragraph,
         paragraph_count=len(window),
         total_paragraphs=len(paragraphs),
         truncated=start_paragraph + max_paragraphs < len(paragraphs),
-        section_headings=[re.sub(r"^#{1,6}\s+", "", h).strip() for h in headings[:20]],
+        section_headings=headings[:20],
+    )
+
+
+def get_paper_structure(
+    papers_dir: Path,
+    doi: str | None = None,
+    safe_doi: str | None = None,
+    uri: str | None = None,
+    chroma_dir: Path | None = None,
+) -> PaperStructureResult | None:
+    """Return a compact, deterministic structure card for a saved paper."""
+    safe_doi = _resolve_safe_doi(doi=doi, safe_doi=safe_doi, uri=uri)
+    if not safe_doi:
+        return None
+
+    record: dict[str, Any] | None = None
+    content = ""
+
+    if chroma_dir:
+        try:
+            from grados.storage.vector import get_paper_document
+
+            record = get_paper_document(chroma_dir, safe_doi)
+        except Exception:
+            record = None
+
+    if record:
+        content = str(record.get("content_markdown", ""))
+    else:
+        file_path = papers_dir / f"{safe_doi}.md"
+        if not file_path.is_file():
+            return None
+
+        raw_content = file_path.read_text(encoding="utf-8")
+        metadata = _read_frontmatter_metadata(raw_content)
+        content = _strip_front_matter(raw_content)
+        headings = [
+            re.sub(r"^#{1,6}\s+", "", paragraph).strip()
+            for paragraph in _split_paragraphs(content, include_front_matter=False)
+            if re.match(r"^#{1,6}\s+", paragraph)
+        ]
+        record = {
+            "doi": metadata.get("doi", doi or safe_doi),
+            "safe_doi": safe_doi,
+            "title": metadata.get("title", ""),
+            "source": metadata.get("source", ""),
+            "fetch_outcome": metadata.get("fetch_outcome", ""),
+            "authors": [],
+            "year": metadata.get("year", ""),
+            "journal": metadata.get("journal", ""),
+            "section_headings": headings[:20],
+            "assets_manifest_path": metadata.get("assets_manifest_path", ""),
+            "word_count": len(content.split()),
+            "char_count": len(content),
+        }
+
+    paragraphs = _split_paragraphs(content, include_front_matter=False)
+    headings = list(record.get("section_headings") or [])
+    if not headings:
+        headings = [
+            re.sub(r"^#{1,6}\s+", "", paragraph).strip()
+            for paragraph in paragraphs
+            if re.match(r"^#{1,6}\s+", paragraph)
+        ][:20]
+
+    title = str(record.get("title", "")).strip() or _infer_title_from_paragraphs(paragraphs)
+
+    return PaperStructureResult(
+        doi=str(record.get("doi", doi or safe_doi)),
+        safe_doi=safe_doi,
+        canonical_uri=f"grados://papers/{safe_doi}",
+        title=title,
+        source=str(record.get("source", "")),
+        fetch_outcome=str(record.get("fetch_outcome", "")),
+        authors=[str(author) for author in record.get("authors", []) if str(author)],
+        year=str(record.get("year", "")),
+        journal=str(record.get("journal", "")),
+        word_count=int(record.get("word_count", len(content.split())) or 0),
+        char_count=int(record.get("char_count", len(content)) or 0),
+        paragraph_count=len(paragraphs),
+        preview_excerpt=_preview_excerpt(paragraphs),
+        section_headings=headings[:20],
+        section_outline=_build_section_outline(paragraphs),
+        assets_summary=_load_assets_summary(papers_dir, record),
     )
 
 
@@ -181,6 +369,15 @@ def _split_paragraphs(text: str, include_front_matter: bool) -> list[str]:
             text = text[end + 3:]
     parts = re.split(r"\n{2,}", text.strip())
     return [p.strip() for p in parts if p.strip()]
+
+
+def _strip_front_matter(text: str) -> str:
+    """Remove YAML front-matter from paper content."""
+    if text.startswith("---"):
+        end = text.find("---", 3)
+        if end != -1:
+            return text[end + 3 :].strip()
+    return text.strip()
 
 
 def _find_section_start(paragraphs: list[str], query: str) -> int:
@@ -212,9 +409,103 @@ def _normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", "", s.lower())).strip()
 
 
-def list_saved_papers(papers_dir: Path) -> list[dict[str, str]]:
+def _resolve_safe_doi(doi: str | None, safe_doi: str | None, uri: str | None) -> str | None:
+    if uri and uri.startswith("grados://papers/"):
+        return uri.replace("grados://papers/", "").strip("/")
+    if safe_doi:
+        return safe_doi
+    if doi:
+        return safe_doi_filename(doi)
+    return None
+
+
+def _infer_title_from_paragraphs(paragraphs: list[str]) -> str:
+    if not paragraphs:
+        return ""
+    first = paragraphs[0]
+    return re.sub(r"^#{1,6}\s+", "", first).strip()
+
+
+def _preview_excerpt(paragraphs: list[str], max_chars: int = 320) -> str:
+    for paragraph in paragraphs:
+        if re.match(r"^#{1,6}\s+", paragraph):
+            continue
+        excerpt = re.sub(r"\s+", " ", paragraph).strip()
+        if len(excerpt) <= max_chars:
+            return excerpt
+        return excerpt[: max_chars - 3].rstrip() + "..."
+    return ""
+
+
+def _build_section_outline(paragraphs: list[str]) -> list[dict[str, Any]]:
+    outline: list[dict[str, Any]] = []
+    for index, paragraph in enumerate(paragraphs):
+        match = re.match(r"^(#{1,6})\s+(.+)$", paragraph)
+        if not match:
+            continue
+        outline.append(
+            {
+                "heading": match.group(2).strip(),
+                "level": len(match.group(1)),
+                "paragraph_index": index,
+            }
+        )
+    return outline[:40]
+
+
+def _load_assets_summary(papers_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
+    manifest_path = str(record.get("assets_manifest_path", "") or "")
+    summary: dict[str, Any] = {
+        "has_assets": False,
+        "manifest_path": manifest_path,
+        "figures": 0,
+        "tables": 0,
+        "objects": 0,
+    }
+    if not manifest_path:
+        return summary
+
+    manifest_file = Path(manifest_path)
+    if not manifest_file.is_absolute():
+        manifest_file = papers_dir / manifest_file
+    summary["has_assets"] = manifest_file.is_file()
+
+    if not manifest_file.is_file():
+        return summary
+
+    try:
+        payload = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return summary
+
+    summary["has_assets"] = True
+    summary["figures"] = len(payload.get("figures", [])) if isinstance(payload, dict) else 0
+    summary["tables"] = len(payload.get("tables", [])) if isinstance(payload, dict) else 0
+    summary["objects"] = len(payload.get("objects", [])) if isinstance(payload, dict) else 0
+    return summary
+
+
+def list_saved_papers(papers_dir: Path, chroma_dir: Path | None = None) -> list[dict[str, str]]:
     """List all saved papers with basic metadata."""
-    results = []
+    if chroma_dir:
+        try:
+            from grados.storage.vector import list_paper_documents
+
+            documents = list_paper_documents(chroma_dir)
+            if documents:
+                return [
+                    {
+                        "file": f"{item['safe_doi']}.md",
+                        "doi": item["doi"],
+                        "title": item["title"],
+                        "safe_doi": item["safe_doi"],
+                    }
+                    for item in documents
+                ]
+        except Exception:
+            pass
+
+    results: list[dict[str, str]] = []
     if not papers_dir.is_dir():
         return results
     for f in sorted(papers_dir.glob("*.md")):
@@ -231,3 +522,39 @@ def list_saved_papers(papers_dir: Path) -> list[dict[str, str]]:
                     break
         results.append({"file": f.name, "doi": doi, "title": title, "safe_doi": f.stem})
     return results
+
+
+def _prepend_front_matter(markdown: str, record: dict[str, Any]) -> str:
+    extra: dict[str, str] = {}
+    if record.get("year"):
+        extra["year"] = str(record["year"])
+    if record.get("journal"):
+        extra["journal"] = str(record["journal"])
+    if record.get("assets_manifest_path"):
+        extra["assets_manifest_path"] = str(record["assets_manifest_path"])
+
+    front = build_front_matter(
+        doi=str(record.get("doi", "")),
+        title=str(record.get("title", "")),
+        source=str(record.get("source", "")),
+        fetch_outcome=str(record.get("fetch_outcome", "")),
+        extra=extra or None,
+    )
+    return f"{front}\n\n{markdown}"
+
+
+def _read_frontmatter_metadata(content: str) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    if not content.startswith("---"):
+        return metadata
+
+    end = content.find("---", 3)
+    if end == -1:
+        return metadata
+
+    for line in content[3:end].splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        metadata[key.strip()] = value.strip().strip('"').strip("'")
+    return metadata

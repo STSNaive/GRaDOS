@@ -29,6 +29,32 @@ class ElsevierFetchResult:
     asset_hints: list[dict[str, str]] = field(default_factory=list)
 
 
+def _build_asset_hints(metadata: ElsevierMetadataSignal | None) -> list[dict[str, str]]:
+    if not metadata:
+        return []
+
+    hints: list[dict[str, str]] = []
+    if metadata.scidir_url:
+        hints.append({
+            "kind": "article_landing",
+            "label": "ScienceDirect landing page",
+            "url": metadata.scidir_url,
+        })
+    if metadata.pii:
+        hints.append({
+            "kind": "object_api_meta",
+            "label": "Elsevier object metadata",
+            "url": f"https://api.elsevier.com/content/object/pii/{metadata.pii}?view=META",
+        })
+    if metadata.eid:
+        hints.append({
+            "kind": "scopus_eid",
+            "label": "Scopus EID",
+            "value": metadata.eid,
+        })
+    return hints
+
+
 def extract_metadata_signal(payload: Any, fallback_doi: str) -> ElsevierMetadataSignal | None:
     """Extract metadata from Elsevier API response."""
     try:
@@ -84,6 +110,7 @@ async def fetch_elsevier_article(
                     text=text,
                     metadata=metadata,
                     outcome="native_full_text",
+                    asset_hints=_build_asset_hints(metadata),
                 )
     except Exception:
         pass
@@ -99,7 +126,14 @@ async def fetch_elsevier_article(
         if resp.status_code == 200:
             text = resp.text
             if text and len(text) > 1000:
-                return ElsevierFetchResult(text=text, outcome="native_full_text")
+                return ElsevierFetchResult(
+                    text=text,
+                    metadata=extract_metadata_signal(
+                        {"full-text-retrieval-response": {"coredata": {"prism:doi": doi}}},
+                        doi,
+                    ),
+                    outcome="native_full_text",
+                )
     except Exception:
         pass
 
@@ -112,7 +146,11 @@ async def fetch_elsevier_article(
         )
         if resp.status_code == 200:
             metadata = extract_metadata_signal(resp.json(), doi)
-            return ElsevierFetchResult(metadata=metadata, outcome="metadata_only")
+            return ElsevierFetchResult(
+                metadata=metadata,
+                outcome="metadata_only",
+                asset_hints=_build_asset_hints(metadata),
+            )
     except Exception:
         pass
 
@@ -127,32 +165,32 @@ def extract_sciencedirect_pdf_candidates(html: str, page_url: str) -> list[dict[
     # citation_pdf_url meta tag
     meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
     if meta and meta.get("content"):
-        candidates.append({"url": meta["content"], "source": "citation_pdf_url"})
+        candidates.append({"url": str(meta["content"]), "source": "citation_pdf_url"})
 
     # #pdfLink href
     pdf_link = soup.find(id="pdfLink")
     if pdf_link and pdf_link.get("href"):
-        candidates.append({"url": pdf_link["href"], "source": "pdfLink_href"})
+        candidates.append({"url": str(pdf_link["href"]), "source": "pdfLink_href"})
 
     # Embedded object
     embed = soup.select_one(".PdfEmbed > object")
     if embed and embed.get("data"):
-        candidates.append({"url": embed["data"], "source": "embedded_object"})
+        candidates.append({"url": str(embed["data"]), "source": "embedded_object"})
 
     # Dropdown menu
     dropdown = soup.select_one(".PdfDropDownMenu a[href]")
     if dropdown:
-        candidates.append({"url": dropdown["href"], "source": "dropdown_menu"})
+        candidates.append({"url": str(dropdown["href"]), "source": "dropdown_menu"})
 
     # Fallback download button
     dl_btn = soup.select_one(".pdf-download-btn-link")
     if dl_btn and dl_btn.get("href"):
-        candidates.append({"url": dl_btn["href"], "source": "fallback_download_button"})
+        candidates.append({"url": str(dl_btn["href"]), "source": "fallback_download_button"})
 
     # Canonical URL → /pdfft
     canonical = soup.find("link", rel="canonical")
     if canonical and canonical.get("href"):
-        pdfft_url = re.sub(r"/?$", "/pdfft?download=true", canonical["href"])
+        pdfft_url = re.sub(r"/?$", "/pdfft?download=true", str(canonical["href"]))
         candidates.append({"url": pdfft_url, "source": "canonical_pdfft"})
 
     return candidates
@@ -160,13 +198,17 @@ def extract_sciencedirect_pdf_candidates(html: str, page_url: str) -> list[dict[
 
 def parse_sciencedirect_intermediate_redirect(html: str, url: str) -> str | None:
     """Detect meta-refresh redirect on ScienceDirect intermediate pages."""
-    match = re.search(r'<meta[^>]+http-equiv=["\']?Refresh["\']?[^>]+content=["\']?\d+\s*;\s*url=([^"\'>\s]+)', html, re.IGNORECASE)
+    match = re.search(
+        r'<meta[^>]+http-equiv=["\']?Refresh["\']?[^>]+content=["\']?\d+\s*;\s*url=([^"\'>\s]+)',
+        html,
+        re.IGNORECASE,
+    )
     if match:
         return match.group(1)
 
     soup = BeautifulSoup(html, "lxml")
     redirect_link = soup.select_one("#redirect-message a[href]")
     if redirect_link:
-        return redirect_link["href"]
+        return str(redirect_link["href"])
 
     return None

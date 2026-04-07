@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
@@ -26,6 +25,26 @@ class SpringerFetchResult:
     pdf_buffer: bytes = b""
     outcome: str = ""  # native_full_text | pdf_obtained | failed
     asset_hints: list[dict[str, str]] = field(default_factory=list)
+
+
+def _build_asset_hints(meta: SpringerMetaRecord | None) -> list[dict[str, str]]:
+    if not meta:
+        return []
+
+    hints: list[dict[str, str]] = []
+    if meta.html_url:
+        hints.append({
+            "kind": "article_html",
+            "label": "Springer HTML landing page",
+            "url": meta.html_url,
+        })
+    if meta.pdf_url:
+        hints.append({
+            "kind": "article_pdf",
+            "label": "Springer PDF",
+            "url": meta.pdf_url,
+        })
+    return hints
 
 
 async def fetch_springer_meta(
@@ -92,7 +111,11 @@ async def fetch_springer_article(
             if resp.status_code == 200 and resp.text:
                 text = _extract_jats_text(resp.text)
                 if text and len(text) > 1000:
-                    return SpringerFetchResult(text=text, outcome="native_full_text")
+                    return SpringerFetchResult(
+                        text=text,
+                        outcome="native_full_text",
+                        asset_hints=_build_asset_hints(meta),
+                    )
         except Exception:
             pass
 
@@ -103,7 +126,11 @@ async def fetch_springer_article(
             if resp.status_code == 200:
                 text = _extract_html_text(resp.text, meta.title, meta.abstract)
                 if text and len(text) > 1000:
-                    return SpringerFetchResult(text=text, outcome="native_full_text")
+                    return SpringerFetchResult(
+                        text=text,
+                        outcome="native_full_text",
+                        asset_hints=_build_asset_hints(meta),
+                    )
         except Exception:
             pass
 
@@ -112,7 +139,11 @@ async def fetch_springer_article(
         try:
             resp = await client.get(meta.pdf_url, timeout=30, follow_redirects=True)
             if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
-                return SpringerFetchResult(pdf_buffer=resp.content, outcome="pdf_obtained")
+                return SpringerFetchResult(
+                    pdf_buffer=resp.content,
+                    outcome="pdf_obtained",
+                    asset_hints=_build_asset_hints(meta),
+                )
         except Exception:
             pass
 

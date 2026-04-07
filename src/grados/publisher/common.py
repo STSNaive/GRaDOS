@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 
-def classify_pdf_content(data: bytes, content_type: str = "") -> dict:
+def classify_pdf_content(data: bytes, content_type: str = "") -> dict[str, object]:
     """Validate whether a response body is a real PDF.
 
     Returns dict with keys: is_pdf (bool), reason (str).

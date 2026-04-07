@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "grados"
-version = "0.7.0"
+version = "0.6.6"
 description = "Academic research MCP server — search, extract, and manage papers"
 readme = "README.md"
 license = "MIT"
@@ -37,14 +37,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-semantic = ["sentence-transformers >= 3.0.0"]
-zotero = ["pyzotero >= 1.5.0"]
-ocr = ["pytesseract >= 0.3"]
 marker = ["marker-pdf == 1.10.2"]
 docling = ["docling"]
-all = ["grados[semantic,zotero,ocr]"]
-full = ["grados[all,marker,docling]"]
-dev = ["pytest >= 8.0", "ruff >= 0.4", "mypy >= 1.10"]
+full = ["grados[marker,docling]"]
 
 [project.scripts]
 grados = "grados.cli:main"
@@ -77,5 +72,33 @@ select = ["E", "F", "W", "I", "UP"]
 python_version = "3.11"
 strict = true
 
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:builtin type .* has no __module__ attribute:DeprecationWarning",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/grados"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    ".uv-cache/",
+    ".github/",
+    ".claude/",
+    ".grados/",
+    "hooks/",
+    "marker-worker/",
+    "skills/",
+    "docs/",
+    "node_modules/",
+    "dist/",
+    ".mcp.json",
+    "uv.lock",
+    "grados-config.json",
+    "grados-config.example.json",
+    "*-plan.md",
+    "*-decisions.md",
+    "*-checklist.md",
+    "status.md",
+    "TODO.md",
+]

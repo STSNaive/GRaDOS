@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -72,7 +73,7 @@ _STATE_CLASSES: dict[str, type] = {
 def _deserialize_state(source: str, raw: dict[str, Any]) -> Any:
     cls = _STATE_CLASSES.get(source)
     if cls and raw:
-        return cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
+        return cls(**{k: v for k, v in raw.items() if k in {f.name for f in dataclasses.fields(cls)}})
     return None
 
 

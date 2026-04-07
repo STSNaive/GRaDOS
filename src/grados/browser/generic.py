@@ -18,6 +18,8 @@ from grados.browser.manager import (
 )
 from grados.browser.sciencedirect import (
     follow_candidates as sd_follow_candidates,
+)
+from grados.browser.sciencedirect import (
     try_view_pdf_click as sd_try_view_pdf_click,
 )
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
@@ -78,12 +80,11 @@ async def fetch_with_browser(
         # ── Shared mutable state ───────────────────────────────────────────
         tracked_pages: set[Any] = set()
         attempted_urls: set[str] = set()
-        action_states: dict[int, dict] = {}
-        pdf_buffer: bytearray | None = None  # mutable container for closure
+        action_states: dict[int, dict[str, Any]] = {}
         final_url = ""
         challenge_seen = False
 
-        # Wrap pdf_buffer in a list so closures can mutate it
+        # Wrap the captured PDF in a mutable container so closures can update it.
         _buf: list[bytes | None] = [None]
 
         def pdf_captured() -> bool:
@@ -110,7 +111,7 @@ async def fetch_with_browser(
                 return True
             return False
 
-        def get_action_state(page: Any) -> dict:
+        def get_action_state(page: Any) -> dict[str, Any]:
             pid = id(page)
             if pid not in action_states:
                 action_states[pid] = {}
@@ -315,7 +316,7 @@ async def _try_backfill_from_url(
 
 async def _try_generic_pdf_click(
     page: Any,
-    action_state: dict,
+    action_state: dict[str, Any],
     pdf_captured: Any,
 ) -> None:
     """Click generic PDF links on non-ScienceDirect pages."""

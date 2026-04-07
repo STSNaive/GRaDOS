@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
 
 
 async def parse_pdf(
@@ -45,12 +44,12 @@ async def parse_pdf(
 def _parse_pymupdf(pdf_buffer: bytes) -> str | None:
     """Parse PDF using pymupdf4llm (default, fast, in-process)."""
     try:
-        import pymupdf4llm
         import pymupdf
+        import pymupdf4llm
 
-        doc = pymupdf.open(stream=pdf_buffer, filetype="pdf")
+        doc = pymupdf.open(stream=pdf_buffer, filetype="pdf")  # type: ignore[no-untyped-call]
         md = pymupdf4llm.to_markdown(doc)
-        doc.close()
+        doc.close()  # type: ignore[no-untyped-call]
         return md if md and len(md) > 100 else None
     except Exception:
         return None

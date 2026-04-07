@@ -1,9 +1,13 @@
 # Dependencies & build
 node_modules/
 dist/
+dist-check/
+dist-final/
 .venv/
+.mypy_cache/
 .pytest_cache/
 .ruff_cache/
+.uv-cache/
 __pycache__/
 *.pyc
 python/
@@ -18,6 +22,7 @@ marker-worker/.venv/
 marker-worker/.cache/
 marker-worker/__pycache__/
 marker-worker/.tools/
+marker-worker/.python-version
 marker-worker/local.env
 marker-worker/smoke.pdf
 marker-worker/uv.lock
@@ -50,13 +55,17 @@ Thumbs.db
 %SystemDrive%/
 
 # Plan docs (local only)
+*-plan.md
 *_plan.md
+*-strategy.md
 *_strategy.md
+*-decisions.md
 status.md
 grados-issues-checklist.md
 grados-python-migration-plan.md
 TODO.md
 plan.md
+roadmap.md
 docs/
 
 # MCPB (local-only)

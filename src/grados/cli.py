@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from importlib.metadata import version as pkg_version
@@ -31,8 +32,6 @@ def _check_extra(module_name: str) -> bool:
 
 _EXTRAS: list[tuple[str, str, str]] = [
     # (display name, module to probe, extra name)
-    ("sentence-transformers", "sentence_transformers", "semantic"),
-    ("pyzotero", "pyzotero", "zotero"),
     ("marker-pdf", "marker", "marker"),
     ("docling", "docling", "docling"),
 ]
@@ -282,6 +281,89 @@ def migrate_config(source: Path | None, dry_run: bool, force: bool) -> None:
     else:
         console.print(f"[green bold]迁移完成[/green bold]，新配置已写入 {result.target_config}")
         console.print("  运行 [cyan]grados status[/cyan] 检查当前安装状态")
+    console.print()
+
+
+# ── grados import-pdfs ───────────────────────────────────────────────────────
+
+
+@main.command("import-pdfs")
+@click.option(
+    "--from",
+    "source",
+    type=click.Path(path_type=Path, exists=True),
+    required=True,
+    help="Path to a PDF file or a directory containing PDFs.",
+)
+@click.option("--recursive/--no-recursive", default=False, help="Recursively scan subdirectories.")
+@click.option("--glob", "glob_pattern", default="*.pdf", show_default=True, help="Glob pattern for PDF discovery.")
+@click.option(
+    "--copy-to-library/--keep-in-place",
+    "copy_to_library",
+    default=True,
+    help="Copy raw PDFs into the managed downloads archive or keep them in place.",
+)
+def import_pdfs(source: Path, recursive: bool, glob_pattern: str, copy_to_library: bool) -> None:
+    """Import a local PDF library into the canonical paper store."""
+    from grados.importing import import_local_pdf_library
+
+    paths = GRaDOSPaths()
+
+    console.print()
+    console.print(f"[bold]GRaDOS Import PDFs[/bold]  v{__version__}")
+    console.print(f"来源路径: [cyan]{source.expanduser().resolve()}[/cyan]")
+    console.print(f"目标论文库: [cyan]{paths.papers}[/cyan]")
+    console.print(f"Raw PDF 归档: {'开启' if copy_to_library else '关闭（keep in place）'}")
+    console.print()
+
+    result = asyncio.run(
+        import_local_pdf_library(
+            source_path=source,
+            paths=paths,
+            recursive=recursive,
+            glob_pattern=glob_pattern,
+            copy_to_library=copy_to_library,
+        )
+    )
+
+    summary = Table(show_header=False, box=None, padding=(0, 2))
+    summary.add_column(style="bold")
+    summary.add_column()
+    summary.add_row("扫描文件", str(result.scanned))
+    summary.add_row("导入成功", str(result.imported))
+    summary.add_row("已跳过", str(result.skipped))
+    summary.add_row("失败", str(result.failed))
+    console.print(summary)
+
+    if result.items:
+        console.print()
+        table = Table(show_header=True, box=None, padding=(0, 1))
+        table.add_column("状态", style="bold")
+        table.add_column("标识")
+        table.add_column("标题")
+        table.add_column("来源文件", overflow="fold")
+        table.add_column("说明", overflow="fold")
+        for item in result.items[:20]:
+            identifier = item.doi or item.safe_doi or "—"
+            detail = item.detail or item.copied_pdf_path or "—"
+            table.add_row(item.status, identifier, item.title or "—", item.source_path, detail)
+        console.print(table)
+        remaining = len(result.items) - 20
+        if remaining > 0:
+            console.print(f"[dim]... 还有 {remaining} 条记录未展开[/dim]")
+
+    if result.warnings:
+        console.print()
+        console.print("[bold]Warnings[/bold]")
+        for warning in result.warnings:
+            console.print(f"  - {warning}")
+
+    console.print()
+    console.print("[green bold]导入完成[/green bold]")
+    console.print(
+        "  运行 [cyan]search_saved_papers[/cyan] / [cyan]get_saved_paper_structure[/cyan] / "
+        "[cyan]read_saved_paper[/cyan] 开始使用"
+    )
     console.print()
 
 

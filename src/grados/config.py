@@ -9,6 +9,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+__all__ = [
+    "GRaDOSConfig",
+    "GRaDOSPaths",
+    "generate_default_config",
+    "load_config",
+    "resolve_data_root",
+]
+
 # ── Path resolution ──────────────────────────────────────────────────────────
 
 
@@ -169,8 +177,17 @@ class QAConfig(BaseModel):
     min_characters: int = 1500
 
 
+class TDMConfig(BaseModel):
+    order: list[str] = Field(default=["Elsevier", "Springer"])
+    enabled: dict[str, bool] = Field(default_factory=lambda: {
+        "Elsevier": True,
+        "Springer": True,
+    })
+
+
 class ExtractConfig(BaseModel):
     fetch_strategy: FetchStrategyConfig = Field(default_factory=FetchStrategyConfig)
+    tdm: TDMConfig = Field(default_factory=TDMConfig)
     sci_hub: SciHubConfig = Field(default_factory=SciHubConfig)
     headless_browser: HeadlessBrowserConfig = Field(default_factory=HeadlessBrowserConfig)
     parsing: ParsingConfig = Field(default_factory=ParsingConfig)

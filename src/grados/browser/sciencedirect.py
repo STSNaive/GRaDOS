@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import urljoin
 
 from grados.publisher.elsevier import (
@@ -29,7 +30,7 @@ def is_pdf_flow_page(url: str) -> bool:
     )
 
 
-async def dismiss_interruptors(page: Any, action_state: dict) -> None:
+async def dismiss_interruptors(page: Any, action_state: dict[str, Any]) -> None:
     """Dismiss ScienceDirect modal overlays (cookie banners, sign-in prompts)."""
     if page.is_closed() or "sciencedirect.com" not in page.url:
         return
@@ -64,9 +65,9 @@ async def dismiss_interruptors(page: Any, action_state: dict) -> None:
 async def try_view_pdf_click(
     page: Any,
     context: Any,
-    action_state: dict,
+    action_state: dict[str, Any],
     attempted_urls: set[str],
-    track_page_fn: Callable,
+    track_page_fn: Callable[..., Any],
 ) -> None:
     """Click the 'View PDF' link on a ScienceDirect landing page.
 
@@ -133,11 +134,11 @@ async def try_view_pdf_click(
 async def follow_candidates(
     page: Any,
     context: Any,
-    action_state: dict,
+    action_state: dict[str, Any],
     attempted_urls: set[str],
-    track_page_fn: Callable,
+    track_page_fn: Callable[..., Any],
     pdf_captured_fn: Callable[[], bool],
-    inspect_challenge_fn: Callable,
+    inspect_challenge_fn: Callable[..., Any],
 ) -> None:
     """Extract PDF candidate URLs from a ScienceDirect landing page and follow them.
 

@@ -216,6 +216,7 @@ def build_migrated_config(
     data["search"]["enabled"] = _bool_map(search_cfg.get("enabled"), data["search"]["enabled"])
 
     fetch_strategy = _as_dict(extract_cfg.get("fetchStrategy"))
+    tdm_cfg = _as_dict(extract_cfg.get("tdm"))
     data["extract"]["fetch_strategy"]["order"] = _list_or_default(
         fetch_strategy.get("order"),
         data["extract"]["fetch_strategy"]["order"],
@@ -224,6 +225,8 @@ def build_migrated_config(
         fetch_strategy.get("enabled"),
         data["extract"]["fetch_strategy"]["enabled"],
     )
+    data["extract"]["tdm"]["order"] = _list_or_default(tdm_cfg.get("order"), data["extract"]["tdm"]["order"])
+    data["extract"]["tdm"]["enabled"] = _bool_map(tdm_cfg.get("enabled"), data["extract"]["tdm"]["enabled"])
 
     scihub_cfg = _as_dict(extract_cfg.get("sciHub"))
     data["extract"]["sci_hub"]["auto_update_mirror"] = bool(

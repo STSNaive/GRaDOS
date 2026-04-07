@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from grados.config import SearchConfig
 from grados.search.academic import CrossrefState, PaperMetadata, PubMedState, SearchPageResult
 from grados.search.resumable import ContinuationData, decode_token, encode_token, run_resumable_search
+from grados.storage.vector import search_papers
 
 
 def test_continuation_token_round_trip() -> None:
@@ -116,3 +117,132 @@ def test_run_resumable_search_handles_dedup_and_continuation(monkeypatch) -> Non
     assert [paper.doi for paper in second.results] == ["10.1000/c"]
     assert second.continuation_applied is True
     assert second.next_continuation_token is None
+
+
+def test_search_papers_applies_metadata_filters_and_hybrid_reranking(monkeypatch) -> None:
+    import grados.storage.vector as vector
+
+    monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: type("Docs", (), {"count": lambda self: 2})())
+    monkeypatch.setattr(
+        vector,
+        "list_paper_documents",
+        lambda chroma_dir: [
+            {
+                "doi": "10.1234/demo-a",
+                "safe_doi": "10_1234_demo_a",
+                "title": "Composite Damping Study",
+                "source": "Crossref",
+                "fetch_outcome": "native_full_text",
+                "authors": ["Alice Smith", "Bob Lee"],
+                "year": "2025",
+                "journal": "Composite Structures",
+                "section_headings": ["Abstract", "Methods"],
+                "word_count": 100,
+                "char_count": 800,
+                "uri": "grados://papers/10_1234_demo_a",
+                "content_markdown": "Composite vibration damping is discussed in detail.",
+            },
+            {
+                "doi": "10.5678/demo-b",
+                "safe_doi": "10_5678_demo_b",
+                "title": "Unrelated Study",
+                "source": "PubMed",
+                "fetch_outcome": "native_full_text",
+                "authors": ["Carol Jones"],
+                "year": "2021",
+                "journal": "Medical Journal",
+                "section_headings": ["Abstract"],
+                "word_count": 100,
+                "char_count": 500,
+                "uri": "grados://papers/10_5678_demo_b",
+                "content_markdown": "Cell biology content.",
+            },
+        ],
+    )
+
+    class FakeChunks:
+        def count(self) -> int:
+            return 2
+
+        def query(self, **kwargs):
+            return {
+                "distances": [[0.1, 0.4]],
+                "documents": [[
+                    "Composite vibration damping is discussed in detail.",
+                    "Cell biology content.",
+                ]],
+                "metadatas": [[
+                    {
+                        "doi": "10.1234/demo-a",
+                        "safe_doi": "10_1234_demo_a",
+                        "title": "Composite Damping Study",
+                    },
+                    {
+                        "doi": "10.5678/demo-b",
+                        "safe_doi": "10_5678_demo_b",
+                        "title": "Unrelated Study",
+                    },
+                ]],
+            }
+
+    monkeypatch.setattr(vector, "_get_chunks_collection", lambda client: FakeChunks())
+
+    results = search_papers(
+        chroma_dir=None,  # type: ignore[arg-type]
+        query="composite vibration damping",
+        limit=5,
+        authors="alice",
+        year_from=2024,
+        journal="Composite",
+        source="Crossref",
+    )
+
+    assert len(results) == 1
+    assert results[0]["doi"] == "10.1234/demo-a"
+    assert results[0]["authors"] == ["Alice Smith", "Bob Lee"]
+    assert "Composite vibration damping" in results[0]["snippet"]
+
+
+def test_search_papers_can_fall_back_to_document_level_lexical_matching(monkeypatch) -> None:
+    import grados.storage.vector as vector
+
+    monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: type("Docs", (), {"count": lambda self: 1})())
+    monkeypatch.setattr(
+        vector,
+        "list_paper_documents",
+        lambda chroma_dir: [
+            {
+                "doi": "10.9999/local",
+                "safe_doi": "10_9999_local",
+                "title": "Local Composite Notes",
+                "source": "Local PDF Library",
+                "fetch_outcome": "local_import",
+                "authors": [],
+                "year": "2026",
+                "journal": "",
+                "section_headings": ["Abstract"],
+                "word_count": 100,
+                "char_count": 700,
+                "uri": "grados://papers/10_9999_local",
+                "content_markdown": "This local paper discusses composite vibration damping in detail.",
+            }
+        ],
+    )
+
+    class EmptyChunks:
+        def count(self) -> int:
+            return 0
+
+    monkeypatch.setattr(vector, "_get_chunks_collection", lambda client: EmptyChunks())
+
+    results = search_papers(
+        chroma_dir=None,  # type: ignore[arg-type]
+        query="composite vibration damping",
+        limit=5,
+    )
+
+    assert len(results) == 1
+    assert results[0]["doi"] == "10.9999/local"
+    assert results[0]["dense_score"] == 0.0
