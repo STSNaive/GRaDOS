@@ -2,53 +2,96 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
+<div align="center">
+  <pre style="display:inline-block; margin:0; font-family:'Bitstream Vera Sans Mono', 'SF Mono', Consolas, monospace; font-size:15px; line-height:1.02; font-weight:bold; white-space:pre; text-align:left;">&nbsp;&nbsp;.oooooo.&nbsp;&nbsp;&nbsp;&nbsp;ooooooooo.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;oooooooooo.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.oooooo.&nbsp;&nbsp;&nbsp;&nbsp;.oooooo..o
+&nbsp;d8P'&nbsp;&nbsp;`Y8b&nbsp;&nbsp;&nbsp;`888&nbsp;&nbsp;&nbsp;`Y88.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`888'&nbsp;&nbsp;&nbsp;`Y8b&nbsp;&nbsp;&nbsp;d8P'&nbsp;&nbsp;`Y8b&nbsp;&nbsp;d8P'&nbsp;&nbsp;&nbsp;&nbsp;`Y8
+888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;.d88'&nbsp;&nbsp;.oooo.&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;Y88bo.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888ooo88P'&nbsp;&nbsp;`P&nbsp;&nbsp;)88b&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;`"Y8888o.&nbsp;
+888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ooooo&nbsp;&nbsp;888`88b.&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.oP"888&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`"Y88b
+`88.&nbsp;&nbsp;&nbsp;&nbsp;.88'&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;`88b.&nbsp;&nbsp;d8(&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;888&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d88'&nbsp;`88b&nbsp;&nbsp;&nbsp;&nbsp;d88'&nbsp;oo&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.d8P
+&nbsp;`Y8bood8P'&nbsp;&nbsp;&nbsp;o888o&nbsp;&nbsp;o888o&nbsp;`Y888""8o&nbsp;o888bood8P'&nbsp;&nbsp;&nbsp;&nbsp;`Y8bood8P'&nbsp;&nbsp;8""88888P'&nbsp;</pre>
+</div>
+
+<p align="center">
+  <strong style="font-size:1.75rem;">Graduate Research and Document Operating System</strong>
+</p>
+
 GRaDOS 是一个面向学术检索、全文提取、本地论文存储与 ChromaDB 语义检索的 Python MCP 服务器。
 
-Python 化之后，GRaDOS 不再依赖 `mcp-local-rag` 或 LanceDB。未来安装形态统一为一个 Python 包、一个可见数据根目录、一个本地语义数据库：ChromaDB。
+GRaDOS 为 Claude、Codex、Cursor 等 AI agent 提供单一 stdio MCP 服务，用来检索学术数据库、跨付费墙抓取论文、把 PDF 解析为 canonical Markdown，并在写作时回读已保存论文做引用核验。
 
-## 文档地图
+## 架构概览 🧭
 
-当前权威文档：
+GRaDOS 设计给 agent 科研工作流直接调用：
 
-- `README.md` / `README.zh-CN.md`：主要的用户安装与使用说明
-- `.mcp.json`：仓库内置的 MCP 服务器配置示例
+1. 先用 `search_saved_papers`、`get_saved_paper_structure` 或 `grados://papers/{safe_doi}` 检查本地论文库
+2. 按配置好的优先级检索远程学术数据库
+3. 按 `TDM -> OA -> Sci-Hub -> Headless` 瀑布抓取全文
+4. 按 `PyMuPDF -> Marker -> Docling` 瀑布解析 PDF
+5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把语义检索数据写入 ChromaDB
+6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
+
+### MCP 工具 🔧
+
+| 服务 | 工具 | 说明 |
+| --- | --- | --- |
+| GRaDOS | `search_academic_papers` | 检索 Crossref、PubMed、Web of Science、Elsevier 和 Springer，并做 DOI 去重与 continuation token 续查。 |
+| GRaDOS | `search_saved_papers` | 检索由 ChromaDB 支持的本地 canonical 论文库。 |
+| GRaDOS | `extract_paper_full_text` | 按 DOI 走全文抓取瀑布、解析正文，并保存 canonical Markdown 与原始 PDF 资产。 |
+| GRaDOS | `read_saved_paper` | 从已保存论文中读取段落窗口，用于综合写作与引用核验。 |
+| GRaDOS | `get_saved_paper_structure` | 返回低 token 的论文结构卡片，包含预览、章节标题与资产摘要。 |
+| GRaDOS | `import_local_pdf_library` | 批量导入已有 PDF 文件夹到 canonical 论文库与检索索引。 |
+| GRaDOS | `parse_pdf_file` | 把本地 PDF 解析为 canonical Markdown，并可选绑定 DOI。 |
+| GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 保存实际引用到的论文。 |
+
+### MCP 资源 📚
+
+| 资源 | 说明 |
+| --- | --- |
+| `grados://papers/index` | 所有已保存论文的低 token 索引。 |
+| `grados://papers/{safe_doi}` | 单篇已保存论文的 canonical 概览卡片。 |
+
+### 本地论文库 🗂️
+
+提取或导入之后，GRaDOS 会把论文保存在一套可见的目录结构里：
+
+| 目录 | 内容 | 用途 |
+| --- | --- | --- |
+| `config.json` | 运行时配置 | 整个安装共用的单一配置文件 |
+| `papers/` | 带 YAML front-matter 的 canonical Markdown 论文 | 深读、结构卡片与检索 |
+| `downloads/` | 原始 `.pdf` 文件 | 抓取或导入后的归档副本 |
+| `database/chroma/` | ChromaDB collections | 内置语义检索存储 |
+| `browser/` | 托管 Chromium、profile、extensions | 难处理 publisher 页面的浏览器回退 |
+| `models/` | embedding 与 OCR 模型缓存 | setup 预热的运行时资产 |
+
+### 仓库地图 🗺️
+
+- `README.md` / `README.zh-CN.md`：主要安装与使用说明
+- `.mcp.json`：仓库内 MCP 配置示例
 - `skills/grados/SKILL.md`：构建在 MCP 工具之上的结构化科研工作流
-- `grados-python-implementation-plan.md`：权威工程计划与完成度台账
+- `grados-python-implementation-plan.md`：实施计划与完成度台账
 - `TODO.md`：从实施计划提炼出的简明执行快照
 
-保留但降级为本地开发或历史参考：
+## 安装 🚀
 
-- `grados-python-migration-plan.md`：更早期的设计草案，现已并入实施计划
-- `status.md`：Python 化前 Elsevier / 浏览器工程日志
-- `docs/global-install-guide.md`：Python 化前的旧运维文档，仅保留作参考
-
-## 功能概览
-
-- 检索 Crossref、PubMed、Elsevier、Springer、Web of Science
-- 按 `TDM -> OA -> Sci-Hub -> Browser` 瀑布抓取全文
-- 按 `PyMuPDF -> Marker -> Docling` 瀑布解析 PDF
-- 把已有本地 PDF 文件夹导入 canonical 论文库
-- 把已保存论文镜像为带 YAML front-matter 的 Markdown
-- 用内置 ChromaDB 对已保存论文做语义检索
-- 先用低 token 结构卡片导航论文，再按需深读正文
-- 作为单一 stdio MCP 服务接入 Claude、Codex、Cursor 等客户端
-
-## 安装
-
-推荐方式：
+### 方式 A：`uv tool install`（推荐）
 
 ```bash
 uv tool install grados
 grados setup --all
 ```
 
-其他方式：
+这会创建 `~/GRaDOS/config.json`，准备可见目录结构，安装托管浏览器资产，并预热默认 embedding 模型。
+
+### 方式 B：extras、零安装或 pip
 
 ```bash
 # 核心安装
 uv tool install grados
 
-# 全量安装，包含更重的 PDF 解析器
+# 安装可选解析器 extras
+uv tool install "grados[marker]"
+uv tool install "grados[docling]"
 uv tool install "grados[full]"
 
 # 零安装运行
@@ -58,36 +101,75 @@ uvx grados version
 pip install grados
 ```
 
-当前包的 extras 分层：
+当前包的 extras：
 
 - `grados`：核心 MCP 服务、CLI、ChromaDB 存储、默认解析器、浏览器自动化，以及内置 Zotero 保存能力
-- `grados[marker]`：在核心之上加入更重的 Marker PDF 解析器
-- `grados[docling]`：在核心之上加入更重的 Docling PDF 解析器
-- `grados[full]`：在核心之上同时加入 Marker 与 Docling
+- `grados[marker]`：在核心上加入 Marker PDF 解析器
+- `grados[docling]`：在核心上加入 Docling PDF 解析器
+- `grados[full]`：同时加入两个较重的解析器
 
-## 快速开始
+### 方式 C：从源码运行
 
-1. 运行 `uv tool install grados`。
-2. 运行 `grados setup --all`。
-3. 编辑生成的配置文件 `~/GRaDOS/config.json`。
-4. 运行 `grados status` 检查依赖、浏览器资产和 API Key。
-5. 在 MCP 客户端中用 `grados` 或 `uvx grados` 启动服务。
-6. 如果你已经有本地 PDF 库，运行 `grados import-pdfs --from /path/to/papers --recursive`。
+```bash
+git clone https://github.com/STSNaive/GRaDOS.git
+cd GRaDOS
+uv sync --all-extras
+uv run grados setup --all
+uv run grados status
+```
 
-## 命令
+### 快速开始 ⚡
+
+1. 用 `uv tool install grados` 安装 GRaDOS
+2. 运行 `grados setup --all`
+3. 编辑 `~/GRaDOS/config.json`
+4. 运行 `grados status` 检查依赖、浏览器资产和 API Key
+5. 在 MCP 客户端里指向 `grados` 或 `uvx grados`
+6. 如果你已经有 PDF 库，运行 `grados import-pdfs --from /path/to/papers --recursive`
+
+### 配置 MCP 客户端 🔌
+
+Claude Code / Claude Desktop：
+
+```json
+{
+  "mcpServers": {
+    "grados": {
+      "command": "uvx",
+      "args": ["grados"]
+    }
+  }
+}
+```
+
+Codex：
+
+```toml
+[mcp_servers.grados]
+command = "uvx"
+args = ["grados"]
+```
+
+`uvx` 适合零安装启动 MCP。长期本地使用仍建议 `uv tool install grados` 加 `grados` 可执行命令。如果你想指定自定义数据根目录，请在 MCP 客户端环境变量里设置 `GRADOS_HOME`。
+
+## 配置 ⚙️
+
+### 命令 🧰
 
 | 命令 | 作用 |
 | --- | --- |
 | `grados` | 启动 MCP stdio 服务器 |
-| `grados setup --all` | 创建目录、生成 `config.json`、安装浏览器资产、预热模型 |
-| `grados import-pdfs --from /path/to/papers --recursive` | 把已有本地 PDF 库导入 canonical 论文库 |
+| `grados setup --all` | 创建目录、写入 `config.json`、安装浏览器资产并预热模型 |
+| `grados setup --with browser` | 只安装浏览器运行时资产 |
+| `grados setup --with models` | 只预热 embedding 模型 |
+| `grados import-pdfs --from /path/to/papers --recursive` | 把已有 PDF 文件夹导入 canonical 论文库 |
 | `grados status` | 查看配置、依赖、运行时资产和 API Key 状态 |
 | `grados paths` | 查看当前解析到的 GRaDOS 文件布局 |
 | `grados update-db` | 从 `papers/` 构建或刷新 ChromaDB 索引 |
-| `grados migrate-config --from /path/to/legacy` | 面向 TypeScript 时代安装的 legacy 兼容迁移命令 |
-| `grados version` | 查看版本信息 |
+| `grados migrate-config --from /path/to/legacy` | 从旧版 GRaDOS 安装迁移数据 |
+| `grados version` | 查看包版本信息 |
 
-## 文件布局
+### 文件布局 🗄️
 
 默认情况下，GRaDOS 会把所有内容放在一个可见目录里：
 
@@ -112,101 +194,60 @@ pip install grados
 1. `GRADOS_HOME`
 2. `~/GRaDOS`
 
-## 模块构成
+### API Keys 🔑
 
-当前 Python 主线按职责拆成几组核心模块：
+| Key | 来源 | 必需 |
+| --- | --- | --- |
+| `ELSEVIER_API_KEY` | Elsevier Developer Portal | 否 |
+| `WOS_API_KEY` | Clarivate Developer Portal | 否 |
+| `SPRINGER_meta_API_KEY` | Springer Nature Metadata API | 否 |
+| `SPRINGER_OA_API_KEY` | Springer Nature Open Access API | 否 |
+| `LLAMAPARSE_API_KEY` | LlamaCloud | 否 |
+| `ZOTERO_API_KEY` | Zotero Settings -> Keys | 否 |
 
-- `src/grados/server.py`：FastMCP 服务面，当前暴露 8 个工具和 2 个论文资源：`grados://papers/index`、`grados://papers/{safe_doi}`。
-- `src/grados/cli.py` 与 `src/grados/config.py`：CLI 入口、配置 schema，以及以 `GRADOS_HOME` 或 `~/GRaDOS` 为根的数据目录解析。
-- `src/grados/search/`：远程学术检索。`academic.py` 负责 Crossref / PubMed / Web of Science / Elsevier / Springer，`resumable.py` 负责 continuation token 和去重。
-- `src/grados/extract/`、`src/grados/browser/`、`src/grados/publisher/`：DOI 全文抓取瀑布。抓取顺序是 `TDM -> OA -> Sci-Hub -> Headless`，解析顺序是 `PyMuPDF -> Marker -> Docling`，当前 publisher 适配器覆盖 Elsevier 和 Springer。
-- `src/grados/storage/`：canonical 论文持久化。`vector.py` 管理 ChromaDB 的 `papers_docs` 和 `papers_chunks`，`papers.py` 管理 Markdown 镜像、结构卡片、深读窗口和资源清单。
-- `src/grados/importing.py`：把本地 PDF 批量导入 canonical 论文库并写入检索索引。
-- `src/grados/zotero.py`：把实际引用到的论文可选保存到 Zotero。
+Crossref 和 PubMed 不需要 API Key。GRaDOS 会使用你已配置的服务，未配置的会自动跳过。即使没有第三方 Key，本地论文工作流也能使用，远程检索也仍可依赖免费来源运行。
 
-## 运行时组件
+### 运行顺序 🌊
 
-当前 Python 版实际使用的核心组件：
-
-- `FastMCP`：stdio MCP 服务运行时，以及 tool / resource 注册
-- `Click` + `Rich`：CLI 命令面、setup/status 输出和导入摘要表格
-- `httpx` + `BeautifulSoup` + `lxml`：API 访问、HTML 解析、DOI 跳转，以及 OA / Sci-Hub / publisher 回退
-- `Patchright`：浏览器自动化和顽固 publisher 页面的 PDF 捕获
-- `pymupdf4llm`：默认、轻量的 PDF 转 Markdown 解析器
-- `Marker` 和 `Docling`：通过 extras 启用的更重 PDF 解析后端
-- `ChromaDB`：当前唯一的内置受管语义存储，同时承担 canonical 论文和检索 chunk
-- `Zotero Web API` 集成：通过 `httpx` 内置实现，配置好 Zotero 凭据后即可使用
-
-## MCP 客户端配置
-
-Claude Code / Claude Desktop：
+检索优先级：
 
 ```json
 {
-  "mcpServers": {
-    "grados": {
-      "command": "uvx",
-      "args": ["grados"]
+  "search": {
+    "order": ["Elsevier", "Springer", "WebOfScience", "Crossref", "PubMed"]
+  }
+}
+```
+
+全文抓取优先级：
+
+```json
+{
+  "extract": {
+    "fetchStrategy": {
+      "order": ["TDM", "OA", "SciHub", "Headless"]
     }
   }
 }
 ```
 
-Codex：
+PDF 解析优先级：
 
-```toml
-[mcp_servers.grados]
-command = "uvx"
-args = ["grados"]
+```json
+{
+  "extract": {
+    "parsing": {
+      "order": ["PyMuPDF", "Marker", "Docling"]
+    }
+  }
+}
 ```
 
-`uvx` 适合零安装 MCP 启动场景；长期本地使用仍以 `uv tool install grados` 加 `grados` 可执行命令为主。
+### 从旧安装迁移 ♻️
 
-如果你想指定自定义数据根目录，请在 MCP 客户端环境变量里设置 `GRADOS_HOME`。
+如果你已经有较旧的 GRaDOS 数据目录，可以用 `grados migrate-config` 把论文、下载归档、浏览器资产、模型缓存和兼容配置迁入当前布局。
 
-## MCP + Skill 结构
-
-当前仓库保留的是轻量级的 MCP + skill 集成方式，而不是 Claude plugin 打包：
-
-- `.mcp.json` 提供仓库级 `grados` MCP 配置示例，并保留可选的 `playwright`
-- `skills/grados/SKILL.md` 提供结构化科研工作流
-- `skills/grados/references/tools.md` 记录 skill 依赖的工具契约
-
-skill 默认假设的论文工作流是：
-
-1. 先做本地或远程检索
-2. 先看结构卡片或论文 resource
-3. 再按需深读 canonical saved paper
-4. 带内联引用写作
-5. 对每条引用重新回读核实
-
-如果你不使用仓库内置的 MCP 配置文件，可以把同样的 `grados` 服务器定义复制到自己的客户端设置中，再把 skill 文件放进 agent 的技能目录。
-
-## 推荐研究工作流
-
-如果你的目标是写综述、写论文或做引用核实，推荐按这个顺序使用：
-
-1. `search_saved_papers` 或 `search_academic_papers`
-2. `get_saved_paper_structure` 或 `grados://papers/{safe_doi}`
-3. `read_saved_paper`
-4. 带内联引用写作
-5. 对每条引用再次用 `read_saved_paper` 回查原文
-
-## 从 TypeScript 版迁移
-
-这部分面向旧版 Node.js / TypeScript 用户，也就是还在使用 `grados-config.json`、`markdown/`、`lancedb/` 那套布局的用户。
-
-### 发生了什么变化
-
-- 安装方式从 `npm` 切到 `uv` / `pip`
-- 运行时变成一个单独的 Python 包
-- 本地语义检索统一改为 ChromaDB
-- 默认数据根目录变成 `~/GRaDOS/`
-- 主配置文件改成 `config.json`
-
-`mcp-local-rag` 和 LanceDB 不再属于推荐方案。
-
-### 推荐迁移流程
+推荐迁移流程：
 
 ```bash
 uv tool install grados
@@ -214,51 +255,25 @@ grados migrate-config --from /path/to/legacy
 grados status
 ```
 
-如果你还想顺手把浏览器资产和模型一起准备好：
+`grados migrate-config` 会带过来的内容：
 
-```bash
-grados setup --all
-```
+- 已保存 Markdown 论文到 `papers/`
+- PDF 归档到 `downloads/`
+- 托管浏览器资产到 `browser/`
+- 模型缓存到 `models/`
+- 兼容的搜索、提取、Zotero 和 API Key 设置到新的 `config.json`
 
-### `grados migrate-config` 会做什么
+路径映射：
 
-- 读取旧版 `grados-config.json`
-- 在当前 GRaDOS 数据根目录中写入 Python 版 `config.json`
-- 把已保存 Markdown 论文复制到 `papers/`
-- 把 PDF 归档复制到 `downloads/`
-- 把托管浏览器资产复制到 `browser/`
-- 把模型缓存复制到 `models/`
-- 忽略旧版 LanceDB 数据
-
-迁移命令的目标是保留有价值的内容，而不是继续沿用旧运行时结构。
-
-### 路径映射
-
-| 旧版 | Python 版 |
+| 旧布局 | 当前布局 |
 | --- | --- |
 | `grados-config.json` | `config.json` |
 | `markdown/` | `papers/` |
 | `downloads/` | `downloads/` |
 | `.grados/browser/` | `browser/` |
 | `models/` | `models/` |
-| `lancedb/` | 删除 |
 
-### 配置差异
-
-需要特别注意的变化：
-
-- 现在用 `GRADOS_HOME` 选择整个数据根目录
-- `--config` / `GRADOS_CONFIG_PATH` 属于旧模型，建议改成稳定的 GRaDOS home
-- PDF 解析栈改为 `PyMuPDF -> Marker -> Docling`
-- 语义检索改为内置 ChromaDB
-
-迁移命令会自动把兼容的搜索、提取、Zotero 和 API Key 设置转换到新 schema。
-
-### 如果你仍然需要旧布局
-
-旧的 TypeScript 版本已经独立归档。当前主仓库就是 Python 主线；只有在你明确需要历史 TypeScript 代码时，才使用 `GRaDOS-legacy`。
-
-## 开发
+## 开发 🛠️
 
 ```bash
 uv sync --all-extras

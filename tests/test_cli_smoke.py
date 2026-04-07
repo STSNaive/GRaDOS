@@ -26,7 +26,8 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
 
     paths_result = runner.invoke(main, ["paths"], env=env, terminal_width=200)
     assert paths_result.exit_code == 0
-    assert home.name in paths_result.output
+    # Rich may wrap long filesystem paths across lines in CI.
+    assert home.name in paths_result.output.replace("\n", "")
     assert "数据根目录" in paths_result.output
     assert "配置文件" in paths_result.output
     assert "ChromaDB" in paths_result.output
