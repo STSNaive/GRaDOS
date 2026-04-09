@@ -152,6 +152,33 @@ args = ["grados"]
 
 `uvx` 适合零安装启动 MCP。长期本地使用仍建议 `uv tool install grados` 加 `grados` 可执行命令。如果你想指定自定义数据根目录，请在 MCP 客户端环境变量里设置 `GRADOS_HOME`。
 
+### 配套 Skill 🤖
+
+GRaDOS 仓库自带配套 skill，位置在 `skills/grados/`。
+
+- `skills/grados/SKILL.md` 对应当前 `search -> structure -> deep read -> cite -> verify` 工作流
+- `skills/grados/references/tools.md` 记录当前 8 个工具和 2 个资源
+- `skills/grados/agents/openai.yaml` 声明了面向 OpenAI / Codex 的 `grados` MCP 依赖
+
+Codex 和 Claude Code 使用的是同一种 skill 目录形状，也就是 `<skills-root>/grados/SKILL.md`，并共享同一套目录下的辅助文件。区别只在 skills 根目录：
+
+- Codex 个人 skills：`${CODEX_HOME:-$HOME/.codex}/skills`
+- Claude Code 个人 skills：`~/.claude/skills`
+- Claude Code 项目级 skills：`.claude/skills`
+
+安装时请复制**整个** `skills/grados/` 目录到对应的 skills 根目录，而不是只复制 `SKILL.md`：
+
+```bash
+mkdir -p "<skills-root>"
+cp -R skills/grados "<skills-root>/"
+```
+
+- Codex：把 `<skills-root>` 设为 `${CODEX_HOME:-$HOME/.codex}/skills`
+- Claude Code 个人 skills：把 `<skills-root>` 设为 `~/.claude/skills`
+- Claude Code 项目级 skills：把 `<skills-root>` 设为 `.claude/skills`
+
+这个 skill 默认假设你的客户端已经注册好了 `grados` MCP 服务。仓库里的 `.mcp.json` 提供了最小 repo-local 示例；复制完 skill 之后，重新加载客户端即可让它发现新的 skill 文件。
+
 ## 配置 ⚙️
 
 ### 命令 🧰

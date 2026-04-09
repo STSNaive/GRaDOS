@@ -152,6 +152,33 @@ args = ["grados"]
 
 Use `uvx` when you want zero-install MCP launching. For long-lived local use, `uv tool install grados` plus the `grados` executable remains the primary path. If you want a custom data root, set `GRADOS_HOME` in your MCP client's environment.
 
+### Companion Skill 🤖
+
+GRaDOS ships with a companion skill in `skills/grados/`.
+
+- `skills/grados/SKILL.md` contains the current `search -> structure -> deep read -> cite -> verify` workflow
+- `skills/grados/references/tools.md` documents the current 8 tools and 2 resources
+- `skills/grados/agents/openai.yaml` describes the OpenAI / Codex-facing dependency on the `grados` MCP server
+
+Codex and Claude Code use the same skill directory shape, `<skills-root>/grados/SKILL.md`, with the same supporting files under that directory. Only the skills root differs:
+
+- Codex personal skills: `${CODEX_HOME:-$HOME/.codex}/skills`
+- Claude Code personal skills: `~/.claude/skills`
+- Claude Code project skills: `.claude/skills`
+
+Install it by copying the **entire** `skills/grados/` directory into the appropriate skills root:
+
+```bash
+mkdir -p "<skills-root>"
+cp -R skills/grados "<skills-root>/"
+```
+
+- For Codex, set `<skills-root>` to `${CODEX_HOME:-$HOME/.codex}/skills`
+- For Claude Code personal skills, set `<skills-root>` to `~/.claude/skills`
+- For Claude Code project skills, set `<skills-root>` to `.claude/skills`
+
+This skill assumes the `grados` MCP server is already registered in your client. This repository's `.mcp.json` is the minimal repo-local example; after copying the skill, reload your client so it can discover the new skill files.
+
 ## Configuration ⚙️
 
 ### Commands 🧰
