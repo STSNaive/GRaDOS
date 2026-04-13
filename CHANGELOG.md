@@ -6,7 +6,32 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Added
+- Added Phase A indexing configuration (`config.indexing`) with Harrier 0.6B as the default local embedding model.
+- Added a dedicated embedding backend abstraction with explicit query/document separation, Harrier prompt support, and model warmup in `grados setup`.
+- Added `grados reindex` plus index-manifest compatibility checks so model/chunking changes fail loudly instead of silently mixing old and new embeddings.
+- Added `grados client install|list|doctor|remove` so Claude Code and Codex can be registered from the GRaDOS CLI, including bundled skill installation.
+- Added native plugin distribution metadata for Claude Code and Codex: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.codex-plugin/plugin.json`, `.agents/plugins/marketplace.json`, and a plugin-specific `plugin.mcp.json`.
+- Added Stage B research-state persistence in `database/research.sqlite3`, including reusable artifact storage and local failure memory.
+- Added 8 Stage B MCP tools: `save_research_artifact`, `query_research_artifacts`, `manage_failure_cases`, `get_citation_graph`, `get_papers_full_context`, `build_evidence_grid`, `compare_papers`, and `audit_draft_support`.
+- Added a lightweight local citation graph layer by extracting reference DOIs into canonical paper metadata (`cites_json`) and exposing neighbor/common-reference/reverse-citation queries.
+
+### Changed
+- Changed semantic retrieval from chunk-only search to abstract-first docs → chunks two-stage retrieval.
+- Changed chunking from fixed 1000-character paragraph packing to section-aware chunking with overlap metadata.
+- Changed `grados setup` to always prepare browser and embedding runtime assets directly, instead of splitting them across `--all` / `--with`.
+- Changed `grados status` to report embedding runtime details, active model, and reindex requirements.
+- Changed the repo-local MCP example from the removed `uvx grados[all]` path to the current `uvx grados`.
+- Changed the local paper contract from "search and deep read only" to a broader Stage B research surface with explicit artifacts, failure memory, citation graph, CAG context packs, and draft-support auditing.
+- Changed the skill and README documentation to reflect the expanded 16-tool MCP surface, the `grados client install ...` workflow, and the merged writing-stage guidance in `skills/grados/SKILL.md`.
+
+### Removed
+- Removed the Claude-only startup hook at `hooks/hooks.json`.
+- Removed the separate `grados-writing` skill split; its useful Stage B writing guidance now lives in `skills/grados/SKILL.md`.
+
+### Tests
+- Added Stage B smoke coverage for research artifacts, failure memory, citation graphs, full-context retrieval, evidence grids, paper comparison, and draft-support auditing.
+- Added smoke coverage for client install flows and plugin manifests.
 
 ## [0.6.6] - 2026-04-03
 
