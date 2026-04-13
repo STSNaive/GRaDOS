@@ -1,0 +1,38 @@
+{
+  "name": "grados",
+  "version": "0.6.6",
+  "description": "Academic paper search, full-text extraction, and citation-grounded research workflow for Codex.",
+  "author": {
+    "name": "macfish",
+    "url": "https://github.com/STSNaive/GRaDOS"
+  },
+  "homepage": "https://github.com/STSNaive/GRaDOS",
+  "repository": "https://github.com/STSNaive/GRaDOS",
+  "license": "MIT",
+  "keywords": [
+    "academic",
+    "research",
+    "papers",
+    "mcp",
+    "citations"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./plugin.mcp.json",
+  "interface": {
+    "displayName": "GRaDOS",
+    "shortDescription": "Academic research workflow with local paper memory",
+    "longDescription": "Search academic databases, extract full text, read saved papers, and write citation-grounded answers with the bundled GRaDOS MCP server.",
+    "developerName": "macfish",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/STSNaive/GRaDOS",
+    "defaultPrompt": [
+      "Use GRaDOS to find recent papers on this research question.",
+      "Use GRaDOS to extract and compare the most relevant papers, then answer in Chinese with citations."
+    ],
+    "brandColor": "#0F766E"
+  }
+}

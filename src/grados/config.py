@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 __all__ = [
     "GRaDOSConfig",
     "GRaDOSPaths",
+    "IndexingConfig",
     "generate_default_config",
     "load_config",
     "resolve_data_root",
@@ -54,6 +55,10 @@ class GRaDOSPaths:
         return self.root / "downloads"
 
     @property
+    def database_root(self) -> Path:
+        return self.root / "database"
+
+    @property
     def browser_root(self) -> Path:
         return self.root / "browser"
 
@@ -83,7 +88,11 @@ class GRaDOSPaths:
 
     @property
     def database_chroma(self) -> Path:
-        return self.root / "database" / "chroma"
+        return self.database_root / "chroma"
+
+    @property
+    def database_state(self) -> Path:
+        return self.database_root / "research.sqlite3"
 
     @property
     def logs(self) -> Path:
@@ -99,6 +108,7 @@ class GRaDOSPaths:
             self.root,
             self.papers,
             self.downloads,
+            self.database_root,
             self.logs,
             self.cache,
         ]:
@@ -111,6 +121,7 @@ class GRaDOSPaths:
             ("配置文件", self.config_file),
             ("论文目录", self.papers),
             ("下载目录", self.downloads),
+            ("状态数据库", self.database_state),
             ("浏览器二进制", self.browser_chromium),
             ("浏览器配置", self.browser_profile),
             ("浏览器扩展", self.browser_extensions),
@@ -194,6 +205,21 @@ class ExtractConfig(BaseModel):
     qa: QAConfig = Field(default_factory=QAConfig)
 
 
+class IndexingConfig(BaseModel):
+    provider: str = "harrier"
+    model_id: str = "microsoft/harrier-oss-v1-0.6b"
+    query_prompt_name: str = "web_search_query"
+    query_instruction: str = (
+        "Given a scientific literature search query, retrieve relevant abstracts and passages that answer the query"
+    )
+    max_length: int = 32768
+    device: str = "auto"
+    cache_dir: str = ""
+    chunk_min_chars: int = 300
+    chunk_max_chars: int = 2000
+    chunk_overlap_paragraphs: int = 1
+
+
 class ZoteroConfig(BaseModel):
     library_id: str = ""
     library_type: str = "user"
@@ -215,6 +241,7 @@ class GRaDOSConfig(BaseModel):
     debug: bool = False
     search: SearchConfig = Field(default_factory=SearchConfig)
     extract: ExtractConfig = Field(default_factory=ExtractConfig)
+    indexing: IndexingConfig = Field(default_factory=IndexingConfig)
     zotero: ZoteroConfig = Field(default_factory=ZoteroConfig)
     api_keys: ApiKeysConfig = Field(default_factory=ApiKeysConfig)
     academic_etiquette_email: str = "your-email@university.edu"
@@ -263,5 +290,16 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     data["_comment_debug"] = "Set to true to enable verbose benchmark logs."
     data["_comment_academic_etiquette_email"] = (
         "Email for academic APIs (Crossref, Unpaywall). Change to your real institutional email."
+    )
+    data["_comment_indexing"] = (
+        "Semantic indexing defaults. Changing model_id or section-aware chunking settings requires `grados reindex`."
+    )
+    data["indexing"]["_comment_provider"] = "Default local embedding provider used for semantic indexing."
+    data["indexing"]["_comment_model_id"] = "Default embedding model. Harrier is the new default for Phase A."
+    data["indexing"]["_comment_query_prompt_name"] = (
+        "Harrier query-side prompt name. Query/document encoding is intentionally asymmetric."
+    )
+    data["indexing"]["_comment_cache_dir"] = (
+        "Optional model cache override. Leave empty to use GRaDOS_HOME/models/embedding."
     )
     return data

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "grados": {
+      "command": "uvx",
+      "args": ["grados"]
+    }
+  }
+}

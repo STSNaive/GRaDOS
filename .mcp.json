@@ -2,7 +2,7 @@
   "mcpServers": {
     "grados": {
       "command": "uvx",
-      "args": ["grados[all]"]
+      "args": ["grados"]
     },
     "playwright": {
       "command": "npx",

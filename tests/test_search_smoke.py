@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 
-from grados.config import SearchConfig
+from grados.config import IndexingConfig, SearchConfig
 from grados.search.academic import CrossrefState, PaperMetadata, PubMedState, SearchPageResult
 from grados.search.resumable import ContinuationData, decode_token, encode_token, run_resumable_search
-from grados.storage.vector import search_papers
+from grados.storage.vector import _chunk_text, get_index_stats, index_paper, search_papers
 
 
 def test_continuation_token_round_trip() -> None:
@@ -123,7 +124,32 @@ def test_search_papers_applies_metadata_filters_and_hybrid_reranking(monkeypatch
     import grados.storage.vector as vector
 
     monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
-    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: type("Docs", (), {"count": lambda self: 2})())
+
+    class FakeBackend:
+        def embed_query(self, query: str) -> list[float]:
+            assert query == "composite vibration damping"
+            return [0.2, 0.8]
+
+    class FakeDocs:
+        def count(self) -> int:
+            return 2
+
+        def query(self, **kwargs):
+            assert "query_embeddings" in kwargs
+            return {
+                "distances": [[0.05]],
+                "documents": [["Composite vibration damping is discussed in detail."]],
+                "metadatas": [[
+                    {
+                        "doi": "10.1234/demo-a",
+                        "safe_doi": "10_1234_demo_a",
+                        "title": "Composite Damping Study",
+                    }
+                ]],
+            }
+
+    monkeypatch.setattr(vector, "load_embedding_backend", lambda config=None: FakeBackend())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: FakeDocs())
     monkeypatch.setattr(
         vector,
         "list_paper_documents",
@@ -166,6 +192,7 @@ def test_search_papers_applies_metadata_filters_and_hybrid_reranking(monkeypatch
             return 2
 
         def query(self, **kwargs):
+            assert "query_embeddings" in kwargs
             return {
                 "distances": [[0.1, 0.4]],
                 "documents": [[
@@ -173,15 +200,17 @@ def test_search_papers_applies_metadata_filters_and_hybrid_reranking(monkeypatch
                     "Cell biology content.",
                 ]],
                 "metadatas": [[
-                    {
-                        "doi": "10.1234/demo-a",
-                        "safe_doi": "10_1234_demo_a",
-                        "title": "Composite Damping Study",
-                    },
-                    {
-                        "doi": "10.5678/demo-b",
-                        "safe_doi": "10_5678_demo_b",
-                        "title": "Unrelated Study",
+                        {
+                            "doi": "10.1234/demo-a",
+                            "safe_doi": "10_1234_demo_a",
+                            "title": "Composite Damping Study",
+                            "section_name": "Abstract",
+                            "section_level": 2,
+                        },
+                        {
+                            "doi": "10.5678/demo-b",
+                            "safe_doi": "10_5678_demo_b",
+                            "title": "Unrelated Study",
                     },
                 ]],
             }
@@ -201,6 +230,7 @@ def test_search_papers_applies_metadata_filters_and_hybrid_reranking(monkeypatch
     assert len(results) == 1
     assert results[0]["doi"] == "10.1234/demo-a"
     assert results[0]["authors"] == ["Alice Smith", "Bob Lee"]
+    assert results[0]["section_name"] == "Abstract"
     assert "Composite vibration damping" in results[0]["snippet"]
 
 
@@ -208,7 +238,20 @@ def test_search_papers_can_fall_back_to_document_level_lexical_matching(monkeypa
     import grados.storage.vector as vector
 
     monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
-    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: type("Docs", (), {"count": lambda self: 1})())
+
+    class FakeBackend:
+        def embed_query(self, query: str) -> list[float]:
+            return [0.1, 0.9]
+
+    class FakeDocs:
+        def count(self) -> int:
+            return 1
+
+        def query(self, **kwargs):
+            return {"distances": [[]], "documents": [[]], "metadatas": [[]]}
+
+    monkeypatch.setattr(vector, "load_embedding_backend", lambda config=None: FakeBackend())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: FakeDocs())
     monkeypatch.setattr(
         vector,
         "list_paper_documents",
@@ -246,3 +289,122 @@ def test_search_papers_can_fall_back_to_document_level_lexical_matching(monkeypa
     assert len(results) == 1
     assert results[0]["doi"] == "10.9999/local"
     assert results[0]["dense_score"] == 0.0
+
+
+def test_chunk_text_uses_section_aware_chunking_with_overlap() -> None:
+    config = IndexingConfig(chunk_min_chars=40, chunk_max_chars=130, chunk_overlap_paragraphs=1)
+    markdown = (
+        "# Title\n\n"
+        "## Abstract\n\n"
+        "First abstract paragraph with several relevant details.\n\n"
+        "Second abstract paragraph that should overlap with the next chunk.\n\n"
+        "Third abstract paragraph closes the section.\n\n"
+        "## Methods\n\n"
+        "Methods paragraph describing the experiment."
+    )
+
+    chunks = _chunk_text(markdown, config, fallback_title="Demo")
+
+    assert len(chunks) >= 2
+    assert chunks[0]["section_name"] == "Abstract"
+    abstract_chunks = [chunk for chunk in chunks if chunk["section_name"] == "Abstract"]
+    assert len(abstract_chunks) == 2
+    assert "Second abstract paragraph" in abstract_chunks[0]["text"]
+    assert "Second abstract paragraph" in abstract_chunks[1]["text"]
+    assert abstract_chunks[0]["section_level"] == 2
+
+
+def test_index_paper_writes_real_embeddings_and_section_metadata(tmp_path: Path, monkeypatch) -> None:
+    import grados.storage.vector as vector
+
+    class FakeBackend:
+        provider = "harrier"
+        model_id = "microsoft/harrier-oss-v1-0.6b"
+        query_prompt_mode = "prompt_name:web_search_query"
+        embedding_dim = 4
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [[float(index + 1)] * 4 for index, _ in enumerate(texts)]
+
+    class FakeDocs:
+        def __init__(self) -> None:
+            self.last_upsert: dict[str, object] | None = None
+
+        def upsert(self, **kwargs) -> None:
+            self.last_upsert = kwargs
+
+        def count(self) -> int:
+            return 1
+
+    class FakeChunks:
+        def __init__(self) -> None:
+            self.last_upsert: dict[str, object] | None = None
+
+        def get(self, where=None):  # noqa: ANN001
+            return {"ids": []}
+
+        def delete(self, ids):  # noqa: ANN001
+            return None
+
+        def upsert(self, **kwargs) -> None:
+            self.last_upsert = kwargs
+
+        def count(self) -> int:
+            if self.last_upsert is None:
+                return 0
+            return len(self.last_upsert.get("ids", []))
+
+    fake_docs = FakeDocs()
+    fake_chunks = FakeChunks()
+
+    monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: fake_docs)
+    monkeypatch.setattr(vector, "_get_chunks_collection", lambda client: fake_chunks)
+    monkeypatch.setattr(vector, "load_embedding_backend", lambda config=None: FakeBackend())
+
+    chunk_count = index_paper(
+        chroma_dir=tmp_path / "chroma",
+        doi="10.1234/demo",
+        safe_doi="10_1234_demo",
+        title="Demo Paper",
+        markdown=(
+            "## Abstract\n\n"
+            "A long abstract paragraph for retrieval.\n\n"
+            "## Methods\n\n"
+            "A methods paragraph that becomes its own chunk.\n\n"
+            "## References\n\n"
+            "Smith et al. Example study. doi:10.9999/example-ref."
+        ),
+        indexing_config=IndexingConfig(chunk_min_chars=20, chunk_max_chars=80, chunk_overlap_paragraphs=1),
+    )
+
+    assert chunk_count == 3
+    assert fake_docs.last_upsert is not None
+    assert fake_docs.last_upsert["embeddings"] == [[1.0, 1.0, 1.0, 1.0]]
+    assert fake_chunks.last_upsert is not None
+    chunk_metadatas = fake_chunks.last_upsert["metadatas"]
+    assert chunk_metadatas[0]["section_name"] == "Abstract"
+    assert chunk_metadatas[1]["section_name"] == "Methods"
+    assert chunk_metadatas[2]["section_name"] == "References"
+    doc_metadata = fake_docs.last_upsert["metadatas"][0]
+    assert doc_metadata["cites_json"] == '["10.9999/example-ref"]'
+    stats = get_index_stats(tmp_path / "chroma", indexing_config=IndexingConfig())
+    assert stats["index_manifest_present"] is True
+    assert stats["embedding_model"] == "microsoft/harrier-oss-v1-0.6b"
+
+
+def test_get_index_stats_reports_reindex_when_manifest_mismatches(tmp_path: Path) -> None:
+    chroma_dir = tmp_path / "chroma"
+    chroma_dir.mkdir()
+    (chroma_dir / "index-manifest.json").write_text(
+        '{"schema_version": 2, "provider": "harrier", "model_id": "all-MiniLM-L6-v2", '
+        '"max_length": 512, "retrieval_strategy": "two-stage-v1", '
+        '"chunking_strategy": "section-aware-v1", "chunk_min_chars": 300, '
+        '"chunk_max_chars": 2000, "chunk_overlap_paragraphs": 1}',
+        encoding="utf-8",
+    )
+
+    stats = get_index_stats(chroma_dir, indexing_config=IndexingConfig())
+
+    assert stats["reindex_required"] is True
+    assert "model_id" in stats["reindex_reason"]

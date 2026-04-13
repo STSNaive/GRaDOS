@@ -1,4 +1,4 @@
-"""ChromaDB canonical storage for paper documents and retrieval chunks."""
+"""ChromaDB canonical storage for paper documents and semantic retrieval."""
 
 from __future__ import annotations
 
@@ -9,10 +9,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from grados.config import GRaDOSPaths, IndexingConfig, load_config
+from grados.storage.embedding import (
+    IndexCompatibilityError,
+    build_index_manifest,
+    inspect_index_compatibility,
+    load_embedding_backend,
+    read_index_manifest,
+    write_index_manifest,
+)
+
 _DOCS_COLLECTION_NAME = "papers_docs"
 _CHUNKS_COLLECTION_NAME = "papers_chunks"
-_MAX_CHUNK_CHARS = 1000
-_DOC_PLACEHOLDER_EMBEDDING = [0.0]
+_DOC_SUMMARY_MAX_CHARS = 4000
+_DOI_PATTERN = re.compile(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", re.IGNORECASE)
 
 
 def _get_client(chroma_dir: Path) -> Any:
@@ -39,6 +49,18 @@ def _get_chunks_collection(client: Any) -> Any:
     )
 
 
+def _resolve_indexing_config(indexing_config: IndexingConfig | None) -> IndexingConfig:
+    if indexing_config is not None:
+        return indexing_config
+    return load_config(GRaDOSPaths()).indexing
+
+
+def _ensure_index_compatible(chroma_dir: Path, indexing_config: IndexingConfig) -> None:
+    state = inspect_index_compatibility(chroma_dir, indexing_config)
+    if state["reindex_required"]:
+        raise IndexCompatibilityError(str(state["reason"]))
+
+
 def _strip_frontmatter(text: str) -> str:
     """Remove YAML frontmatter from markdown."""
     if text.startswith("---"):
@@ -48,30 +70,137 @@ def _strip_frontmatter(text: str) -> str:
     return text.strip()
 
 
-def _chunk_text(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> list[str]:
-    """Split text into chunks by paragraphs, respecting max_chars."""
-    paragraphs = re.split(r"\n{2,}", text.strip())
-    chunks: list[str] = []
-    current = ""
+def _extract_headings(markdown: str) -> list[str]:
+    return re.findall(r"^#{1,6}\s+(.+)$", markdown, re.MULTILINE)[:20]
 
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
+
+def _extract_sections(markdown: str, *, fallback_title: str = "") -> list[dict[str, Any]]:
+    """Split markdown into section objects while preserving heading metadata."""
+    sections: list[dict[str, Any]] = []
+    current_heading = ""
+    current_name = fallback_title.strip() or "Preamble"
+    current_level = 0
+    current_lines: list[str] = []
+
+    def flush() -> None:
+        body = "\n".join(current_lines).strip()
+        if not body:
+            return
+        text = f"{current_heading}\n\n{body}".strip() if current_heading else body
+        sections.append(
+            {
+                "name": current_name,
+                "level": current_level,
+                "heading": current_heading,
+                "content": body,
+                "text": text,
+            }
+        )
+
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if match:
+            flush()
+            current_heading = line
+            current_name = match.group(2).strip()
+            current_level = len(match.group(1))
+            current_lines = []
             continue
-        if len(current) + len(para) + 2 > max_chars and current:
-            chunks.append(current)
-            current = para
-        else:
-            current = f"{current}\n\n{para}" if current else para
+        current_lines.append(raw_line.rstrip())
 
-    if current:
-        chunks.append(current)
+    flush()
+    return sections
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"\n{2,}", text.strip()) if part.strip()]
+
+
+def _chunk_text(
+    text: str,
+    indexing_config: IndexingConfig | None = None,
+    *,
+    fallback_title: str = "",
+) -> list[dict[str, Any]]:
+    """Split paper markdown into section-aware retrieval chunks."""
+    config = _resolve_indexing_config(indexing_config)
+    sections = _extract_sections(text, fallback_title=fallback_title)
+    chunks: list[dict[str, Any]] = []
+
+    for section_index, section in enumerate(sections):
+        body_paragraphs = _split_paragraphs(str(section["content"]))
+        if not body_paragraphs:
+            continue
+
+        start = 0
+        while start < len(body_paragraphs):
+            current: list[str] = []
+            current_length = 0
+            index = start
+            while index < len(body_paragraphs):
+                paragraph = body_paragraphs[index]
+                proposed = current_length + len(paragraph) + (2 if current else 0)
+                if current and current_length >= config.chunk_min_chars and proposed > config.chunk_max_chars:
+                    break
+                current.append(paragraph)
+                current_length = proposed
+                index += 1
+                if current_length >= config.chunk_max_chars:
+                    break
+
+            if not current:
+                break
+
+            parts = [str(section["heading"]).strip()] if section["heading"] else []
+            parts.extend(current)
+            chunks.append(
+                {
+                    "text": "\n\n".join(part for part in parts if part).strip(),
+                    "section_name": str(section["name"]),
+                    "section_level": int(section["level"]),
+                    "section_index": section_index,
+                    "paragraph_start": start,
+                    "paragraph_count": len(current),
+                }
+            )
+
+            if index >= len(body_paragraphs):
+                break
+
+            next_start = max(start + 1, index - max(0, config.chunk_overlap_paragraphs))
+            if next_start == start:
+                next_start = index
+            start = next_start
 
     return chunks
 
 
-def _extract_headings(markdown: str) -> list[str]:
-    return re.findall(r"^#{1,6}\s+(.+)$", markdown, re.MULTILINE)[:20]
+def _find_section_content(sections: list[dict[str, Any]], candidates: set[str]) -> str:
+    for section in sections:
+        name = str(section["name"]).strip().lower()
+        if name in candidates:
+            return str(section["content"]).strip()
+    return ""
+
+
+def _build_doc_summary(title: str, body: str, sections: list[dict[str, Any]]) -> tuple[str, str]:
+    """Prefer abstract for doc-level retrieval; fall back to title + intro lead."""
+    abstract = _find_section_content(sections, {"abstract", "摘要", "summary"})
+    if abstract:
+        return abstract[:_DOC_SUMMARY_MAX_CHARS], "abstract"
+
+    intro = _find_section_content(
+        sections,
+        {"introduction", "intro", "background", "overview", "引言", "研究背景"},
+    )
+    if intro:
+        prefix = f"{title.strip()}\n\n" if title.strip() else ""
+        return (prefix + intro)[:_DOC_SUMMARY_MAX_CHARS], "title_plus_intro"
+
+    lead = "\n\n".join(_split_paragraphs(body)[:3]) or body
+    prefix = f"{title.strip()}\n\n" if title.strip() else ""
+    return (prefix + lead.strip())[:_DOC_SUMMARY_MAX_CHARS], "title_plus_lead"
 
 
 def _now_iso() -> str:
@@ -83,21 +212,50 @@ def _content_hash(markdown: str) -> str:
 
 
 def _serialize_str_list(values: list[str] | None) -> str:
-    return json.dumps([v for v in (values or []) if v], ensure_ascii=False)
+    return json.dumps([value for value in (values or []) if value], ensure_ascii=False)
 
 
 def _deserialize_str_list(raw: Any) -> list[str]:
     if not raw:
         return []
     if isinstance(raw, list):
-        return [str(v) for v in raw if str(v)]
+        return [str(value) for value in raw if str(value)]
     try:
         loaded = json.loads(str(raw))
     except json.JSONDecodeError:
         return []
     if not isinstance(loaded, list):
         return []
-    return [str(v) for v in loaded if str(v)]
+    return [str(value) for value in loaded if str(value)]
+
+
+def _normalize_doi(value: str) -> str:
+    return re.sub(r"[)\].,;:]+$", "", value.strip().lower())
+
+
+def _extract_reference_dois(markdown: str) -> list[str]:
+    """Extract DOI references from bibliography-like sections."""
+    sections = _extract_sections(markdown)
+    reference_sections = [
+        section
+        for section in sections
+        if str(section["name"]).strip().lower()
+        in {"references", "bibliography", "works cited", "literature cited", "参考文献"}
+    ]
+    if reference_sections:
+        search_space = "\n\n".join(str(section["text"]) for section in reference_sections)
+    else:
+        search_space = markdown
+
+    seen: set[str] = set()
+    citations: list[str] = []
+    for match in _DOI_PATTERN.findall(search_space):
+        normalized = _normalize_doi(match)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        citations.append(normalized)
+    return citations
 
 
 def _doc_metadata(
@@ -113,6 +271,12 @@ def _doc_metadata(
     section_headings: list[str],
     assets_manifest_path: str,
     markdown: str,
+    doc_summary_source: str,
+    cites: list[str],
+    embedding_provider: str,
+    embedding_model: str,
+    embedding_dim: int,
+    embedding_prompt_mode: str,
 ) -> dict[str, Any]:
     return {
         "doi": doi,
@@ -129,6 +293,12 @@ def _doc_metadata(
         "indexed_at": _now_iso(),
         "word_count": len(markdown.split()),
         "char_count": len(markdown),
+        "doc_summary_source": doc_summary_source,
+        "cites_json": _serialize_str_list(cites),
+        "embedding_provider": embedding_provider,
+        "embedding_model": embedding_model,
+        "embedding_dim": embedding_dim,
+        "embedding_prompt_mode": embedding_prompt_mode,
     }
 
 
@@ -142,6 +312,15 @@ def _chunk_metadata(
     year: str,
     journal: str,
     chunk_index: int,
+    section_name: str,
+    section_level: int,
+    section_index: int,
+    paragraph_start: int,
+    paragraph_count: int,
+    embedding_provider: str,
+    embedding_model: str,
+    embedding_dim: int,
+    embedding_prompt_mode: str,
 ) -> dict[str, Any]:
     return {
         "doi": doi,
@@ -152,6 +331,15 @@ def _chunk_metadata(
         "year": year,
         "journal": journal,
         "chunk_index": chunk_index,
+        "section_name": section_name,
+        "section_level": section_level,
+        "section_index": section_index,
+        "paragraph_start": paragraph_start,
+        "paragraph_count": paragraph_count,
+        "embedding_provider": embedding_provider,
+        "embedding_model": embedding_model,
+        "embedding_dim": embedding_dim,
+        "embedding_prompt_mode": embedding_prompt_mode,
     }
 
 
@@ -169,18 +357,24 @@ def index_paper(
     journal: str = "",
     section_headings: list[str] | None = None,
     assets_manifest_path: str = "",
+    indexing_config: IndexingConfig | None = None,
 ) -> int:
-    """Persist a paper canonically and rebuild its retrieval chunks.
+    """Persist a paper canonically and rebuild its document/chunk embeddings."""
+    config = _resolve_indexing_config(indexing_config)
+    _ensure_index_compatible(chroma_dir, config)
 
-    Returns the number of retrieval chunks indexed. The canonical document record is
-    written even when the body is too short to chunk effectively.
-    """
     client = _get_client(chroma_dir)
     docs_collection = _get_docs_collection(client)
     chunks_collection = _get_chunks_collection(client)
+    backend = load_embedding_backend(config=config)
 
     body = _strip_frontmatter(markdown)
+    sections = _extract_sections(body, fallback_title=title)
     headings = section_headings or _extract_headings(body)
+    doc_summary, doc_summary_source = _build_doc_summary(title, body, sections)
+    cited_dois = _extract_reference_dois(body)
+    doc_embedding = backend.embed_documents([doc_summary or body[:_DOC_SUMMARY_MAX_CHARS]])[0]
+    embedding_dim = len(doc_embedding)
 
     docs_collection.upsert(
         ids=[safe_doi],
@@ -198,36 +392,60 @@ def index_paper(
                 section_headings=headings,
                 assets_manifest_path=assets_manifest_path,
                 markdown=body,
+                doc_summary_source=doc_summary_source,
+                cites=cited_dois,
+                embedding_provider=backend.provider,
+                embedding_model=backend.model_id,
+                embedding_dim=embedding_dim,
+                embedding_prompt_mode=backend.query_prompt_mode,
             )
         ],
-        embeddings=[_DOC_PLACEHOLDER_EMBEDDING],
+        embeddings=[doc_embedding],
     )
 
     _delete_paper_chunks(chunks_collection, safe_doi)
 
-    if not body or len(body) < 100:
-        return 0
-
-    chunks = _chunk_text(body)
-    if not chunks:
-        return 0
-
-    chunk_ids = [f"{safe_doi}__chunk_{i}" for i in range(len(chunks))]
-    chunk_metadatas = [
-        _chunk_metadata(
-            doi=doi,
-            safe_doi=safe_doi,
-            title=title,
-            source=source,
-            fetch_outcome=fetch_outcome,
-            year=year,
-            journal=journal,
-            chunk_index=i,
+    chunks = _chunk_text(body, config, fallback_title=title)
+    if chunks:
+        chunk_ids = [f"{safe_doi}__chunk_{index}" for index in range(len(chunks))]
+        chunk_texts = [chunk["text"] for chunk in chunks]
+        chunk_embeddings = backend.embed_documents(chunk_texts)
+        chunk_metadatas = [
+            _chunk_metadata(
+                doi=doi,
+                safe_doi=safe_doi,
+                title=title,
+                source=source,
+                fetch_outcome=fetch_outcome,
+                year=year,
+                journal=journal,
+                chunk_index=index,
+                section_name=str(chunk["section_name"]),
+                section_level=int(chunk["section_level"]),
+                section_index=int(chunk["section_index"]),
+                paragraph_start=int(chunk["paragraph_start"]),
+                paragraph_count=int(chunk["paragraph_count"]),
+                embedding_provider=backend.provider,
+                embedding_model=backend.model_id,
+                embedding_dim=embedding_dim,
+                embedding_prompt_mode=backend.query_prompt_mode,
+            )
+            for index, chunk in enumerate(chunks)
+        ]
+        chunks_collection.upsert(
+            ids=chunk_ids,
+            documents=chunk_texts,
+            metadatas=chunk_metadatas,
+            embeddings=chunk_embeddings,
         )
-        for i in range(len(chunks))
-    ]
 
-    chunks_collection.upsert(ids=chunk_ids, documents=chunks, metadatas=chunk_metadatas)
+    manifest = build_index_manifest(
+        config=config,
+        backend=backend,
+        unique_papers=docs_collection.count(),
+        total_chunks=chunks_collection.count(),
+    )
+    write_index_manifest(chroma_dir, manifest)
     return len(chunks)
 
 
@@ -259,6 +477,12 @@ def get_paper_document(chroma_dir: Path, safe_doi: str) -> dict[str, Any] | None
         "indexed_at": str(metadata.get("indexed_at", "")),
         "word_count": int(metadata.get("word_count", 0) or 0),
         "char_count": int(metadata.get("char_count", 0) or 0),
+        "doc_summary_source": str(metadata.get("doc_summary_source", "")),
+        "cites": _deserialize_str_list(metadata.get("cites_json")) or _extract_reference_dois(document),
+        "embedding_provider": str(metadata.get("embedding_provider", "")),
+        "embedding_model": str(metadata.get("embedding_model", "")),
+        "embedding_dim": int(metadata.get("embedding_dim", 0) or 0),
+        "embedding_prompt_mode": str(metadata.get("embedding_prompt_mode", "")),
         "content_markdown": document,
     }
 
@@ -291,6 +515,11 @@ def list_paper_documents(chroma_dir: Path) -> list[dict[str, Any]]:
                 "section_headings": _deserialize_str_list(metadata.get("section_headings_json")),
                 "word_count": int(metadata.get("word_count", 0) or 0),
                 "char_count": int(metadata.get("char_count", 0) or 0),
+                "doc_summary_source": str(metadata.get("doc_summary_source", "")),
+                "cites": _deserialize_str_list(metadata.get("cites_json")) or _extract_reference_dois(document or ""),
+                "embedding_provider": str(metadata.get("embedding_provider", "")),
+                "embedding_model": str(metadata.get("embedding_model", "")),
+                "embedding_dim": int(metadata.get("embedding_dim", 0) or 0),
                 "uri": f"grados://papers/{safe_doi}",
                 "content_markdown": document or "",
             }
@@ -311,12 +540,12 @@ def search_papers(
     journal: str = "",
     source: str = "",
     use_reranking: bool = True,
+    indexing_config: IndexingConfig | None = None,
 ) -> list[dict[str, Any]]:
-    """Hybrid paper search over canonical docs and retrieval chunks.
+    """Two-stage semantic search over docs first, then chunks within candidates."""
+    config = _resolve_indexing_config(indexing_config)
+    _ensure_index_compatible(chroma_dir, config)
 
-    Applies metadata prefiltering first, then dense chunk retrieval, then
-    a lightweight lexical rerank to aggregate paper-level results.
-    """
     client = _get_client(chroma_dir)
     docs_collection = _get_docs_collection(client)
     chunks_collection = _get_chunks_collection(client)
@@ -331,35 +560,56 @@ def search_papers(
     if not filtered_documents:
         return []
 
+    query_terms = _query_terms(query)
+    anchor_phrase = _extract_anchor_phrase(query)
+    backend = load_embedding_backend(config=config)
+    query_embedding = backend.embed_query(query)
+
     candidate_ids = {doc["safe_doi"] for doc in filtered_documents}
     document_map = {doc["safe_doi"]: doc for doc in filtered_documents}
-    anchor_phrase = _extract_anchor_phrase(query)
-    query_terms = _query_terms(query)
+    doc_scores = _select_doc_candidates(
+        docs_collection=docs_collection,
+        filtered_documents=filtered_documents,
+        candidate_ids=candidate_ids,
+        query_embedding=query_embedding,
+        query_terms=query_terms,
+        anchor_phrase=anchor_phrase,
+        limit=limit,
+    )
 
     seen: dict[str, dict[str, Any]] = {}
     total_chunks = chunks_collection.count()
-    if total_chunks > 0:
-        n_results = min(max(limit * 8, 30), total_chunks)
+    if total_chunks > 0 and doc_scores:
+        chunk_limit = min(max(limit * 8, 30), total_chunks)
         semantic_results = _query_chunks(
-            chunks_collection,
-            query,
-            n_results=n_results,
-            where_document={"$contains": anchor_phrase} if anchor_phrase else None,
+            collection=chunks_collection,
+            query_embedding=query_embedding,
+            n_results=chunk_limit,
+            candidate_doc_ids=list(doc_scores),
+            anchor_phrase=anchor_phrase,
         )
-        if anchor_phrase and not semantic_results["documents"]:
-            semantic_results = _query_chunks(chunks_collection, query, n_results=n_results, where_document=None)
+        if anchor_phrase and not semantic_results.get("documents", [[]])[0]:
+            semantic_results = _query_chunks(
+                collection=chunks_collection,
+                query_embedding=query_embedding,
+                n_results=chunk_limit,
+                candidate_doc_ids=list(doc_scores),
+                anchor_phrase="",
+            )
 
         distances = semantic_results.get("distances", [[]])[0]
         chunk_documents = semantic_results.get("documents", [[]])[0]
         metadatas = semantic_results.get("metadatas", [[]])[0]
 
-        for dist, doc, meta in zip(distances, chunk_documents, metadatas):
-            safe_doi = str(meta.get("safe_doi", ""))
-            if safe_doi not in candidate_ids:
+        for dist, doc_text, metadata in zip(distances, chunk_documents, metadatas):
+            safe_doi = str(metadata.get("safe_doi", ""))
+            if safe_doi not in doc_scores or safe_doi not in candidate_ids:
                 continue
 
-            dense_score = 1.0 - dist
-            lexical_score = _lexical_score(doc or "", query_terms, anchor_phrase)
+            chunk_dense = _dense_score(dist)
+            doc_dense = doc_scores.get(safe_doi, 0.0)
+            dense_score = round((chunk_dense * 0.7) + (doc_dense * 0.3), 6)
+            lexical_score = _lexical_score(doc_text or "", query_terms, anchor_phrase)
             combined_score = _combine_scores(dense_score, lexical_score, use_reranking)
 
             if safe_doi in seen and combined_score <= seen[safe_doi]["score"]:
@@ -376,8 +626,12 @@ def search_papers(
                 "source": record.get("source", ""),
                 "score": combined_score,
                 "dense_score": dense_score,
+                "doc_dense_score": doc_dense,
+                "chunk_dense_score": chunk_dense,
                 "lexical_score": lexical_score,
-                "snippet": _make_snippet(doc or record.get("content_markdown", ""), query_terms, anchor_phrase),
+                "section_name": str(metadata.get("section_name", "")),
+                "section_level": int(metadata.get("section_level", 0) or 0),
+                "snippet": _make_snippet(doc_text or record.get("content_markdown", ""), query_terms, anchor_phrase),
             }
 
     for record in filtered_documents:
@@ -387,6 +641,7 @@ def search_papers(
         lexical_score = _lexical_score(record.get("content_markdown", ""), query_terms, anchor_phrase)
         if lexical_score <= 0:
             continue
+        doc_dense = doc_scores.get(safe_doi, 0.0)
         seen[safe_doi] = {
             "doi": record["doi"],
             "safe_doi": safe_doi,
@@ -395,8 +650,10 @@ def search_papers(
             "year": record.get("year", ""),
             "journal": record.get("journal", ""),
             "source": record.get("source", ""),
-            "score": _combine_scores(0.0, lexical_score, use_reranking),
-            "dense_score": 0.0,
+            "score": _combine_scores(doc_dense, lexical_score, use_reranking),
+            "dense_score": doc_dense,
+            "doc_dense_score": doc_dense,
+            "chunk_dense_score": 0.0,
             "lexical_score": lexical_score,
             "snippet": _make_snippet(record.get("content_markdown", ""), query_terms, anchor_phrase),
         }
@@ -404,23 +661,151 @@ def search_papers(
     return sorted(seen.values(), key=lambda item: item["score"], reverse=True)[:limit]
 
 
-def _query_chunks(
-    collection: Any,
-    query: str,
+def _select_doc_candidates(
     *,
+    docs_collection: Any,
+    filtered_documents: list[dict[str, Any]],
+    candidate_ids: set[str],
+    query_embedding: list[float],
+    query_terms: list[str],
+    anchor_phrase: str,
+    limit: int,
+) -> dict[str, float]:
+    total_docs = docs_collection.count()
+    if total_docs <= 0:
+        return {}
+
+    doc_limit = min(max(limit * 4, 12), total_docs)
+    result = _query_docs(
+        collection=docs_collection,
+        query_embedding=query_embedding,
+        n_results=doc_limit,
+        anchor_phrase=anchor_phrase,
+    )
+    if anchor_phrase and not result.get("documents", [[]])[0]:
+        result = _query_docs(collection=docs_collection, query_embedding=query_embedding, n_results=doc_limit)
+
+    scores: dict[str, float] = {}
+    distances = result.get("distances", [[]])[0]
+    metadatas = result.get("metadatas", [[]])[0]
+
+    for dist, metadata in zip(distances, metadatas):
+        safe_doi = str(metadata.get("safe_doi", ""))
+        if safe_doi not in candidate_ids:
+            continue
+        scores[safe_doi] = max(scores.get(safe_doi, 0.0), _dense_score(dist))
+
+    lexical_ranked = sorted(
+        filtered_documents,
+        key=lambda record: _lexical_score(record.get("content_markdown", ""), query_terms, anchor_phrase),
+        reverse=True,
+    )
+    for record in lexical_ranked:
+        if len(scores) >= min(doc_limit, len(filtered_documents)):
+            break
+        safe_doi = record["safe_doi"]
+        if safe_doi in scores:
+            continue
+        lexical_score = _lexical_score(record.get("content_markdown", ""), query_terms, anchor_phrase)
+        if lexical_score <= 0:
+            continue
+        scores[safe_doi] = 0.0
+
+    if scores:
+        return scores
+
+    for record in filtered_documents[: min(limit * 2, len(filtered_documents))]:
+        scores[record["safe_doi"]] = 0.0
+    return scores
+
+
+def _query_docs(
+    *,
+    collection: Any,
+    query_embedding: list[float],
     n_results: int,
-    where_document: dict[str, Any] | None,
+    anchor_phrase: str = "",
 ) -> dict[str, Any]:
+    return _query_collection(
+        collection=collection,
+        query_embedding=query_embedding,
+        n_results=n_results,
+        where_document={"$contains": anchor_phrase} if anchor_phrase else None,
+    )
+
+
+def _query_chunks(
+    *,
+    collection: Any,
+    query_embedding: list[float],
+    n_results: int,
+    candidate_doc_ids: list[str],
+    anchor_phrase: str = "",
+) -> dict[str, Any]:
+    where = {"safe_doi": {"$in": candidate_doc_ids}} if candidate_doc_ids else None
+    result = _query_collection(
+        collection=collection,
+        query_embedding=query_embedding,
+        n_results=n_results,
+        where=where,
+        where_document={"$contains": anchor_phrase} if anchor_phrase else None,
+    )
+
+    metadatas = result.get("metadatas", [[]])[0]
+    if not candidate_doc_ids or not metadatas:
+        return result
+
+    allowed = set(candidate_doc_ids)
+    filtered_positions = [
+        index
+        for index, metadata in enumerate(metadatas)
+        if str(metadata.get("safe_doi", "")) in allowed
+    ]
+    if len(filtered_positions) == len(metadatas):
+        return result
+    return _filter_query_result(result, filtered_positions)
+
+
+def _query_collection(
+    *,
+    collection: Any,
+    query_embedding: list[float],
+    n_results: int,
+    where: dict[str, Any] | None = None,
+    where_document: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "query_embeddings": [query_embedding],
+        "n_results": n_results,
+    }
+    if where is not None:
+        params["where"] = where
+    if where_document is not None:
+        params["where_document"] = where_document
+
     try:
-        result: dict[str, Any] = collection.query(
-            query_texts=[query],
-            n_results=n_results,
-            where_document=where_document,
-        )
-        return result
+        return collection.query(**params)
     except TypeError:
-        result = collection.query(query_texts=[query], n_results=n_results)
-        return result
+        params.pop("where_document", None)
+        try:
+            return collection.query(**params)
+        except TypeError:
+            params.pop("where", None)
+            return collection.query(**params)
+    except Exception:
+        params.pop("where_document", None)
+        params.pop("where", None)
+        return collection.query(**params)
+
+
+def _filter_query_result(result: dict[str, Any], positions: list[int]) -> dict[str, Any]:
+    filtered: dict[str, Any] = {}
+    for key, value in result.items():
+        if not isinstance(value, list) or not value or not isinstance(value[0], list):
+            filtered[key] = value
+            continue
+        filtered[key] = [[row[index] for index in positions if index < len(row)] for row in value]
+    return filtered
 
 
 def _matches_filters(
@@ -467,9 +852,9 @@ def _extract_anchor_phrase(query: str) -> str:
     quoted: list[str] = re.findall(r'"([^"]+)"', query)
     if quoted:
         return quoted[0].strip()
-    if _DOI_PATTERN_IN_TEXT.search(query):
-        match = _DOI_PATTERN_IN_TEXT.search(query)
-        return match.group(0).strip() if match else ""
+    match = _DOI_PATTERN_IN_TEXT.search(query)
+    if match:
+        return match.group(0).strip()
     return ""
 
 
@@ -507,6 +892,13 @@ def _lexical_score(text: str, query_terms: list[str], anchor_phrase: str) -> flo
     return score
 
 
+def _dense_score(distance: Any) -> float:
+    try:
+        return max(0.0, 1.0 - float(distance))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _combine_scores(dense_score: float, lexical_score: float, use_reranking: bool) -> float:
     if not use_reranking:
         return dense_score
@@ -535,10 +927,18 @@ def _make_snippet(text: str, query_terms: list[str], anchor_phrase: str, max_cha
     return compact[:max_chars] + ("..." if len(compact) > max_chars else "")
 
 
-def index_all_papers(chroma_dir: Path, papers_dir: Path) -> tuple[int, int]:
+def index_all_papers(
+    chroma_dir: Path,
+    papers_dir: Path,
+    *,
+    indexing_config: IndexingConfig | None = None,
+) -> tuple[int, int]:
     """Rebuild canonical docs and retrieval chunks from mirror markdown files."""
     if not papers_dir.is_dir():
         return 0, 0
+
+    config = _resolve_indexing_config(indexing_config)
+    _ensure_index_compatible(chroma_dir, config)
 
     total_papers = 0
     total_chunks = 0
@@ -549,8 +949,8 @@ def index_all_papers(chroma_dir: Path, papers_dir: Path) -> tuple[int, int]:
         if not body:
             continue
 
-        safe_doi = md_file.stem
         metadata = _parse_frontmatter_metadata(content)
+        safe_doi = md_file.stem
         headings = _extract_headings(body)
         total_papers += 1
         total_chunks += index_paper(
@@ -561,27 +961,49 @@ def index_all_papers(chroma_dir: Path, papers_dir: Path) -> tuple[int, int]:
             markdown=body,
             source=metadata.get("source", ""),
             fetch_outcome=metadata.get("fetch_outcome", ""),
+            authors=None,
             year=metadata.get("year", ""),
             journal=metadata.get("journal", ""),
             section_headings=headings,
             assets_manifest_path=metadata.get("assets_manifest_path", ""),
+            indexing_config=config,
         )
 
     return total_papers, total_chunks
 
 
-def get_index_stats(chroma_dir: Path) -> dict[str, int]:
-    """Return basic canonical storage stats."""
+def get_index_stats(
+    chroma_dir: Path,
+    *,
+    indexing_config: IndexingConfig | None = None,
+) -> dict[str, Any]:
+    """Return index stats plus compatibility / migration hints."""
+    config = _resolve_indexing_config(indexing_config)
+    compatibility = inspect_index_compatibility(chroma_dir, config)
+    manifest = compatibility.get("manifest") or read_index_manifest(chroma_dir) or {}
+
+    stats: dict[str, Any] = {
+        "total_chunks": 0,
+        "unique_papers": 0,
+        "embedding_provider": str(manifest.get("provider", config.provider)),
+        "embedding_model": str(manifest.get("model_id", config.model_id)),
+        "embedding_dim": int(manifest.get("embedding_dim", 0) or 0),
+        "query_prompt_name": str(manifest.get("query_prompt_name", config.query_prompt_name)),
+        "reindex_required": bool(compatibility.get("reindex_required", False)),
+        "reindex_reason": str(compatibility.get("reason", "")),
+        "index_manifest_present": bool(manifest),
+    }
+
     try:
         client = _get_client(chroma_dir)
         docs_collection = _get_docs_collection(client)
         chunks_collection = _get_chunks_collection(client)
-        return {
-            "total_chunks": chunks_collection.count(),
-            "unique_papers": docs_collection.count(),
-        }
+        stats["unique_papers"] = docs_collection.count()
+        stats["total_chunks"] = chunks_collection.count()
     except Exception:
-        return {"total_chunks": 0, "unique_papers": 0}
+        pass
+
+    return stats
 
 
 def _delete_paper_chunks(collection: Any, safe_doi: str) -> None:

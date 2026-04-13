@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from subprocess import CompletedProcess
 
 from click.testing import CliRunner
 
@@ -15,6 +16,11 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
     home = tmp_path / "grados-home"
     runner = CliRunner()
     env = {"GRADOS_HOME": str(home)}
+
+    import grados.cli as cli
+
+    cli._setup_browser = lambda paths: None  # type: ignore[assignment]
+    cli._setup_models = lambda paths: None  # type: ignore[assignment]
 
     setup_result = runner.invoke(main, ["setup"], env=env)
     assert setup_result.exit_code == 0
@@ -39,6 +45,7 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
     assert "配置文件" in status_result.output
     assert "数据根目录" in status_result.output
     assert "已加载" in status_result.output
+    assert "harrier-oss-v1-0.6b" in status_result.output
 
 
 def test_update_db_command_reports_index_summary(tmp_path: Path, monkeypatch) -> None:
@@ -52,8 +59,12 @@ def test_update_db_command_reports_index_summary(tmp_path: Path, monkeypatch) ->
 
     import grados.storage.vector as vector
 
-    monkeypatch.setattr(vector, "index_all_papers", lambda chroma_dir, papers_dir: (1, 3))
-    monkeypatch.setattr(vector, "get_index_stats", lambda chroma_dir: {"unique_papers": 1, "total_chunks": 3})
+    monkeypatch.setattr(vector, "index_all_papers", lambda chroma_dir, papers_dir, **kwargs: (1, 3))
+    monkeypatch.setattr(
+        vector,
+        "get_index_stats",
+        lambda chroma_dir, **kwargs: {"unique_papers": 1, "total_chunks": 3, "reindex_required": False},
+    )
 
     runner = CliRunner()
     result = runner.invoke(main, ["update-db"], env={"GRADOS_HOME": str(home)})
@@ -109,3 +120,70 @@ def test_optional_install_metadata_matches_runtime_backends() -> None:
     assert set(extras) == {"marker", "docling", "full"}
     assert extras["full"] == ["grados[marker,docling]"]
     assert {extra for _, _, extra in _EXTRAS} == {"marker", "docling"}
+
+
+def test_client_install_and_remove_commands_manage_claude_and_codex(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    data_root = tmp_path / "data-root"
+    runner = CliRunner()
+    commands: list[list[str]] = []
+
+    import grados.integrations.manager as manager
+
+    def fake_which(name: str) -> str | None:
+        if name in {"claude", "codex", "grados"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    def fake_run(command: list[str], *, check: bool) -> CompletedProcess[str]:
+        commands.append(command)
+        if command[:3] == ["/usr/bin/claude", "mcp", "list"]:
+            return CompletedProcess(command, 0, "grados: /usr/bin/grados - ✓ Connected\n", "")
+        if command[:4] == ["/usr/bin/codex", "mcp", "get", "grados"]:
+            return CompletedProcess(command, 0, "grados\n", "")
+        return CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(manager.shutil, "which", fake_which)
+    monkeypatch.setattr(manager, "_run_command", fake_run)
+
+    install_result = runner.invoke(
+        main,
+        ["client", "install", "all"],
+        env={"HOME": str(home), "GRADOS_HOME": str(data_root)},
+    )
+    assert install_result.exit_code == 0
+    assert (home / ".claude" / "skills" / "grados" / "SKILL.md").is_file()
+    assert any(
+        command
+        == [
+            "/usr/bin/claude",
+            "mcp",
+            "add",
+            "-s",
+            "user",
+            "-e",
+            f"GRADOS_HOME={data_root}",
+            "grados",
+            "--",
+            "/usr/bin/grados",
+        ]
+        for command in commands
+    )
+    assert any(
+        command
+        == [
+            "/usr/bin/codex",
+            "mcp",
+            "add",
+            "grados",
+            "--env",
+            f"GRADOS_HOME={data_root}",
+            "--",
+            "/usr/bin/grados",
+        ]
+        for command in commands
+    )
+
+    remove_result = runner.invoke(main, ["client", "remove", "all"], env={"HOME": str(home)})
+    assert remove_result.exit_code == 0
+    assert not (home / ".claude" / "skills" / "grados").exists()

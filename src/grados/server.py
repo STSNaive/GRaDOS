@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastmcp import FastMCP
+from pydantic import Field
 
 from grados import __version__
 from grados.config import GRaDOSConfig, GRaDOSPaths, load_config
@@ -28,6 +29,13 @@ def _get_paths_and_config() -> tuple[GRaDOSPaths, GRaDOSConfig]:
 def _get_api_keys(config: GRaDOSConfig) -> dict[str, str]:
     keys = config.api_keys
     return {k: v for k, v in keys.model_dump().items() if v}
+
+
+def _missing_paper_selector_message(doi: str | None, safe_doi: str | None, uri: str | None) -> str | None:
+    """Return a user-facing error when no paper selector was provided."""
+    if doi or safe_doi or uri:
+        return None
+    return "Provide at least one of doi, safe_doi, or uri."
 
 
 def _format_paper_index_resource(papers: list[dict[str, str]]) -> str:
@@ -101,11 +109,26 @@ def _format_paper_overview_resource(structure: dict[str, object]) -> str:
 # ── search_academic_papers ───────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Search remote academic databases for paper metadata only. "
+        "Returns deduplicated titles, abstracts, DOIs, and a continuation token when more results are available; "
+        "use `extract_paper_full_text` after screening relevant DOIs."
+    )
+)
 async def search_academic_papers(
-    query: Annotated[str, "The search query"],
-    limit: Annotated[int, "Maximum results to return"] = 15,
-    continuation_token: Annotated[str | None, "Opaque token for resumable searches"] = None,
+    query: Annotated[
+        str,
+        Field(min_length=1, description="Metadata search query. English keywords work best for source coverage."),
+    ],
+    limit: Annotated[
+        int,
+        Field(ge=1, le=50, description="Maximum metadata results to return in this page."),
+    ] = 15,
+    continuation_token: Annotated[
+        str | None,
+        Field(description="Opaque token returned by a previous search_academic_papers call to continue that search."),
+    ] = None,
 ) -> str:
     """Search multiple academic databases sequentially and return deduplicated paper metadata.
 
@@ -204,11 +227,23 @@ def paper_overview_resource(safe_doi: str) -> str:
 # ── extract_paper_full_text ──────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Fetch, parse, and save one paper's canonical full text by DOI. "
+        "Returns a compact save receipt with URI, file path, section headings, "
+        "and warnings rather than the full paper text."
+    )
+)
 async def extract_paper_full_text(
-    doi: Annotated[str, "The paper DOI"],
-    publisher: Annotated[str | None, "Publisher hint (e.g. 'Elsevier')"] = None,
-    expected_title: Annotated[str | None, "Expected title for QA validation"] = None,
+    doi: Annotated[str, Field(min_length=1, description="Paper DOI to fetch and save.")],
+    publisher: Annotated[
+        str | None,
+        Field(description="Optional publisher label to persist in saved metadata; does not change fetch routing."),
+    ] = None,
+    expected_title: Annotated[
+        str | None,
+        Field(description="Optional title used for QA validation and saved metadata."),
+    ] = None,
 ) -> str:
     """Extract full text from an academic paper by DOI.
 
@@ -304,15 +339,38 @@ async def extract_paper_full_text(
 # ── read_saved_paper ─────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Read a paragraph window from a previously saved paper for canonical deep reading and citation verification. "
+        "Provide one of `doi`, `safe_doi`, or `uri`; use `section_query` to jump near a heading."
+    )
+)
 async def read_saved_paper(
-    doi: Annotated[str | None, "Paper DOI"] = None,
-    safe_doi: Annotated[str | None, "Sanitized DOI filename"] = None,
-    uri: Annotated[str | None, "Paper URI (grados://papers/...)"] = None,
-    start_paragraph: Annotated[int, "Starting paragraph offset"] = 0,
-    max_paragraphs: Annotated[int, "Number of paragraphs to return"] = 20,
-    section_query: Annotated[str | None, "Jump to section matching this query"] = None,
-    include_front_matter: Annotated[bool, "Include YAML front-matter"] = False,
+    doi: Annotated[str | None, Field(description="Paper DOI. Provide this, safe_doi, or uri.")] = None,
+    safe_doi: Annotated[
+        str | None,
+        Field(description="Sanitized DOI filename such as `10_1234_demo`. Provide this, doi, or uri."),
+    ] = None,
+    uri: Annotated[
+        str | None,
+        Field(description="Canonical paper URI such as `grados://papers/10_1234_demo`."),
+    ] = None,
+    start_paragraph: Annotated[
+        int,
+        Field(ge=0, description="Zero-based paragraph offset for manual windowing."),
+    ] = 0,
+    max_paragraphs: Annotated[
+        int,
+        Field(ge=1, le=100, description="Paragraphs to return in this window."),
+    ] = 20,
+    section_query: Annotated[
+        str | None,
+        Field(description="Optional section name or substring to jump near before windowing."),
+    ] = None,
+    include_front_matter: Annotated[
+        bool,
+        Field(description="Include YAML front matter when reading from canonical markdown."),
+    ] = False,
 ) -> str:
     """Read a previously saved paper with paragraph windowing.
 
@@ -320,6 +378,10 @@ async def read_saved_paper(
     Use section_query to jump to a specific section, or start_paragraph for manual offset.
     """
     from grados.storage.papers import read_paper
+
+    selector_error = _missing_paper_selector_message(doi=doi, safe_doi=safe_doi, uri=uri)
+    if selector_error:
+        return selector_error
 
     paths, _ = _get_paths_and_config()
     result = read_paper(
@@ -354,17 +416,32 @@ async def read_saved_paper(
 # ── get_saved_paper_structure ────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Return a low-token structure card for one saved paper. "
+        "Use this to screen a paper before calling `read_saved_paper`; it is not the full citation source."
+    )
+)
 async def get_saved_paper_structure(
-    doi: Annotated[str | None, "Paper DOI"] = None,
-    safe_doi: Annotated[str | None, "Sanitized DOI filename"] = None,
-    uri: Annotated[str | None, "Paper URI (grados://papers/...)"] = None,
+    doi: Annotated[str | None, Field(description="Paper DOI. Provide this, safe_doi, or uri.")] = None,
+    safe_doi: Annotated[
+        str | None,
+        Field(description="Sanitized DOI filename such as `10_1234_demo`. Provide this, doi, or uri."),
+    ] = None,
+    uri: Annotated[
+        str | None,
+        Field(description="Canonical paper URI such as `grados://papers/10_1234_demo`."),
+    ] = None,
 ) -> dict[str, object]:
     """Return a compact structure card for a saved paper.
 
     This is the low-token navigation path. Use read_saved_paper for canonical deep reading.
     """
     from grados.storage.papers import get_paper_structure
+
+    selector_error = _missing_paper_selector_message(doi=doi, safe_doi=safe_doi, uri=uri)
+    if selector_error:
+        return {"found": False, "message": selector_error}
 
     paths, _ = _get_paths_and_config()
     structure = get_paper_structure(
@@ -388,12 +465,26 @@ async def get_saved_paper_structure(
 # ── import_local_pdf_library ─────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Import a local PDF file or directory into GRaDOS canonical storage and the retrieval index. "
+        "Returns a summary plus the first 25 item results."
+    )
+)
 async def import_local_pdf_library(
-    source_path: Annotated[str, "Path to a PDF file or a directory containing PDFs"],
-    recursive: Annotated[bool, "Recursively scan subdirectories"] = False,
-    glob_pattern: Annotated[str, "Glob pattern for PDF discovery"] = "*.pdf",
-    copy_to_library: Annotated[bool, "Copy raw PDFs into the managed downloads archive"] = True,
+    source_path: Annotated[
+        str,
+        Field(min_length=1, description="Local path to a PDF file or a directory containing PDFs."),
+    ],
+    recursive: Annotated[bool, Field(description="Recursively scan subdirectories for matching PDFs.")] = False,
+    glob_pattern: Annotated[
+        str,
+        Field(min_length=1, description="Glob pattern used to discover PDFs inside the source directory."),
+    ] = "*.pdf",
+    copy_to_library: Annotated[
+        bool,
+        Field(description="Copy raw PDFs into the managed downloads archive before parsing."),
+    ] = True,
 ) -> dict[str, object]:
     """Import a local PDF library into GRaDOS canonical storage."""
     from grados.importing import import_local_pdf_library as run_import
@@ -435,11 +526,23 @@ async def import_local_pdf_library(
 # ── parse_pdf_file ───────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Parse a local PDF into markdown. "
+        "Without a DOI it returns a truncated preview; with a DOI it saves canonical markdown "
+        "and returns a save receipt."
+    )
+)
 async def parse_pdf_file(
-    file_path: Annotated[str, "Path to the PDF file"],
-    expected_title: Annotated[str | None, "Expected title for QA"] = None,
-    doi: Annotated[str | None, "If provided, saves to papers directory with frontmatter"] = None,
+    file_path: Annotated[str, Field(min_length=1, description="Local path to the PDF file to parse.")],
+    expected_title: Annotated[
+        str | None,
+        Field(description="Optional title used for QA validation only."),
+    ] = None,
+    doi: Annotated[
+        str | None,
+        Field(description="Optional DOI to bind the parsed PDF to canonical storage and save it to the paper library."),
+    ] = None,
 ) -> str:
     """Parse a local PDF file into markdown.
 
@@ -503,17 +606,25 @@ async def parse_pdf_file(
 # ── save_paper_to_zotero ─────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Save one paper to Zotero via the Web API using the configured library settings. "
+        "Best used for papers that actually support the final answer."
+    )
+)
 async def save_paper_to_zotero(
-    doi: Annotated[str, "Paper DOI"],
-    title: Annotated[str, "Paper title"],
-    authors: Annotated[list[str] | None, "Author names"] = None,
-    abstract: Annotated[str | None, "Paper abstract"] = None,
-    journal: Annotated[str | None, "Journal name"] = None,
-    year: Annotated[str | None, "Publication year"] = None,
-    url: Annotated[str | None, "Paper URL"] = None,
-    tags: Annotated[list[str] | None, "Tags for the Zotero item"] = None,
-    collection_key: Annotated[str | None, "Zotero collection key override"] = None,
+    doi: Annotated[str, Field(min_length=1, description="Paper DOI.")],
+    title: Annotated[str, Field(min_length=1, description="Paper title.")],
+    authors: Annotated[list[str] | None, Field(description="Optional author display names.")] = None,
+    abstract: Annotated[str | None, Field(description="Optional paper abstract.")] = None,
+    journal: Annotated[str | None, Field(description="Optional journal name.")] = None,
+    year: Annotated[str | None, Field(description="Optional publication year string.")] = None,
+    url: Annotated[str | None, Field(description="Optional paper URL.")] = None,
+    tags: Annotated[list[str] | None, Field(description="Optional Zotero tags.")] = None,
+    collection_key: Annotated[
+        str | None,
+        Field(description="Optional Zotero collection key override."),
+    ] = None,
 ) -> str:
     """Save a paper to your Zotero library via the Web API."""
     from grados.zotero import save_to_zotero
@@ -546,41 +657,87 @@ async def save_paper_to_zotero(
 # ── search_saved_papers ──────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(
+    description=(
+        "Search the local saved-paper library with semantic retrieval, metadata filters, "
+        "and optional lexical reranking. "
+        "Returned snippets are screening hints, not citation evidence; use `read_saved_paper` before citing."
+    )
+)
 async def search_saved_papers(
-    query: Annotated[str, "Search query"],
-    limit: Annotated[int, "Maximum results"] = 10,
-    doi: Annotated[str | None, "Exact DOI filter"] = None,
-    authors: Annotated[str | None, "Author substring filter"] = None,
-    year_from: Annotated[int | None, "Inclusive lower bound for publication year"] = None,
-    year_to: Annotated[int | None, "Inclusive upper bound for publication year"] = None,
-    journal: Annotated[str | None, "Journal substring filter"] = None,
-    source: Annotated[str | None, "Source substring filter"] = None,
-    use_reranking: Annotated[bool, "Apply lightweight lexical reranking after dense retrieval"] = True,
+    query: Annotated[
+        str,
+        Field(min_length=1, description="Keyword or semantic search query over the local saved-paper library."),
+    ],
+    limit: Annotated[
+        int,
+        Field(ge=1, le=25, description="Maximum paper-level matches to return."),
+    ] = 10,
+    doi: Annotated[str | None, Field(description="Optional exact DOI filter.")] = None,
+    authors: Annotated[str | None, Field(description="Optional author substring filter.")] = None,
+    year_from: Annotated[
+        int | None,
+        Field(description="Optional inclusive lower bound for publication year."),
+    ] = None,
+    year_to: Annotated[
+        int | None,
+        Field(description="Optional inclusive upper bound for publication year."),
+    ] = None,
+    journal: Annotated[str | None, Field(description="Optional journal substring filter.")] = None,
+    source: Annotated[
+        str | None,
+        Field(description="Optional source substring filter such as Crossref or Elsevier TDM."),
+    ] = None,
+    use_reranking: Annotated[
+        bool,
+        Field(description="Keep true to blend semantic retrieval with lightweight lexical reranking."),
+    ] = True,
 ) -> str:
     """Search previously saved papers by keyword or semantic similarity.
 
     Uses metadata prefiltering, ChromaDB retrieval, and paper-level reranking.
     """
+    from grados.storage.embedding import IndexCompatibilityError
     from grados.storage.papers import list_saved_papers
     from grados.storage.vector import get_index_stats, search_papers
 
-    paths, _ = _get_paths_and_config()
-    stats = get_index_stats(paths.database_chroma)
-    results = search_papers(
-        paths.database_chroma,
-        query,
-        limit,
-        doi=doi or "",
-        authors=authors or "",
-        year_from=year_from,
-        year_to=year_to,
-        journal=journal or "",
-        source=source or "",
-        use_reranking=use_reranking,
-    )
+    if year_from is not None and year_to is not None and year_from > year_to:
+        return "Invalid year range: year_from must be less than or equal to year_to."
 
+    paths, config = _get_paths_and_config()
     papers = list_saved_papers(paths.papers, chroma_dir=paths.database_chroma)
+    if not papers:
+        return "No saved papers found. Use extract_paper_full_text to save papers first."
+
+    stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
+
+    try:
+        results = search_papers(
+            paths.database_chroma,
+            query,
+            limit,
+            doi=doi or "",
+            authors=authors or "",
+            year_from=year_from,
+            year_to=year_to,
+            journal=journal or "",
+            source=source or "",
+            use_reranking=use_reranking,
+            indexing_config=config.indexing,
+        )
+    except IndexCompatibilityError as exc:
+        return (
+            "Semantic index requires a full rebuild before search can continue.\n\n"
+            f"- Reason: {exc}\n"
+            "- Action: run `grados reindex` from the CLI, then retry `search_saved_papers`."
+        )
+    except RuntimeError as exc:
+        return (
+            "Semantic retrieval runtime is not ready.\n\n"
+            f"- Reason: {exc}\n"
+            "- Action: install the embedding runtime and run `grados setup`."
+        )
+
     filter_parts = []
     if doi:
         filter_parts.append(f"doi={doi}")
@@ -593,9 +750,6 @@ async def search_saved_papers(
     if source:
         filter_parts.append(f"source~{source}")
     filters_suffix = f" | filters: {', '.join(filter_parts)}" if filter_parts else ""
-
-    if not papers:
-        return "No saved papers found. Use extract_paper_full_text to save papers first."
 
     if not results:
         hint = " Run `grados update-db` to build retrieval chunks." if stats["total_chunks"] == 0 else ""
@@ -619,10 +773,377 @@ async def search_saved_papers(
             lines.append(f"   - Journal: {paper.get('journal')}")
         if paper.get("source"):
             lines.append(f"   - Source: {paper.get('source')}")
+        if paper.get("section_name"):
+            lines.append(f"   - Section: {paper.get('section_name')}")
         if paper.get("snippet"):
             lines.append(f"   - Snippet: {paper['snippet']}")
 
     return "\n".join(lines)
+
+
+# ── Stage B research tools ───────────────────────────────────────────────────
+
+
+@mcp.tool(
+    description=(
+        "Save a structured research artifact produced during search, extraction, reading, or writing. "
+        "Use this for reusable intermediate outputs such as search snapshots, extraction receipts, and evidence tables."
+    )
+)
+async def save_research_artifact(
+    kind: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Artifact kind such as `search_snapshot`, "
+                "`extraction_receipt`, or `evidence_table`."
+            ),
+        ),
+    ],
+    content: Annotated[
+        dict[str, object] | str,
+        Field(description="Structured JSON-like content or markdown text for the artifact body."),
+    ],
+    title: Annotated[
+        str | None,
+        Field(description="Optional short label. If omitted, GRaDOS derives one from the artifact kind."),
+    ] = None,
+    source_doi: Annotated[
+        str | None,
+        Field(description="Optional DOI most directly associated with this artifact."),
+    ] = None,
+    metadata: Annotated[
+        dict[str, object] | None,
+        Field(description="Optional structured metadata such as query terms, filters, or audit settings."),
+    ] = None,
+) -> dict[str, object]:
+    """Persist a reusable research artifact in the local state database."""
+    from grados.research_state import save_research_artifact as persist_artifact
+
+    paths, _ = _get_paths_and_config()
+    return persist_artifact(
+        paths.database_state,
+        kind=kind,
+        title=title or "",
+        content=content,
+        source_doi=source_doi or "",
+        metadata=metadata,
+    )
+
+
+@mcp.tool(
+    description=(
+        "Query previously saved research artifacts by id, kind, or keyword. "
+        "Set `detail=true` to load the full stored content."
+    )
+)
+async def query_research_artifacts(
+    artifact_id: Annotated[
+        str | None,
+        Field(description="Optional exact artifact id returned by `save_research_artifact`."),
+    ] = None,
+    kind: Annotated[
+        str | None,
+        Field(description="Optional artifact kind filter."),
+    ] = None,
+    query: Annotated[
+        str | None,
+        Field(description="Optional keyword query over artifact titles and stored content."),
+    ] = None,
+    detail: Annotated[
+        bool,
+        Field(description="Return full artifact content instead of previews."),
+    ] = False,
+    limit: Annotated[
+        int,
+        Field(ge=1, le=50, description="Maximum artifacts to return."),
+    ] = 20,
+) -> dict[str, object]:
+    """Query local research artifacts."""
+    from grados.research_state import query_research_artifacts as run_query
+
+    paths, _ = _get_paths_and_config()
+    return run_query(
+        paths.database_state,
+        artifact_id=artifact_id or "",
+        kind=kind or "",
+        query=query or "",
+        detail=detail,
+        limit=limit,
+    )
+
+
+@mcp.tool(
+    description=(
+        "Record, inspect, and summarize failed fetch/parse/search/citation attempts. "
+        "Use `mode=suggest_retry` to get conservative next-step guidance from the local failure memory."
+    )
+)
+async def manage_failure_cases(
+    mode: Annotated[
+        Literal["record", "query", "suggest_retry"],
+        Field(description="Whether to record a failure, query history, or ask for retry suggestions."),
+    ],
+    failure_type: Annotated[
+        str | None,
+        Field(description="Optional failure category such as `fetch`, `parse`, `search`, or `citation`."),
+    ] = None,
+    doi: Annotated[
+        str | None,
+        Field(description="Optional DOI associated with the failure."),
+    ] = None,
+    query_text: Annotated[
+        str | None,
+        Field(description="Optional search query or draft fragment associated with the failure."),
+    ] = None,
+    source: Annotated[
+        str | None,
+        Field(description="Optional backend or publisher label associated with the failure."),
+    ] = None,
+    error_message: Annotated[
+        str | None,
+        Field(description="Optional raw error message. Especially useful with `mode=record` and `mode=suggest_retry`."),
+    ] = None,
+    context: Annotated[
+        dict[str, object] | None,
+        Field(description="Optional structured failure context such as filters, parser order, or citation style."),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(ge=1, le=50, description="Maximum failure cases to return for query or retry analysis."),
+    ] = 20,
+) -> dict[str, object]:
+    """Manage local failure memory."""
+    from grados.research_state import manage_failure_cases as run_failure_memory
+
+    paths, _ = _get_paths_and_config()
+    return run_failure_memory(
+        paths.database_state,
+        mode=mode,
+        failure_type=failure_type or "",
+        doi=doi or "",
+        query_text=query_text or "",
+        source=source or "",
+        error_message=error_message or "",
+        context=context,
+        limit=limit,
+    )
+
+
+@mcp.tool(
+    description=(
+        "Return local citation relationships among saved papers. "
+        "Supports paper neighborhoods, common references, and reverse "
+        "citing-paper lookups without generating prose conclusions."
+    )
+)
+async def get_citation_graph(
+    mode: Annotated[
+        Literal["neighbors", "common_references", "citing_papers"],
+        Field(description="Which citation subquery to run."),
+    ] = "neighbors",
+    doi: Annotated[
+        str | None,
+        Field(description="Optional primary DOI. Use this for single-paper neighbor or citing-paper queries."),
+    ] = None,
+    dois: Annotated[
+        list[str] | None,
+        Field(description="Optional DOI list for multi-paper citation analysis such as common references."),
+    ] = None,
+    max_hops: Annotated[
+        int,
+        Field(ge=1, le=3, description="Only used by `neighbors`; expands local citation hops conservatively."),
+    ] = 1,
+    limit: Annotated[
+        int,
+        Field(ge=1, le=50, description="Maximum relationship items to return."),
+    ] = 20,
+) -> dict[str, object]:
+    """Return lightweight local citation graph data."""
+    from grados.research_tools import get_citation_graph as run_citation_graph
+
+    paths, _ = _get_paths_and_config()
+    return run_citation_graph(
+        paths.database_chroma,
+        mode=mode,
+        doi=doi or "",
+        dois=dois,
+        max_hops=max_hops,
+        limit=limit,
+    )
+
+
+@mcp.tool(
+    description=(
+        "Return structured full-context material for a small set of saved papers. "
+        "Use `mode=estimate` to budget context first, then `mode=full` "
+        "when you are ready to enter a CAG-style deep-reading pass."
+    )
+)
+async def get_papers_full_context(
+    dois: Annotated[
+        list[str],
+        Field(min_length=1, description="Saved-paper DOI list. Best for 1-8 papers you intend to read closely."),
+    ],
+    section_filter: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "Optional section names to scope the returned context, "
+                "such as `Abstract`, `Methods`, or `Results`."
+            )
+        ),
+    ] = None,
+    mode: Annotated[
+        Literal["estimate", "full"],
+        Field(description="Use `estimate` for token budgeting and `full` for actual section content."),
+    ] = "estimate",
+    max_total_tokens: Annotated[
+        int,
+        Field(ge=1000, le=128000, description="Approximate token budget across all returned papers when `mode=full`."),
+    ] = 32000,
+) -> dict[str, object]:
+    """Return full-context material for a small saved-paper set."""
+    from grados.research_tools import get_papers_full_context as run_full_context
+
+    paths, _ = _get_paths_and_config()
+    return run_full_context(
+        paths.database_chroma,
+        dois=dois,
+        section_filter=section_filter,
+        mode=mode,
+        max_total_tokens=max_total_tokens,
+    )
+
+
+@mcp.tool(
+    description=(
+        "Build an evidence grid for a research topic or subquestions. "
+        "Returns aligned paper-section-snippet rows so the agent can plan writing before drafting prose."
+    )
+)
+async def build_evidence_grid(
+    topic: Annotated[
+        str,
+        Field(min_length=1, description="Research topic or question that the evidence grid should organize."),
+    ],
+    subquestions: Annotated[
+        list[str] | None,
+        Field(description="Optional focused subquestions. If omitted, the topic itself is used as one query."),
+    ] = None,
+    dois: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "Optional saved-paper DOI scope. When provided, GRaDOS "
+                "only mines evidence from these papers."
+            )
+        ),
+    ] = None,
+    section_filter: Annotated[
+        list[str] | None,
+        Field(description="Optional section names to prefer while gathering evidence."),
+    ] = None,
+    max_papers: Annotated[
+        int,
+        Field(ge=1, le=12, description="Maximum paper hits to consider per subquestion."),
+    ] = 8,
+) -> dict[str, object]:
+    """Construct an evidence grid for writing preparation."""
+    from grados.research_tools import build_evidence_grid as run_evidence_grid
+
+    paths, _ = _get_paths_and_config()
+    return run_evidence_grid(
+        paths.database_chroma,
+        topic=topic,
+        subquestions=subquestions,
+        dois=dois,
+        section_filter=section_filter,
+        max_papers=max_papers,
+    )
+
+
+@mcp.tool(
+    description=(
+        "Extract parallel comparison material across saved papers. "
+        "It aligns methods, results, or full-text excerpts into a table "
+        "or bullet view, leaving higher-level comparison reasoning to "
+        "the agent."
+    )
+)
+async def compare_papers(
+    dois: Annotated[
+        list[str],
+        Field(min_length=2, description="Saved-paper DOI list to compare side by side."),
+    ],
+    focus: Annotated[
+        Literal["methods", "results", "full_text"],
+        Field(description="Which paper aspect to align for comparison."),
+    ] = "methods",
+    comparison_axes: Annotated[
+        list[str] | None,
+        Field(description="Optional comparison axes such as dataset, metric, limitation, or objective."),
+    ] = None,
+    output_format: Annotated[
+        Literal["table", "bullets"],
+        Field(description="Preferred presentation for the aligned comparison payload."),
+    ] = "table",
+) -> dict[str, object]:
+    """Compare saved papers without collapsing them into one narrative."""
+    from grados.research_tools import compare_papers as run_compare_papers
+
+    paths, _ = _get_paths_and_config()
+    return run_compare_papers(
+        paths.database_chroma,
+        dois=dois,
+        focus=focus,
+        comparison_axes=comparison_axes,
+        output_format=output_format,
+    )
+
+
+@mcp.tool(
+    description=(
+        "Audit draft claims against the local paper library. "
+        "Returns claim-level `supported`, `weak`, `unsupported`, or "
+        "`misattributed` statuses plus candidate evidence snippets."
+    )
+)
+async def audit_draft_support(
+    draft_text: Annotated[
+        str,
+        Field(min_length=1, description="Markdown or plain-text draft to audit claim by claim."),
+    ],
+    citation_style: Annotated[
+        Literal["author_year", "numeric"],
+        Field(description="Citation style used in the draft so GRaDOS can parse citation markers more accurately."),
+    ] = "author_year",
+    strictness: Annotated[
+        Literal["strict", "balanced"],
+        Field(
+            description=(
+                "Strict mode treats mismatched citations as "
+                "`misattributed`; balanced mode softens that to `weak`."
+            )
+        ),
+    ] = "strict",
+    return_claim_map: Annotated[
+        bool,
+        Field(description="Include a compact claim-to-evidence map in addition to the full claim audit."),
+    ] = True,
+) -> dict[str, object]:
+    """Audit whether a draft is supported by the local evidence store."""
+    from grados.research_tools import audit_draft_support as run_audit
+
+    paths, _ = _get_paths_and_config()
+    return run_audit(
+        paths.database_chroma,
+        draft_text=draft_text,
+        citation_style=citation_style,
+        strictness=strictness,
+        return_claim_map=return_claim_map,
+    )
 
 
 # ── Server runner ────────────────────────────────────────────────────────────

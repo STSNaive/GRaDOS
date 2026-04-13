@@ -34,7 +34,7 @@ This design keeps screening lightweight while preserving canonical full text for
 
 The current Python GRaDOS server exposes:
 
-- 8 tools: `search_academic_papers`, `search_saved_papers`, `extract_paper_full_text`, `read_saved_paper`, `get_saved_paper_structure`, `import_local_pdf_library`, `parse_pdf_file`, `save_paper_to_zotero`
+- 16 tools: `search_academic_papers`, `search_saved_papers`, `extract_paper_full_text`, `read_saved_paper`, `get_saved_paper_structure`, `import_local_pdf_library`, `parse_pdf_file`, `save_paper_to_zotero`, `save_research_artifact`, `query_research_artifacts`, `manage_failure_cases`, `get_citation_graph`, `get_papers_full_context`, `build_evidence_grid`, `compare_papers`, `audit_draft_support`
 - 2 paper resources: `grados://papers/index` and `grados://papers/{safe_doi}`
 - 1 managed local semantic store: built-in ChromaDB, with canonical paper documents plus retrieval chunks
 
@@ -112,11 +112,11 @@ If `extract_paper_full_text` fails for a strongly relevant paper (returns error 
    - **Do NOT synthesize from compact summaries or overview resources** — they are explicitly non-citable and insufficient for accurate citation.
    - If your context has been compacted, earlier tool outputs may be gone entirely. The saved paper files and **`grados:read_saved_paper`** are your authoritative source.
    - Also incorporate any relevant content from the local library (Step 0).
-3. Before drafting prose, build a compact **evidence grid** in your hidden reasoning:
-   - claim or subsection
-   - supporting paper
-   - exact section or paragraph window used
-   - why the evidence supports the claim
+3. When the user is already writing or revising a literature-grounded section, treat the following Stage B tools as **structure and audit helpers**, not as a substitute for canonical reading:
+   - Before drafting a subsection, prefer calling **`grados:build_evidence_grid`** so the evidence grid is explicit and reusable. Record the claim or subsection, the supporting paper, the exact section or paragraph window used, and why the evidence supports the claim.
+   - When comparing multiple studies, call **`grados:compare_papers`** to extract aligned method or result snippets rather than improvising from memory.
+   - For **1-8 highly relevant papers**, call **`grados:get_papers_full_context`** with `mode=estimate` first, then `mode=full` only if the context budget is acceptable.
+   - If an intermediate table or comparison is reusable, store it with **`grados:save_research_artifact`**.
 4. Synthesize an answer to the user's original question **in Chinese**.
 5. **Citation rule**: Every factual claim MUST include an inline citation, e.g. `[Smith et al., 2023]`. Only cite content you have actually **read with `grados:read_saved_paper`** in this session. No unsupported claims allowed.
 6. After completing the synthesis, for each paper that was **actually cited** in the answer, call `grados:save_paper_to_zotero` with its full metadata (title, DOI, authors, abstract, journal, year, url, tags). Pass the query topic as a tag so papers are organised by research theme.
@@ -130,10 +130,11 @@ If `extract_paper_full_text` fails for a strongly relevant paper (returns error 
 Before presenting your final answer:
 
 1. Re-examine every claim in your synthesis.
-2. For each claim, use **`grados:read_saved_paper`** to verify that the actual saved paper content supports it. Do not rely on your memory of the paper or stale context.
+2. For each claim, use **`grados:audit_draft_support`** for a first-pass claim audit, then use **`grados:read_saved_paper`** to verify the underlying saved paper content. Do not rely on your memory of the paper or stale context.
 3. **Delete** any claim not explicitly supported by the extracted papers.
-4. If the papers don't fully answer the question, state clearly in Chinese that the retrieved literature does not cover the specific aspect, and specify what it does cover.
-5. Do **NOT** fill gaps with pre-trained knowledge. Only cite what you extracted and verified from files.
+4. When revising a draft, explicitly label weak spots as `supported`, `weak`, `unsupported`, or `misattributed` instead of smoothing them over in prose.
+5. If the papers don't fully answer the question, state clearly in Chinese that the retrieved literature does not cover the specific aspect, and specify what it does cover.
+6. Do **NOT** fill gaps with pre-trained knowledge. Only cite what you extracted and verified from files.
 
 ## Output Format
 

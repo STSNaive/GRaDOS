@@ -1,0 +1,20 @@
+{
+  "name": "grados",
+  "description": "Academic paper search, full-text extraction, and citation-grounded research workflow for Claude Code.",
+  "version": "0.6.6",
+  "author": {
+    "name": "macfish"
+  },
+  "homepage": "https://github.com/STSNaive/GRaDOS",
+  "repository": "https://github.com/STSNaive/GRaDOS",
+  "license": "MIT",
+  "keywords": [
+    "academic",
+    "research",
+    "papers",
+    "mcp",
+    "citations"
+  ],
+  "category": "productivity",
+  "mcpServers": "./plugin.mcp.json"
+}

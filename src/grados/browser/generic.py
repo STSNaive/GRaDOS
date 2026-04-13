@@ -43,7 +43,7 @@ async def fetch_with_browser(
             "pdf_buffer": None,
             "source": "Headless Browser",
             "outcome": "no_browser",
-            "warnings": ["No compatible browser executable found. Run 'grados setup --with browser'."],
+            "warnings": ["No compatible browser executable found. Run 'grados setup'."],
         }
 
     browser_label = _BROWSER_LABELS.get(resolution.source, resolution.browser)

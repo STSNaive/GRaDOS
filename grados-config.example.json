@@ -85,6 +85,23 @@
             "minCharacters": 1500
         }
     },
+    "_comment_indexing": "Semantic indexing defaults for the built-in ChromaDB retrieval pipeline. Changing model or chunking settings requires `grados reindex`.",
+    "indexing": {
+        "provider": "harrier",
+        "_comment_provider": "Default local embedding provider used for semantic indexing.",
+        "modelId": "microsoft/harrier-oss-v1-0.6b",
+        "_comment_modelId": "Current default embedding model for Phase A.",
+        "queryPromptName": "web_search_query",
+        "_comment_queryPromptName": "Harrier query-side prompt. Query/document encoding is intentionally asymmetric.",
+        "queryInstruction": "Given a scientific literature search query, retrieve relevant abstracts and passages that answer the query",
+        "maxLength": 32768,
+        "device": "auto",
+        "cacheDir": "",
+        "_comment_cacheDir": "Leave empty to use the default GRaDOS model cache under GRADOS_HOME/models/embedding.",
+        "chunkMinChars": 300,
+        "chunkMaxChars": 2000,
+        "chunkOverlapParagraphs": 1
+    },
     "localRag": {
         "enabled": true,
         "_comment_enabled": "Set to false to skip local paper library steps in the agent workflow (Step 0 in SKILL.md). The mcp-local-rag server must still be separately registered in your MCP client.",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 from importlib.metadata import version as pkg_version
 from pathlib import Path
@@ -14,6 +15,7 @@ from rich.table import Table
 
 from grados import __version__
 from grados.config import GRaDOSPaths, generate_default_config, load_config
+from grados.integrations import inspect_clients, install_clients, remove_clients
 
 console = Console()
 
@@ -101,10 +103,8 @@ def version() -> None:
 
 
 @main.command()
-@click.option("--all", "install_all", is_flag=True, help="Install all runtime assets (browser + models).")
-@click.option("--with", "components", type=str, default="", help="Comma-separated components: browser,models")
-def setup(install_all: bool, components: str) -> None:
-    """Initialize GRaDOS: create directories, generate config, download runtime assets."""
+def setup() -> None:
+    """Initialize GRaDOS: create directories, generate config, and prepare runtime assets."""
     paths = GRaDOSPaths()
 
     console.print()
@@ -139,31 +139,9 @@ def setup(install_all: bool, components: str) -> None:
         console.print(f"  {mark} {display_name}{hint}")
 
     # 4. Runtime assets
-    requested = set()
-    if install_all:
-        requested = {"browser", "models"}
-    elif components:
-        requested = {c.strip().lower() for c in components.split(",")}
-
     console.print("[bold]4/4[/bold] 运行时资产...")
-
-    if "browser" in requested:
-        _setup_browser(paths)
-    else:
-        browser_exists = paths.browser_chromium.exists() and any(paths.browser_chromium.iterdir())
-        if browser_exists:
-            console.print("  [green]✓[/green] 浏览器已安装")
-        else:
-            console.print('  [dim]—[/dim] 浏览器未安装  [dim]grados setup --with browser[/dim]')
-
-    if "models" in requested:
-        _setup_models(paths)
-    else:
-        model_exists = paths.models_embedding.exists() and any(paths.models_embedding.iterdir())
-        if model_exists:
-            console.print("  [green]✓[/green] 嵌入模型已就绪")
-        else:
-            console.print('  [dim]—[/dim] 嵌入模型未预热  [dim]grados setup --with models[/dim]')
+    _setup_browser(paths)
+    _setup_models(paths)
 
     console.print()
     console.print("[green bold]Setup 完成！[/green bold]")
@@ -198,18 +176,124 @@ def _setup_browser(paths: GRaDOSPaths) -> None:
 
 
 def _setup_models(paths: GRaDOSPaths) -> None:
-    """Pre-download the default embedding model for ChromaDB."""
-    console.print("  预热嵌入模型 (all-MiniLM-L6-v2)...", end=" ")
-    paths.models_embedding.mkdir(parents=True, exist_ok=True)
-    try:
-        from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+    """Pre-download the configured embedding backend and verify query/doc encoding."""
+    from grados.storage.embedding import load_embedding_backend
 
-        ef = DefaultEmbeddingFunction()
-        # Trigger model download by running a dummy embedding
-        ef(["warmup"])
+    config = load_config(paths)
+    console.print(f"  预热嵌入模型 ({config.indexing.model_id})...", end=" ")
+    try:
+        backend = load_embedding_backend(paths=paths, config=config.indexing)
+        backend.warmup()
         console.print("[green]✓[/green]")
     except Exception as e:
         console.print(f"[yellow]跳过: {e}[/yellow]")
+
+
+# ── grados client ────────────────────────────────────────────────────────────
+
+
+@main.group("client")
+def client_group() -> None:
+    """Install, inspect, and remove Claude/Codex integrations."""
+
+
+@client_group.command("install")
+@click.argument("clients", nargs=-1, required=True)
+def client_install(clients: tuple[str, ...]) -> None:
+    """Install GRaDOS into one or more clients: claude, codex, or all."""
+    try:
+        statuses = install_clients(clients)
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print()
+    console.print(f"[bold]GRaDOS Client Install[/bold]  v{__version__}")
+    table = Table(show_header=True, box=None, padding=(0, 2))
+    table.add_column("客户端", style="bold")
+    table.add_column("MCP")
+    table.add_column("Skill 根目录", overflow="fold")
+    table.add_column("已安装技能")
+    for status in statuses:
+        table.add_row(
+            status.name,
+            "[green]已注册[/green]" if status.mcp_registered else "[yellow]未注册[/yellow]",
+            str(status.skill_root),
+            ", ".join(status.installed_skills) or "—",
+        )
+    console.print(table)
+    console.print()
+
+
+@client_group.command("list")
+def client_list() -> None:
+    """List supported clients and whether GRaDOS is currently installed."""
+    statuses = inspect_clients()
+
+    console.print()
+    console.print(f"[bold]GRaDOS Client List[/bold]  v{__version__}")
+    table = Table(show_header=True, box=None, padding=(0, 2))
+    table.add_column("客户端", style="bold")
+    table.add_column("CLI")
+    table.add_column("MCP")
+    table.add_column("技能")
+    for status in statuses:
+        table.add_row(
+            status.name,
+            "[green]可用[/green]" if status.cli_available else "[red]缺失[/red]",
+            "[green]已注册[/green]" if status.mcp_registered else "[dim]—[/dim]",
+            ", ".join(status.installed_skills) or "[dim]—[/dim]",
+        )
+    console.print(table)
+    console.print()
+
+
+@client_group.command("doctor")
+@click.argument("clients", nargs=-1, required=False)
+def client_doctor(clients: tuple[str, ...]) -> None:
+    """Run a lightweight health check for supported clients."""
+    try:
+        statuses = inspect_clients(clients or None)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print()
+    console.print(f"[bold]GRaDOS Client Doctor[/bold]  v{__version__}")
+    for status in statuses:
+        console.print(f"[bold]{status.name}[/bold]")
+        console.print(f"  CLI: {'可用' if status.cli_available else '缺失'}")
+        if status.command_path:
+            console.print(f"  可执行文件: {status.command_path}")
+        console.print(f"  MCP: {'已注册' if status.mcp_registered else '未注册'}")
+        console.print(f"  Skill 根目录: {status.skill_root}")
+        console.print(f"  已安装技能: {', '.join(status.installed_skills) or '—'}")
+        for warning in status.warnings:
+            console.print(f"  [yellow]![/yellow] {warning}")
+        console.print()
+
+
+@client_group.command("remove")
+@click.argument("clients", nargs=-1, required=True)
+def client_remove(clients: tuple[str, ...]) -> None:
+    """Remove GRaDOS from one or more clients: claude, codex, or all."""
+    try:
+        statuses = remove_clients(clients)
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print()
+    console.print(f"[bold]GRaDOS Client Remove[/bold]  v{__version__}")
+    table = Table(show_header=True, box=None, padding=(0, 2))
+    table.add_column("客户端", style="bold")
+    table.add_column("MCP")
+    table.add_column("剩余技能")
+    for status in statuses:
+        table.add_row(
+            status.name,
+            "[dim]已移除[/dim]",
+            ", ".join(status.installed_skills) or "—",
+        )
+    console.print(table)
+    console.print()
 
 
 # ── grados migrate-config ────────────────────────────────────────────────────
@@ -372,9 +456,14 @@ def import_pdfs(source: Path, recursive: bool, glob_pattern: str, copy_to_librar
 
 @main.command()
 def status() -> None:
-    """Show GRaDOS health check: version, config, dependencies, API keys."""
+    """Show GRaDOS health check: config, dependencies, assets, and index compatibility."""
+    from grados.storage.embedding import inspect_embedding_runtime
+    from grados.storage.vector import get_index_stats
+
     paths = GRaDOSPaths()
     config = load_config(paths)
+    runtime = inspect_embedding_runtime(paths, config.indexing)
+    stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
 
     console.print()
     console.print(f"[bold]GRaDOS Status[/bold]  v{__version__}")
@@ -389,6 +478,8 @@ def status() -> None:
     table.add_row("配置文件", f"{config_status}  {paths.config_file}")
     table.add_row("数据根目录", str(paths.root))
     table.add_row("调试模式", "开启" if config.debug else "关闭")
+    table.add_row("默认 embedding", config.indexing.model_id)
+    table.add_row("检索管线", "docs → chunks (two-stage)")
     console.print(table)
     console.print()
 
@@ -402,6 +493,9 @@ def status() -> None:
         ("chromadb", "chromadb"),
         ("beautifulsoup4", "bs4"),
         ("lxml", "lxml"),
+        ("sentence-transformers", "sentence_transformers"),
+        ("transformers", "transformers"),
+        ("torch", "torch"),
     ]
     for name, mod in core_deps:
         ok = _check_extra(mod)
@@ -440,7 +534,24 @@ def status() -> None:
     console.print(f"  {'[green]✓[/green]' if browser_ok else '[dim]—[/dim]'}  浏览器 (Chrome for Testing)")
     console.print(f"  {'[green]✓[/green]' if profile_ok else '[dim]—[/dim]'}  浏览器配置 (persistent profile)")
     console.print(f"  {'[green]✓[/green]' if chroma_ok else '[dim]—[/dim]'}  ChromaDB")
-    console.print(f"  {'[green]✓[/green]' if model_ok else '[dim]—[/dim]'}  嵌入模型")
+    console.print(f"  {'[green]✓[/green]' if model_ok else '[dim]—[/dim]'}  嵌入模型缓存")
+    console.print(
+        f"  {'[green]✓[/green]' if all(runtime['dependencies'].values()) else '[yellow]![/yellow]'}  "
+        f"嵌入运行时 ({runtime['runtime']})"
+    )
+    compatibility_mark = "[green]✓[/green]" if not stats["reindex_required"] else "[yellow]![/yellow]"
+    console.print(f"  {compatibility_mark}  索引兼容性")
+    console.print(f"     provider: {runtime['provider']}")
+    console.print(f"     model: {runtime['model_id']}")
+    console.print(f"     query prompt: {runtime['query_prompt_mode']}")
+    console.print(f"     cache: {runtime['cache_dir']}")
+    if stats["embedding_dim"]:
+        console.print(
+            "     indexed dim: "
+            f"{stats['embedding_dim']}  |  papers: {stats['unique_papers']}  chunks: {stats['total_chunks']}"
+        )
+    if stats["reindex_required"]:
+        console.print(f"     {stats['reindex_reason']}")
 
     # API Keys
     console.print()
@@ -499,11 +610,13 @@ def update_db() -> None:
     from grados.storage.vector import get_index_stats, index_all_papers
 
     paths = GRaDOSPaths()
+    config = load_config(paths)
 
     console.print()
     console.print("[bold]GRaDOS Update-DB[/bold]")
     console.print(f"论文目录: [cyan]{paths.papers}[/cyan]")
     console.print(f"ChromaDB: [cyan]{paths.database_chroma}[/cyan]")
+    console.print(f"默认 embedding: [cyan]{config.indexing.model_id}[/cyan]")
     console.print()
 
     if not paths.papers.is_dir():
@@ -515,13 +628,68 @@ def update_db() -> None:
         console.print("[yellow]论文目录为空，无需索引。[/yellow]")
         return
 
+    existing_stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
+    if existing_stats["reindex_required"]:
+        console.print(f"[yellow]{existing_stats['reindex_reason']}[/yellow]")
+        console.print("请先运行 [cyan]grados reindex[/cyan] 以重建整个语义索引。")
+        console.print()
+        return
+
     console.print(f"发现 {len(md_files)} 篇论文，正在索引...", end=" ")
-    papers_indexed, total_chunks = index_all_papers(paths.database_chroma, paths.papers)
+    papers_indexed, total_chunks = index_all_papers(
+        paths.database_chroma,
+        paths.papers,
+        indexing_config=config.indexing,
+    )
     console.print("[green]✓[/green]")
     console.print(f"  已索引 [bold]{papers_indexed}[/bold] 篇论文，共 [bold]{total_chunks}[/bold] 个文本块")
 
-    stats = get_index_stats(paths.database_chroma)
+    stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
     console.print(f"  数据库总计: {stats['unique_papers']} 篇 / {stats['total_chunks']} 块")
+    console.print()
+
+
+@main.command("reindex")
+def reindex() -> None:
+    """Rebuild the entire semantic index from scratch for the active embedding config."""
+    from grados.storage.vector import get_index_stats, index_all_papers
+
+    paths = GRaDOSPaths()
+    config = load_config(paths)
+
+    console.print()
+    console.print("[bold]GRaDOS Reindex[/bold]")
+    console.print(f"论文目录: [cyan]{paths.papers}[/cyan]")
+    console.print(f"ChromaDB: [cyan]{paths.database_chroma}[/cyan]")
+    console.print(f"目标 embedding: [cyan]{config.indexing.model_id}[/cyan]")
+    console.print()
+
+    if paths.database_chroma.exists():
+        shutil.rmtree(paths.database_chroma, ignore_errors=True)
+        console.print("已清空旧索引目录。")
+
+    if not paths.papers.is_dir():
+        console.print("[yellow]论文目录不存在，索引已重置但没有可重建的论文。[/yellow]")
+        console.print()
+        return
+
+    md_files = list(paths.papers.glob("*.md"))
+    if not md_files:
+        console.print("[yellow]论文目录为空，索引已重置。[/yellow]")
+        console.print()
+        return
+
+    console.print(f"发现 {len(md_files)} 篇论文，正在全量重建...", end=" ")
+    papers_indexed, total_chunks = index_all_papers(
+        paths.database_chroma,
+        paths.papers,
+        indexing_config=config.indexing,
+    )
+    console.print("[green]✓[/green]")
+
+    stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
+    console.print(f"  已重建 [bold]{papers_indexed}[/bold] 篇论文，共 [bold]{total_chunks}[/bold] 个文本块")
+    console.print(f"  当前索引: {stats['unique_papers']} 篇 / {stats['total_chunks']} 块")
     console.print()
 
 

@@ -4,11 +4,19 @@ import asyncio
 from pathlib import Path
 
 from grados.server import (
+    audit_draft_support,
+    build_evidence_grid,
+    compare_papers,
     extract_paper_full_text,
+    get_citation_graph,
+    get_papers_full_context,
     get_saved_paper_structure,
     import_local_pdf_library,
+    manage_failure_cases,
     mcp,
+    query_research_artifacts,
     read_saved_paper,
+    save_research_artifact,
     search_saved_papers,
 )
 
@@ -18,15 +26,60 @@ def test_server_registers_expected_tools() -> None:
     tool_names = sorted(tool.name for tool in tools)
 
     assert tool_names == [
+        "audit_draft_support",
+        "build_evidence_grid",
+        "compare_papers",
         "extract_paper_full_text",
+        "get_citation_graph",
+        "get_papers_full_context",
         "get_saved_paper_structure",
         "import_local_pdf_library",
+        "manage_failure_cases",
         "parse_pdf_file",
+        "query_research_artifacts",
         "read_saved_paper",
         "save_paper_to_zotero",
+        "save_research_artifact",
         "search_academic_papers",
         "search_saved_papers",
     ]
+
+
+def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    search_remote = tools["search_academic_papers"]
+    assert "metadata only" in (search_remote.description or "")
+    assert search_remote.parameters["properties"]["query"]["minLength"] == 1
+    assert search_remote.parameters["properties"]["limit"]["maximum"] == 50
+
+    extract = tools["extract_paper_full_text"]
+    assert "compact save receipt" in (extract.description or "")
+    assert "does not change fetch routing" in extract.parameters["properties"]["publisher"]["description"]
+
+    read_tool = tools["read_saved_paper"]
+    assert "Provide one of `doi`, `safe_doi`, or `uri`" in (read_tool.description or "")
+    assert read_tool.parameters["properties"]["start_paragraph"]["minimum"] == 0
+    assert read_tool.parameters["properties"]["max_paragraphs"]["maximum"] == 100
+
+    search_saved = tools["search_saved_papers"]
+    assert "screening hints" in (search_saved.description or "")
+    assert search_saved.parameters["properties"]["limit"]["maximum"] == 25
+
+    artifact = tools["save_research_artifact"]
+    assert "reusable intermediate outputs" in (artifact.description or "")
+    assert "search_snapshot" in artifact.parameters["properties"]["kind"]["description"]
+    assert "project_id" not in artifact.parameters["properties"]
+
+    full_context = tools["get_papers_full_context"]
+    assert "CAG-style deep-reading pass" in (full_context.description or "")
+    assert full_context.parameters["properties"]["max_total_tokens"]["maximum"] == 128000
+
+    audit = tools["audit_draft_support"]
+    assert "claim-level `supported`, `weak`, `unsupported`, or `misattributed`" in (audit.description or "")
+    assert audit.parameters["properties"]["draft_text"]["minLength"] == 1
+    assert "project_id" not in tools["query_research_artifacts"].parameters["properties"]
+    assert "project_id" not in audit.parameters["properties"]
 
 
 def test_server_registers_expected_paper_resources() -> None:
@@ -107,6 +160,12 @@ def test_search_saved_papers_reports_empty_library(tmp_path: Path, monkeypatch) 
     assert "No saved papers found" in result
 
 
+def test_search_saved_papers_rejects_invalid_year_range() -> None:
+    result = asyncio.run(search_saved_papers("composite vibration", year_from=2025, year_to=2024))
+
+    assert "Invalid year range" in result
+
+
 def test_read_saved_paper_can_serve_canonical_record_without_markdown_file(
     tmp_path: Path,
     monkeypatch,
@@ -142,6 +201,12 @@ def test_read_saved_paper_can_serve_canonical_record_without_markdown_file(
     assert "## Reading: 10.1234/demo" in result
     assert "Canonical-only content." in result
     assert "Available Sections" in result
+
+
+def test_read_saved_paper_requires_a_locator() -> None:
+    result = asyncio.run(read_saved_paper())
+
+    assert "Provide at least one of doi, safe_doi, or uri." in result
 
 
 def test_get_saved_paper_structure_returns_compact_structure_card(
@@ -191,6 +256,13 @@ def test_get_saved_paper_structure_returns_compact_structure_card(
     assert result["section_headings"] == ["Abstract", "Methods", "Results"]
 
 
+def test_get_saved_paper_structure_requires_a_locator() -> None:
+    result = asyncio.run(get_saved_paper_structure())
+
+    assert result["found"] is False
+    assert "Provide at least one of doi, safe_doi, or uri." in result["message"]
+
+
 def test_import_local_pdf_library_tool_returns_summary(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
 
@@ -236,7 +308,11 @@ def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path,
         "list_saved_papers",
         lambda papers_dir, chroma_dir=None: [{"doi": "10.1234/demo", "safe_doi": "10_1234_demo", "title": "Demo"}],
     )
-    monkeypatch.setattr(vector, "get_index_stats", lambda chroma_dir: {"unique_papers": 1, "total_chunks": 3})
+    monkeypatch.setattr(
+        vector,
+        "get_index_stats",
+        lambda chroma_dir, **kwargs: {"unique_papers": 1, "total_chunks": 3, "reindex_required": False},
+    )
     monkeypatch.setattr(
         vector,
         "search_papers",
@@ -302,3 +378,150 @@ def test_extract_paper_full_text_writes_asset_manifest(tmp_path: Path, monkeypat
     manifest_file = tmp_path / "grados-home" / "papers" / "_assets" / "10_1234_demo.json"
     assert "Paper Extracted Successfully" in result
     assert manifest_file.is_file()
+
+
+def test_stage_b_state_tools_round_trip(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    artifact = asyncio.run(
+        save_research_artifact(
+            kind="evidence_table",
+            title="Composite Grid",
+            content={"topic": "composite damping", "rows": [{"doi": "10.1234/demo"}]},
+            source_doi="10.1234/demo",
+        )
+    )
+    queried = asyncio.run(query_research_artifacts(kind="evidence_table", detail=True))
+    recorded = asyncio.run(
+        manage_failure_cases(
+            mode="record",
+            failure_type="fetch",
+            doi="10.1234/demo",
+            query_text="composite damping",
+            source="Elsevier TDM",
+            error_message="403 paywall",
+            context={"stage": "extract"},
+        )
+    )
+    suggestion = asyncio.run(
+        manage_failure_cases(
+            mode="suggest_retry",
+            failure_type="fetch",
+            doi="10.1234/demo",
+            query_text="composite damping",
+            source="Elsevier TDM",
+            error_message="403 paywall",
+        )
+    )
+
+    assert artifact["artifact_id"].startswith("artifact_")
+    assert queried["items"][0]["content"]["topic"] == "composite damping"
+    assert recorded["failure_id"].startswith("failure_")
+    assert any("browser-assisted extraction" in item for item in suggestion["suggestions"])
+
+
+def test_stage_b_evidence_tools_are_wired_to_local_library(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.research_tools as research_tools
+
+    documents = [
+        {
+            "doi": "10.1000/a",
+            "safe_doi": "10_1000_a",
+            "title": "Paper A",
+            "year": "2025",
+            "journal": "Composite Structures",
+            "section_headings": ["Abstract", "Methods", "References"],
+            "cites": ["10.1000/shared", "10.1000/b"],
+            "content_markdown": "",
+        },
+        {
+            "doi": "10.1000/b",
+            "safe_doi": "10_1000_b",
+            "title": "Paper B",
+            "year": "2024",
+            "journal": "Engineering Reports",
+            "section_headings": ["Abstract", "Methods", "References"],
+            "cites": ["10.1000/shared"],
+            "content_markdown": "",
+        },
+    ]
+    doc_map = {
+        "10_1000_a": {
+            "doi": "10.1000/a",
+            "safe_doi": "10_1000_a",
+            "title": "Paper A",
+            "authors": ["Smith"],
+            "year": "2025",
+            "journal": "Composite Structures",
+            "section_headings": ["Abstract", "Methods", "Results", "References"],
+            "content_markdown": (
+                "## Abstract\n\nPaper A studies composite damping.\n\n"
+                "## Methods\n\nPaper A uses modal analysis.\n\n"
+                "## Results\n\nComposite damping improves vibration attenuation by 18%.\n\n"
+                "## References\n\n10.1000/shared\n\n10.1000/b"
+            ),
+        },
+        "10_1000_b": {
+            "doi": "10.1000/b",
+            "safe_doi": "10_1000_b",
+            "title": "Paper B",
+            "authors": ["Lee"],
+            "year": "2024",
+            "journal": "Engineering Reports",
+            "section_headings": ["Abstract", "Methods", "References"],
+            "content_markdown": (
+                "## Abstract\n\nPaper B studies vibration control.\n\n"
+                "## Methods\n\nPaper B uses finite-element evaluation.\n\n"
+                "## References\n\n10.1000/shared"
+            ),
+        },
+    }
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        doi = kwargs.get("doi", "")
+        if "attenuation" in query.lower() or "composite damping" in query.lower():
+            if doi and doi != "10.1000/a":
+                return []
+            return [
+                {
+                    "doi": "10.1000/a",
+                    "safe_doi": "10_1000_a",
+                    "title": "Paper A",
+                    "authors": ["Smith"],
+                    "year": "2025",
+                    "journal": "Composite Structures",
+                    "section_name": "Results",
+                    "snippet": "Composite damping improves vibration attenuation by 18%.",
+                    "score": 1.3,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(research_tools, "list_paper_documents", lambda chroma_dir: documents)
+    monkeypatch.setattr(research_tools, "get_paper_document", lambda chroma_dir, safe_doi: doc_map.get(safe_doi))
+    monkeypatch.setattr(research_tools, "search_papers", fake_search_papers)
+
+    graph = asyncio.run(get_citation_graph(mode="neighbors", doi="10.1000/a"))
+    context = asyncio.run(get_papers_full_context(dois=["10.1000/a"], mode="full", max_total_tokens=500))
+    grid = asyncio.run(
+        build_evidence_grid(
+            topic="composite damping",
+            subquestions=["How much attenuation is reported?"],
+            dois=["10.1000/a"],
+        )
+    )
+    comparison = asyncio.run(compare_papers(dois=["10.1000/a", "10.1000/b"], focus="methods"))
+    audit = asyncio.run(
+        audit_draft_support(
+            draft_text="Composite damping improves vibration attenuation by 18% [Smith et al., 2025].",
+            strictness="strict",
+        )
+    )
+
+    assert graph["summary"]["cited_local"][0]["doi"] == "10.1000/b"
+    assert context["papers"][0]["sections"][0]["content"].startswith("## Abstract")
+    assert grid["grids"][0]["rows"][0]["support_strength"] == "high"
+    assert "| Paper |" in comparison["rendered"]
+    assert audit["claims"][0]["status"] == "supported"
