@@ -63,7 +63,7 @@ def test_update_db_command_reports_index_summary(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(
         vector,
         "get_index_stats",
-        lambda chroma_dir, **kwargs: {"unique_papers": 1, "total_chunks": 3, "reindex_required": False},
+        lambda chroma_dir, **kwargs: vector.IndexStats(unique_papers=1, total_chunks=3, reindex_required=False),
     )
 
     runner = CliRunner()
@@ -115,11 +115,14 @@ def test_import_pdfs_command_reports_summary(tmp_path: Path, monkeypatch) -> Non
 def test_optional_install_metadata_matches_runtime_backends() -> None:
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    dependencies = data["project"]["dependencies"]
     extras = data["project"]["optional-dependencies"]
 
     assert set(extras) == {"marker", "docling", "full"}
-    assert extras["full"] == ["grados[marker,docling]"]
-    assert {extra for _, _, extra in _EXTRAS} == {"marker", "docling"}
+    assert "docling" in dependencies
+    assert extras["docling"] == []
+    assert extras["full"] == ["grados[marker]"]
+    assert {extra for _, _, extra in _EXTRAS} == {"marker"}
 
 
 def test_client_install_and_remove_commands_manage_claude_and_codex(tmp_path: Path, monkeypatch) -> None:

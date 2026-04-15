@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from grados.browser.manager import (
     BrowserSession,
@@ -28,23 +30,91 @@ from grados.publisher.common import classify_pdf_content, detect_bot_challenge
 _BROWSER_LABELS = {"managed": "GRaDOS Chrome", "configured": "Chrome", "system": "Chrome"}
 
 
+@dataclass(frozen=True)
+class BrowserFetchResult:
+    pdf_buffer: bytes | None = None
+    source: str = ""
+    outcome: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BrowserPageStrategyContext:
+    page: Any
+    context: Any
+    action_state: dict[str, Any]
+    attempted_urls: set[str]
+    track_page: Callable[[Any], None]
+    pdf_captured: Callable[[], bool]
+    inspect_challenge: Callable[[Any], Awaitable[bool]]
+
+
+class BrowserPageStrategy(Protocol):
+    name: str
+
+    async def run(self, context: BrowserPageStrategyContext) -> None:
+        ...
+
+
+@dataclass(frozen=True)
+class _FunctionBrowserPageStrategy:
+    name: str
+    runner: Callable[[BrowserPageStrategyContext], Awaitable[None]]
+
+    async def run(self, context: BrowserPageStrategyContext) -> None:
+        await self.runner(context)
+
+
+async def _run_sciencedirect_page_strategy(context: BrowserPageStrategyContext) -> None:
+    await sd_try_view_pdf_click(
+        context.page,
+        context.context,
+        context.action_state,
+        context.attempted_urls,
+        context.track_page,
+    )
+    if context.pdf_captured():
+        return
+    await sd_follow_candidates(
+        context.page,
+        context.context,
+        context.action_state,
+        context.attempted_urls,
+        context.track_page,
+        context.pdf_captured,
+        context.inspect_challenge,
+    )
+
+
+async def _run_generic_page_strategy(context: BrowserPageStrategyContext) -> None:
+    await _try_generic_pdf_click(context.page, context.action_state, context.pdf_captured)
+
+
+BROWSER_PAGE_STRATEGY_REGISTRY: dict[str, BrowserPageStrategy] = {
+    "ScienceDirect": _FunctionBrowserPageStrategy("ScienceDirect", _run_sciencedirect_page_strategy),
+    "GenericPdfClick": _FunctionBrowserPageStrategy("GenericPdfClick", _run_generic_page_strategy),
+}
+
+
+def build_browser_page_strategies(order: list[str] | None = None) -> list[BrowserPageStrategy]:
+    resolved_order = order or ["ScienceDirect", "GenericPdfClick"]
+    return [BROWSER_PAGE_STRATEGY_REGISTRY[name] for name in resolved_order if name in BROWSER_PAGE_STRATEGY_REGISTRY]
+
+
 async def fetch_with_browser(
     doi: str,
     config: HeadlessBrowserConfig,
     paths: GRaDOSPaths,
-) -> dict[str, Any]:
-    """Fetch a paper PDF using browser automation.
-
-    Returns dict: pdf_buffer (bytes|None), source (str), outcome (str), warnings (list[str]).
-    """
+) -> BrowserFetchResult:
+    """Fetch a paper PDF using browser automation."""
     resolution = resolve_browser_executable(config, paths)
     if not resolution:
-        return {
-            "pdf_buffer": None,
-            "source": "Headless Browser",
-            "outcome": "no_browser",
-            "warnings": ["No compatible browser executable found. Run 'grados setup'."],
-        }
+        return BrowserFetchResult(
+            pdf_buffer=None,
+            source="Headless Browser",
+            outcome="no_browser",
+            warnings=["No compatible browser executable found. Run 'grados setup'."],
+        )
 
     browser_label = _BROWSER_LABELS.get(resolution.source, resolution.browser)
     retain = config.reuse_interactive_window and config.keep_interactive_window_open
@@ -182,6 +252,7 @@ async def fetch_with_browser(
         # ── Main polling loop (2-minute deadline) ──────────────────────────
 
         deadline = time.monotonic() + 120
+        page_strategies = build_browser_page_strategies()
         challenge_prompt_shown = False
 
         while time.monotonic() < deadline and not pdf_captured():
@@ -201,20 +272,20 @@ async def fetch_with_browser(
                 if pdf_captured():
                     break
 
-                # ScienceDirect flow
                 state = get_action_state(page)
-                await sd_try_view_pdf_click(page, context, state, attempted_urls, _track_page)
-                if pdf_captured():
-                    break
-                await sd_follow_candidates(
-                    page, context, state, attempted_urls, _track_page,
-                    pdf_captured, inspect_challenge,
+                strategy_context = BrowserPageStrategyContext(
+                    page=page,
+                    context=context,
+                    action_state=state,
+                    attempted_urls=attempted_urls,
+                    track_page=_track_page,
+                    pdf_captured=pdf_captured,
+                    inspect_challenge=inspect_challenge,
                 )
-                if pdf_captured():
-                    break
-
-                # Generic publisher flow
-                await _try_generic_pdf_click(page, state, pdf_captured)
+                for strategy in page_strategies:
+                    await strategy.run(strategy_context)
+                    if pdf_captured():
+                        break
                 if pdf_captured():
                     break
 
@@ -251,24 +322,24 @@ async def fetch_with_browser(
                 except Exception:
                     pass
 
-            return {
-                "pdf_buffer": _buf[0],
-                "source": f"Headless Browser ({browser_label})",
-                "outcome": "pdf_obtained",
-                "warnings": [],
-            }
+            return BrowserFetchResult(
+                pdf_buffer=_buf[0],
+                source=f"Headless Browser ({browser_label})",
+                outcome="pdf_obtained",
+                warnings=[],
+            )
 
         # No PDF captured
         if not retain:
             await session.cleanup()
 
         outcome = "publisher_challenge" if challenge_seen else "timed_out"
-        return {
-            "pdf_buffer": None,
-            "source": f"Headless Browser ({browser_label})",
-            "outcome": outcome,
-            "warnings": [f"Browser automation: {outcome}"],
-        }
+        return BrowserFetchResult(
+            pdf_buffer=None,
+            source=f"Headless Browser ({browser_label})",
+            outcome=outcome,
+            warnings=[f"Browser automation: {outcome}"],
+        )
 
     except Exception as e:
         if session and not retain:
@@ -276,12 +347,12 @@ async def fetch_with_browser(
                 await session.cleanup()
             except Exception:
                 pass
-        return {
-            "pdf_buffer": None,
-            "source": f"Headless Browser ({browser_label})",
-            "outcome": "error",
-            "warnings": [str(e)],
-        }
+        return BrowserFetchResult(
+            pdf_buffer=None,
+            source=f"Headless Browser ({browser_label})",
+            outcome="error",
+            warnings=[str(e)],
+        )
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────

@@ -29,7 +29,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 1. 先用 `search_saved_papers`、`get_saved_paper_structure` 或 `grados://papers/{safe_doi}` 检查本地论文库
 2. 按配置好的优先级检索远程学术数据库
 3. 按 `TDM -> OA -> Sci-Hub -> Headless` 瀑布抓取全文
-4. 按 `PyMuPDF -> Marker -> Docling` 瀑布解析 PDF
+4. 按 `Docling -> Marker -> PyMuPDF` 瀑布解析 PDF
 5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把语义检索数据写入 ChromaDB
 6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
 
@@ -78,9 +78,11 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 - `README.md` / `README.zh-CN.md`：主要安装与使用说明
 - `.mcp.json`：仓库内 MCP 配置示例
-- `.claude-plugin/` 和 `.codex-plugin/`：Claude Code 与 Codex 的原生 plugin manifest
+- `.claude-plugin/`：Claude Code 的原生 plugin manifest
 - `.agents/plugins/marketplace.json`：repo-scoped 的 Codex marketplace 条目
-- `plugin.mcp.json`：只注册 `grados` 的插件专用 MCP 配置
+- `plugin.mcp.json`：Claude Code 插件使用的根目录插件专用 MCP 配置
+- `plugins/grados/.codex-plugin/`：给 Codex 本地 marketplace 用的自包含 plugin bundle
+- `plugins/grados/plugin.mcp.json`：复制进 Codex plugin bundle 的插件专用 MCP 配置
 - `skills/grados/SKILL.md`：构建在 MCP 工具之上的结构化科研工作流
 - `grados-python-implementation-plan.md`：实施计划与完成度台账
 - `TODO.md`：从实施计划提炼出的简明执行快照
@@ -95,17 +97,16 @@ grados setup
 grados client install all
 ```
 
-这会创建 `~/GRaDOS/config.json`，准备可见目录结构，安装托管浏览器资产，并预热默认的 Harrier embedding 运行时。
+这会创建 `~/GRaDOS/config.json`，准备可见目录结构，安装托管浏览器资产，并预热默认的 Harrier embedding 运行时。由于当前 canonical 解析链已经改为 Docling 优先，默认安装现在也会自带 `docling`。
 
 ### 方式 B：extras、零安装或 pip
 
 ```bash
-# 核心安装
+# 默认安装（已包含 Docling）
 uv tool install grados
 
-# 安装可选解析器 extras
+# 安装额外的重型解析器
 uv tool install "grados[marker]"
-uv tool install "grados[docling]"
 uv tool install "grados[full]"
 
 # 零安装运行
@@ -117,10 +118,10 @@ pip install grados
 
 当前包的 extras：
 
-- `grados`：核心 MCP 服务、CLI、ChromaDB 存储、默认解析器、浏览器自动化，以及内置 Zotero 保存能力
+- `grados`：核心 MCP 服务、CLI、ChromaDB 存储、Docling-first 默认解析器、PyMuPDF fallback、浏览器自动化，以及内置 Zotero 保存能力
 - `grados[marker]`：在核心上加入 Marker PDF 解析器
-- `grados[docling]`：在核心上加入 Docling PDF 解析器
-- `grados[full]`：同时加入两个较重的解析器
+- `grados[docling]`：为了兼容旧安装说明而保留的空 alias
+- `grados[full]`：在核心上额外加入 Marker 解析器
 
 ### 方式 C：从源码运行
 
@@ -135,7 +136,7 @@ uv run grados status
 
 ### 快速开始 ⚡
 
-1. 用 `uv tool install grados` 安装 GRaDOS
+1. 用 `uv tool install grados` 安装 GRaDOS（现在默认就会安装 Docling）
 2. 运行 `grados setup`
 3. 运行 `grados client install all`，一步接入 Claude Code 和 Codex
 4. 编辑 `~/GRaDOS/config.json`
@@ -188,11 +189,11 @@ command = "uvx"
 args = ["grados"]
 ```
 
-`uvx` 适合零安装启动 MCP。长期本地使用仍建议 `uv tool install grados` 加 `grados` 可执行命令。如果你想指定自定义数据根目录，请在 MCP 客户端环境变量里设置 `GRADOS_HOME`。
+`uvx` 适合零安装启动 MCP。长期本地使用仍建议 `uv tool install grados` 加 `grados` 可执行命令，而且现在会默认带上 Docling。如果你想指定自定义数据根目录，请在 MCP 客户端环境变量里设置 `GRADOS_HOME`。
 
 ### 原生 Plugin 安装 🧩
 
-GRaDOS 现在同时附带 Claude Code 和 Codex 的原生 plugin 元数据，共享同一套仓库根目录下的 `skills/`，并通过 `plugin.mcp.json` 暴露插件专用的 MCP 配置。
+GRaDOS 现在同时附带 Claude Code 和 Codex 的原生 plugin 元数据。Codex 这边采用当前官方推荐的本地 marketplace 结构：`.agents/plugins/marketplace.json` 指向 `plugins/grados/` 这个自包含 bundle，里面镜像了 canonical `skills/grados/` 文件，并带有自己的 `plugin.mcp.json`。
 
 Claude Code：
 
@@ -209,7 +210,7 @@ Codex：
 1. 先 clone 本仓库并在 Codex 中打开它。
 2. 运行 `/plugins` 打开插件目录。
 3. 选择来自 `.agents/plugins/marketplace.json` 的 `GRaDOS Repository Plugins` marketplace。
-4. 安装 `.codex-plugin/plugin.json` 对应的 `GRaDOS` 插件。
+4. 安装 `plugins/grados/.codex-plugin/plugin.json` 对应的 `GRaDOS` 插件。
 5. 新开一个线程后，直接用 `@grados`，或者直接描述科研任务。
 
 这对应的是 Codex 当前官方支持的自定义插件路径：repo marketplace + 插件目录。到目前为止，Codex 官方还没有像 Claude Code 那样公开文档化的任意 GitHub marketplace `/plugin install ...` 工作流。
@@ -217,6 +218,8 @@ Codex：
 ### 配套 Skill 🤖
 
 GRaDOS 仓库仍然自带配套 skill，位置在 `skills/grados/`。现在更推荐优先使用上面的 `grados client install ...` 本地安装路径；plugin 安装适合你明确想走原生 plugin 包装时使用。
+
+Codex plugin bundle 里的 `plugins/grados/skills/grados/` 是对 canonical `skills/grados/` 的镜像副本，这样通过本地 marketplace 安装时插件本身就是自包含的。
 
 - `skills/grados/SKILL.md` 对应当前 `search -> structure -> deep read -> cite -> verify` 工作流
 - `skills/grados/references/tools.md` 记录当前 16 个工具和 2 个资源
@@ -333,7 +336,7 @@ PDF 解析优先级：
 {
   "extract": {
     "parsing": {
-      "order": ["PyMuPDF", "Marker", "Docling"]
+      "order": ["Docling", "Marker", "PyMuPDF"]
     }
   }
 }
@@ -377,3 +380,12 @@ uv run grados version
 uv run pytest
 uv build
 ```
+
+## 项目文档 📚
+
+- [TODO.md](./TODO.md)
+  - 只记录当前未完成事项和优先级。
+- [ADR.md](./ADR.md)
+  - 记录已经接受的架构决策，以及项目为何这样设计。
+- [CHANGELOG.md](./CHANGELOG.md)
+  - 记录已经完成、对用户可见的行为变化和版本演进。

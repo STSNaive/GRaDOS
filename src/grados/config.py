@@ -175,13 +175,13 @@ class HeadlessBrowserConfig(BaseModel):
 
 
 class ParsingConfig(BaseModel):
-    order: list[str] = Field(default=["PyMuPDF", "Marker", "Docling"])
+    order: list[str] = Field(default=["Docling", "Marker", "PyMuPDF"])
     enabled: dict[str, bool] = Field(default_factory=lambda: {
-        "PyMuPDF": True,
+        "Docling": True,
         "Marker": False,
-        "Docling": False,
+        "PyMuPDF": True,
     })
-    marker_timeout: int = 120000
+    marker_timeout: int = Field(default=120000, description="Timeout in milliseconds for isolated Marker parser runs.")
 
 
 class QAConfig(BaseModel):

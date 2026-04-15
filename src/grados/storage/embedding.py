@@ -22,9 +22,9 @@ __all__ = [
 ]
 
 _INDEX_MANIFEST_NAME = "index-manifest.json"
-_INDEX_SCHEMA_VERSION = 2
+_INDEX_SCHEMA_VERSION = 3
 _RETRIEVAL_STRATEGY = "two-stage-v1"
-_CHUNKING_STRATEGY = "section-aware-v1"
+_CHUNKING_STRATEGY = "section-aware-v2"
 _BACKEND_RUNTIME = "sentence-transformers"
 
 

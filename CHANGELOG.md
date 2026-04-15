@@ -11,10 +11,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated embedding backend abstraction with explicit query/document separation, Harrier prompt support, and model warmup in `grados setup`.
 - Added `grados reindex` plus index-manifest compatibility checks so model/chunking changes fail loudly instead of silently mixing old and new embeddings.
 - Added `grados client install|list|doctor|remove` so Claude Code and Codex can be registered from the GRaDOS CLI, including bundled skill installation.
-- Added native plugin distribution metadata for Claude Code and Codex: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.codex-plugin/plugin.json`, `.agents/plugins/marketplace.json`, and a plugin-specific `plugin.mcp.json`.
+- Added native plugin distribution metadata for Claude Code and Codex, including `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`, `plugins/grados/.codex-plugin/plugin.json`, and plugin-scoped `plugin.mcp.json` copies for both plugin surfaces.
 - Added Stage B research-state persistence in `database/research.sqlite3`, including reusable artifact storage and local failure memory.
 - Added 8 Stage B MCP tools: `save_research_artifact`, `query_research_artifacts`, `manage_failure_cases`, `get_citation_graph`, `get_papers_full_context`, `build_evidence_grid`, `compare_papers`, and `audit_draft_support`.
 - Added a lightweight local citation graph layer by extracting reference DOIs into canonical paper metadata (`cites_json`) and exposing neighbor/common-reference/reverse-citation queries.
+- Added a canonical full-text normalization layer so publisher-native XML/HTML and document-style inputs are converted into a shared Markdown contract before indexing and deep reading.
+- Added absolute paragraph-coordinate metadata (`paragraph_start`, `paragraph_count`) to retrieval chunks so search hits can be mapped back to canonical source paragraphs in `papers/*.md`.
+- Added a typed `PaperSearchResult` boundary for the high-frequency local retrieval path so internal search results no longer have to propagate as another loose `dict[str, Any]` contract.
 
 ### Changed
 - Changed semantic retrieval from chunk-only search to abstract-first docs → chunks two-stage retrieval.
@@ -22,8 +25,30 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed `grados setup` to always prepare browser and embedding runtime assets directly, instead of splitting them across `--all` / `--with`.
 - Changed `grados status` to report embedding runtime details, active model, and reindex requirements.
 - Changed the repo-local MCP example from the removed `uvx grados[all]` path to the current `uvx grados`.
+- Changed the Codex plugin packaging to follow the official local marketplace layout more closely, with `.agents/plugins/marketplace.json` pointing at the self-contained `plugins/grados/` bundle instead of the repo root.
 - Changed the local paper contract from "search and deep read only" to a broader Stage B research surface with explicit artifacts, failure memory, citation graph, CAG context packs, and draft-support auditing.
 - Changed the skill and README documentation to reflect the expanded 16-tool MCP surface, the `grados client install ...` workflow, and the merged writing-stage guidance in `skills/grados/SKILL.md`.
+- Changed the default parser/install surface so `uv tool install grados` now includes Docling by default; `grados[docling]` remains as a compatibility alias and `PyMuPDF` is now a fallback parser behind `Docling -> Marker -> PyMuPDF`.
+- Changed source-of-truth semantics so `papers/*.md` is now the user-facing canonical full-text store, while `database/chroma` is treated as a rebuildable retrieval index.
+- Changed `search_saved_papers` from returning index-resident snippets to an "index recall + canonical reread" flow that resolves final evidence windows from `papers/*.md`.
+- Changed Elsevier full-text handling from JSON `originalText` as the primary path to XML-first deterministic parsing, preserving publisher-native sections, authors, keywords, and references before rendering canonical Markdown.
+- Changed Springer native full-text handling so publisher XML/HTML now enters the shared normalization pipeline instead of being flattened early into ad hoc plain text.
+- Changed canonical paper frontmatter and reindex behavior so `authors/year/journal` survive in `papers/*.md`, allowing `grados reindex` to rebuild retrieval metadata from the source library alone.
+- Changed the index manifest to schema version `3` with chunking strategy `section-aware-v2`; existing local indexes must be rebuilt with `grados reindex`.
+- Changed save/import/parse receipts so Chroma indexing failures are surfaced as warnings / partial-success instead of being silently swallowed after the markdown mirror is written.
+- Changed Marker parsing so `config.extract.parsing.marker_timeout` now enforces a real subprocess timeout instead of being a dead config knob; timed-out Marker runs now fall back cleanly to the next parser.
+- Changed parser runtime setup and diagnostics so `grados setup` now prewarms Docling models, while Docling/Marker failures are surfaced through standardized warning/debug messages instead of silent fallbacks.
+- Changed local saved-paper retrieval so lexical fallback and result snippets now prefer canonical content from `papers/*.md` when available, instead of continuing to lean on Chroma doc copies for the final returned evidence text.
+- Changed local saved-paper retrieval so overlapping chunk hits for the same paper are merged into a single canonical paragraph window before evidence is returned, reducing duplicate or fragmented excerpts.
+- Changed canonical save ordering so `save_paper_markdown()` writes `papers/*.md` before refreshing Chroma, preventing index-only state when mirror writes fail.
+- Changed local citation-graph analysis so `research_tools.get_citation_graph` now rebuilds local citation relationships from canonical records in `papers/*.md` instead of depending on Chroma doc listings as an internal source.
+- Changed the canonical paper-store boundary so `load_paper_record()` and `list_saved_papers()` now return explicit dataclasses, with `server`, `importing`, and `research_tools` migrated to attribute-based access instead of loose dict payloads.
+- Changed typed local-search results from transitional dict-compatible wrappers to plain `PaperSearchResult` dataclasses, removing temporary `.get(...)` / item-access compatibility shims after callers were migrated.
+- Changed Stage B research helpers so their internal result boundaries are now explicit dataclasses, with MCP-facing handlers serializing them only at the outer edge instead of propagating nested dict payloads through the service layer.
+- Changed browser fetch and local index-stat payloads to typed result objects, reducing remaining high-frequency `dict[str, Any]` contracts in fetch/search orchestration paths.
+- Changed the MCP server layout from one monolithic `server.py` file to a thin entrypoint plus domain registration modules: `search_tools`, `library_tools`, `research_tools_api`, and `admin_tools`.
+- Changed `fetch`, `parse`, and browser automation orchestration from hard-coded `if/elif` waterfalls to static strategy registries, so new publishers, parsers, and browser flows can be added without inflating the core dispatch loops.
+- Changed the TDM stage from publisher-name branching to a provider registry, and changed non-PDF normalization to a format resolver that maps `markdown/text/html/xml` inputs onto explicit normalization strategies.
 
 ### Removed
 - Removed the Claude-only startup hook at `hooks/hooks.json`.
@@ -32,6 +57,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Tests
 - Added Stage B smoke coverage for research artifacts, failure memory, citation graphs, full-context retrieval, evidence grids, paper comparison, and draft-support auditing.
 - Added smoke coverage for client install flows and plugin manifests.
+- Added regression coverage for Docling-first parsing, Elsevier XML deterministic normalization, and canonical paragraph reread after Chroma retrieval.
+- Added end-to-end regression coverage for the full "index recall + canonical reread" path, including user-facing `search_saved_papers` output after an indexed paper's canonical mirror is updated.
+- Added regression coverage for fetch/parser/browser strategy registries so order preservation and unknown-strategy filtering stay stable during future extensions.
+- Added regression coverage for mirror-first canonical saves so failed `papers/*.md` writes cannot leave Chroma in an index-only state.
 
 ## [0.6.6] - 2026-04-03
 

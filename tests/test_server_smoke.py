@@ -19,6 +19,8 @@ from grados.server import (
     save_research_artifact,
     search_saved_papers,
 )
+from grados.storage.papers import PaperListEntry, save_paper_markdown
+from grados.storage.vector import PaperSearchResult
 
 
 def test_server_registers_expected_tools() -> None:
@@ -92,55 +94,22 @@ def test_server_registers_expected_paper_resources() -> None:
 
 def test_paper_resources_can_be_read_for_index_and_overview(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
-
-    import grados.storage.vector as vector
-
-    monkeypatch.setattr(
-        vector,
-        "list_paper_documents",
-        lambda chroma: [
-            {
-                "doi": "10.1234/demo",
-                "safe_doi": "10_1234_demo",
-                "title": "Demo Paper Title",
-                "source": "Crossref",
-                "fetch_outcome": "native_full_text",
-                "year": "2025",
-                "journal": "Composite Structures",
-                "section_headings": ["Abstract", "Methods"],
-                "word_count": 42,
-                "char_count": 256,
-                "uri": "grados://papers/10_1234_demo",
-                "content_markdown": "# Demo Paper Title",
-            }
-        ],
-    )
-    monkeypatch.setattr(
-        vector,
-        "get_paper_document",
-        lambda chroma, safe: {
-            "doi": "10.1234/demo",
-            "safe_doi": safe,
-            "title": "Demo Paper Title",
-            "source": "Crossref",
-            "fetch_outcome": "native_full_text",
-            "authors": [],
-            "year": "2025",
-            "journal": "Composite Structures",
-            "section_headings": ["Abstract", "Methods"],
-            "assets_manifest_path": "",
-            "content_hash": "hash",
-            "indexed_at": "2026-04-03T00:00:00+00:00",
-            "word_count": 42,
-            "char_count": 256,
-            "content_markdown": (
-                "# Demo Paper Title\n\n"
-                "## Abstract\n\n"
-                "This study investigates layered composite vibration behavior.\n\n"
-                "## Methods\n\n"
-                "The methods section contains the experimental procedure."
-            ),
-        },
+    papers_dir = tmp_path / "grados-home" / "papers"
+    papers_dir.mkdir(parents=True)
+    (papers_dir / "10_1234_demo.md").write_text(
+        '---\n'
+        'doi: "10.1234/demo"\n'
+        'title: "Demo Paper Title"\n'
+        'source: "Crossref"\n'
+        'year: "2025"\n'
+        'journal: "Composite Structures"\n'
+        '---\n\n'
+        "# Demo Paper Title\n\n"
+        "## Abstract\n\n"
+        "This study investigates layered composite vibration behavior.\n\n"
+        "## Methods\n\n"
+        "The methods section contains the experimental procedure.\n",
+        encoding="utf-8",
     )
 
     index_result = asyncio.run(mcp.read_resource("grados://papers/index"))
@@ -166,41 +135,12 @@ def test_search_saved_papers_rejects_invalid_year_range() -> None:
     assert "Invalid year range" in result
 
 
-def test_read_saved_paper_can_serve_canonical_record_without_markdown_file(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
+def test_read_saved_paper_requires_markdown_mirror_source_of_truth(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
-
-    import grados.storage.vector as vector
-
-    monkeypatch.setattr(
-        vector,
-        "get_paper_document",
-        lambda chroma, safe: {
-            "doi": "10.1234/demo",
-            "safe_doi": safe,
-            "title": "Demo Paper Title",
-            "source": "Crossref",
-            "fetch_outcome": "native_full_text",
-            "authors": [],
-            "year": "2025",
-            "journal": "Composite Structures",
-            "section_headings": ["Abstract", "Methods"],
-            "assets_manifest_path": "",
-            "content_hash": "hash",
-            "indexed_at": "2026-04-03T00:00:00+00:00",
-            "word_count": 12,
-            "char_count": 128,
-            "content_markdown": "# Demo Paper Title\n\n## Methods\n\nCanonical-only content.",
-        },
-    )
 
     result = asyncio.run(read_saved_paper(safe_doi="10_1234_demo", section_query="methods"))
 
-    assert "## Reading: 10.1234/demo" in result
-    assert "Canonical-only content." in result
-    assert "Available Sections" in result
+    assert "Paper not found." in result
 
 
 def test_read_saved_paper_requires_a_locator() -> None:
@@ -214,37 +154,25 @@ def test_get_saved_paper_structure_returns_compact_structure_card(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
-
-    import grados.storage.vector as vector
-
-    monkeypatch.setattr(
-        vector,
-        "get_paper_document",
-        lambda chroma, safe: {
-            "doi": "10.1234/demo",
-            "safe_doi": safe,
-            "title": "Demo Paper Title",
-            "source": "Crossref",
-            "fetch_outcome": "native_full_text",
-            "authors": ["Alice", "Bob"],
-            "year": "2025",
-            "journal": "Composite Structures",
-            "section_headings": ["Abstract", "Methods", "Results"],
-            "assets_manifest_path": "",
-            "content_hash": "hash",
-            "indexed_at": "2026-04-03T00:00:00+00:00",
-            "word_count": 42,
-            "char_count": 256,
-            "content_markdown": (
-                "# Demo Paper Title\n\n"
-                "## Abstract\n\n"
-                "This study investigates layered composite vibration behavior.\n\n"
-                "## Methods\n\n"
-                "The methods section contains the experimental procedure.\n\n"
-                "## Results\n\n"
-                "The results section summarizes the outcome."
-            ),
-        },
+    papers_dir = tmp_path / "grados-home" / "papers"
+    papers_dir.mkdir(parents=True)
+    (papers_dir / "10_1234_demo.md").write_text(
+        '---\n'
+        'doi: "10.1234/demo"\n'
+        'title: "Demo Paper Title"\n'
+        'source: "Crossref"\n'
+        'year: "2025"\n'
+        'journal: "Composite Structures"\n'
+        'authors_json: \'["Alice", "Bob"]\'\n'
+        '---\n\n'
+        "# Demo Paper Title\n\n"
+        "## Abstract\n\n"
+        "This study investigates layered composite vibration behavior.\n\n"
+        "## Methods\n\n"
+        "The methods section contains the experimental procedure.\n\n"
+        "## Results\n\n"
+        "The results section summarizes the outcome.\n",
+        encoding="utf-8",
     )
 
     result = asyncio.run(get_saved_paper_structure(safe_doi="10_1234_demo"))
@@ -253,7 +181,7 @@ def test_get_saved_paper_structure_returns_compact_structure_card(
     assert result["canonical_uri"] == "grados://papers/10_1234_demo"
     assert result["title"] == "Demo Paper Title"
     assert result["preview_excerpt"].startswith("This study investigates")
-    assert result["section_headings"] == ["Abstract", "Methods", "Results"]
+    assert result["section_headings"] == ["Demo Paper Title", "Abstract", "Methods", "Results"]
 
 
 def test_get_saved_paper_structure_requires_a_locator() -> None:
@@ -306,29 +234,51 @@ def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path,
     monkeypatch.setattr(
         papers,
         "list_saved_papers",
-        lambda papers_dir, chroma_dir=None: [{"doi": "10.1234/demo", "safe_doi": "10_1234_demo", "title": "Demo"}],
+        lambda papers_dir, chroma_dir=None: [
+            PaperListEntry(
+                file="10_1234_demo.md",
+                doi="10.1234/demo",
+                safe_doi="10_1234_demo",
+                title="Demo",
+            )
+        ],
     )
     monkeypatch.setattr(
         vector,
         "get_index_stats",
-        lambda chroma_dir, **kwargs: {"unique_papers": 1, "total_chunks": 3, "reindex_required": False},
+        lambda chroma_dir, **kwargs: vector.IndexStats(unique_papers=1, total_chunks=3, reindex_required=False),
     )
     monkeypatch.setattr(
         vector,
         "search_papers",
         lambda chroma_dir, query, limit, **kwargs: [
-            {
-                "doi": "10.1234/demo",
-                "safe_doi": "10_1234_demo",
-                "title": "Demo Paper",
-                "authors": ["Alice Smith"],
-                "year": "2025",
-                "journal": "Composite Structures",
-                "source": "Crossref",
-                "score": 2.1,
-                "snippet": "Composite vibration damping is discussed in detail.",
-            }
+            PaperSearchResult(
+                doi="10.1234/demo",
+                safe_doi="10_1234_demo",
+                title="Demo Paper",
+                authors=["Alice Smith"],
+                year="2025",
+                journal="Composite Structures",
+                source="Crossref",
+                score=2.1,
+                paragraph_start=2,
+                paragraph_count=2,
+                snippet="Composite vibration damping is discussed in detail.",
+            )
         ],
+    )
+    monkeypatch.setattr(
+        papers,
+        "read_paper",
+        lambda **kwargs: papers.PaperReadResult(
+            doi="10.1234/demo",
+            text="## Methods\n\nCanonical paragraph window from papers mirror.",
+            start_paragraph=2,
+            paragraph_count=2,
+            total_paragraphs=8,
+            truncated=True,
+            section_headings=["Abstract", "Methods"],
+        ),
     )
 
     result = asyncio.run(
@@ -343,6 +293,75 @@ def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path,
     assert "hybrid reranked" in result
     assert "filters: authors~alice, year=2024..-, journal~Composite" in result
     assert "Composite Structures" in result
+    assert "Paragraphs: 3–4" in result
+    assert "Canonical Excerpt: ## Methods Canonical paragraph window from papers mirror." in result
+
+
+def test_search_saved_papers_end_to_end_rereads_updated_canonical_excerpt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.storage.vector as vector
+
+    class FakeBackend:
+        provider = "test"
+        model_id = "test-backend"
+        query_prompt_mode = "none"
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+
+        def embed_query(self, query: str) -> list[float]:
+            return [1.0, 0.0, 0.0, 0.0]
+
+    monkeypatch.setattr(vector, "load_embedding_backend", lambda config=None: FakeBackend())
+    monkeypatch.setattr(vector, "_ensure_index_compatible", lambda *args, **kwargs: None)
+
+    papers_dir = tmp_path / "grados-home" / "papers"
+    chroma_dir = tmp_path / "grados-home" / "database" / "chroma"
+
+    save_paper_markdown(
+        doi="10.1234/demo-server",
+        markdown=(
+            "# Composite Damping Study\n\n"
+            "## Abstract\n\n"
+            "This study investigates laminate damping behaviour.\n\n"
+            "## Results\n\n"
+            "Indexed wording reports a generic improvement in vibration response.\n\n"
+            "## Discussion\n\n"
+            "Closing discussion paragraph.\n"
+        ),
+        papers_dir=papers_dir,
+        title="Composite Damping Study",
+        source="Crossref",
+        chroma_dir=chroma_dir,
+    )
+
+    (papers_dir / "10_1234_demo_server.md").write_text(
+        '---\n'
+        'doi: "10.1234/demo-server"\n'
+        'title: "Composite Damping Study"\n'
+        'source: "Crossref"\n'
+        'fetched_at: "2026-04-15T00:00:00+00:00"\n'
+        'extraction_status: "OK"\n'
+        "---\n\n"
+        "# Composite Damping Study\n\n"
+        "## Abstract\n\n"
+        "This study investigates laminate damping behaviour.\n\n"
+        "## Results\n\n"
+        "Canonical mirror excerpt confirms attenuation rose by 18 percent after laminate treatment.\n\n"
+        "## Discussion\n\n"
+        "Closing discussion paragraph.\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(search_saved_papers("laminate attenuation treatment"))
+
+    assert "Composite Damping Study" in result
+    assert "Canonical Excerpt:" in result
+    assert "attenuation rose by 18 percent after laminate treatment" in result.lower()
+    assert "indexed wording reports a generic improvement" not in result.lower()
 
 
 def test_extract_paper_full_text_writes_asset_manifest(tmp_path: Path, monkeypatch) -> None:
@@ -378,6 +397,44 @@ def test_extract_paper_full_text_writes_asset_manifest(tmp_path: Path, monkeypat
     manifest_file = tmp_path / "grados-home" / "papers" / "_assets" / "10_1234_demo.json"
     assert "Paper Extracted Successfully" in result
     assert manifest_file.is_file()
+
+
+def test_extract_paper_full_text_reports_partial_success_when_indexing_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.extract.fetch as fetch_module
+    import grados.extract.qa as qa_module
+    import grados.storage.vector as vector
+
+    async def fake_fetch_paper(**kwargs):
+        return fetch_module.FetchResult(
+            text="# Demo Paper Title\n\n## Abstract\n\n" + ("Composite vibration content. " * 80),
+            outcome="native_full_text",
+            source="Elsevier TDM",
+        )
+
+    monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+
+    def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("embedding backend unavailable")
+
+    monkeypatch.setattr(vector, "index_paper", fake_index_paper)
+
+    result = asyncio.run(
+        extract_paper_full_text(
+            doi="10.1234/demo",
+            publisher="Elsevier",
+            expected_title="Demo Paper Title",
+        )
+    )
+
+    assert "Paper Extracted with Partial Success" in result
+    assert "Index Status:** failed" in result
+    assert "saved to papers/ only" in result
 
 
 def test_stage_b_state_tools_round_trip(tmp_path: Path, monkeypatch) -> None:
@@ -425,59 +482,34 @@ def test_stage_b_evidence_tools_are_wired_to_local_library(tmp_path: Path, monke
 
     import grados.research_tools as research_tools
 
-    documents = [
-        {
-            "doi": "10.1000/a",
-            "safe_doi": "10_1000_a",
-            "title": "Paper A",
-            "year": "2025",
-            "journal": "Composite Structures",
-            "section_headings": ["Abstract", "Methods", "References"],
-            "cites": ["10.1000/shared", "10.1000/b"],
-            "content_markdown": "",
-        },
-        {
-            "doi": "10.1000/b",
-            "safe_doi": "10_1000_b",
-            "title": "Paper B",
-            "year": "2024",
-            "journal": "Engineering Reports",
-            "section_headings": ["Abstract", "Methods", "References"],
-            "cites": ["10.1000/shared"],
-            "content_markdown": "",
-        },
-    ]
-    doc_map = {
-        "10_1000_a": {
-            "doi": "10.1000/a",
-            "safe_doi": "10_1000_a",
-            "title": "Paper A",
-            "authors": ["Smith"],
-            "year": "2025",
-            "journal": "Composite Structures",
-            "section_headings": ["Abstract", "Methods", "Results", "References"],
-            "content_markdown": (
-                "## Abstract\n\nPaper A studies composite damping.\n\n"
-                "## Methods\n\nPaper A uses modal analysis.\n\n"
-                "## Results\n\nComposite damping improves vibration attenuation by 18%.\n\n"
-                "## References\n\n10.1000/shared\n\n10.1000/b"
-            ),
-        },
-        "10_1000_b": {
-            "doi": "10.1000/b",
-            "safe_doi": "10_1000_b",
-            "title": "Paper B",
-            "authors": ["Lee"],
-            "year": "2024",
-            "journal": "Engineering Reports",
-            "section_headings": ["Abstract", "Methods", "References"],
-            "content_markdown": (
-                "## Abstract\n\nPaper B studies vibration control.\n\n"
-                "## Methods\n\nPaper B uses finite-element evaluation.\n\n"
-                "## References\n\n10.1000/shared"
-            ),
-        },
-    }
+    papers_dir = tmp_path / "grados-home" / "papers"
+    save_paper_markdown(
+        "10.1000/a",
+        (
+            "## Abstract\n\nPaper A studies composite damping.\n\n"
+            "## Methods\n\nPaper A uses modal analysis.\n\n"
+            "## Results\n\nComposite damping improves vibration attenuation by 18%.\n\n"
+            "## References\n\n10.1000/shared\n\n10.1000/b"
+        ),
+        papers_dir,
+        title="Paper A",
+        authors=["Smith"],
+        year="2025",
+        journal="Composite Structures",
+    )
+    save_paper_markdown(
+        "10.1000/b",
+        (
+            "## Abstract\n\nPaper B studies vibration control.\n\n"
+            "## Methods\n\nPaper B uses finite-element evaluation.\n\n"
+            "## References\n\n10.1000/shared"
+        ),
+        papers_dir,
+        title="Paper B",
+        authors=["Lee"],
+        year="2024",
+        journal="Engineering Reports",
+    )
 
     def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
         doi = kwargs.get("doi", "")
@@ -485,22 +517,20 @@ def test_stage_b_evidence_tools_are_wired_to_local_library(tmp_path: Path, monke
             if doi and doi != "10.1000/a":
                 return []
             return [
-                {
-                    "doi": "10.1000/a",
-                    "safe_doi": "10_1000_a",
-                    "title": "Paper A",
-                    "authors": ["Smith"],
-                    "year": "2025",
-                    "journal": "Composite Structures",
-                    "section_name": "Results",
-                    "snippet": "Composite damping improves vibration attenuation by 18%.",
-                    "score": 1.3,
-                }
+                PaperSearchResult(
+                    doi="10.1000/a",
+                    safe_doi="10_1000_a",
+                    title="Paper A",
+                    authors=["Smith"],
+                    year="2025",
+                    journal="Composite Structures",
+                    section_name="Results",
+                    snippet="Composite damping improves vibration attenuation by 18%.",
+                    score=1.3,
+                )
             ]
         return []
 
-    monkeypatch.setattr(research_tools, "list_paper_documents", lambda chroma_dir: documents)
-    monkeypatch.setattr(research_tools, "get_paper_document", lambda chroma_dir, safe_doi: doc_map.get(safe_doi))
     monkeypatch.setattr(research_tools, "search_papers", fake_search_papers)
 
     graph = asyncio.run(get_citation_graph(mode="neighbors", doi="10.1000/a"))

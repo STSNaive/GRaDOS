@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,66 @@ _DOCS_COLLECTION_NAME = "papers_docs"
 _CHUNKS_COLLECTION_NAME = "papers_chunks"
 _DOC_SUMMARY_MAX_CHARS = 4000
 _DOI_PATTERN = re.compile(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class PaperSearchResult:
+    doi: str
+    safe_doi: str
+    title: str
+    authors: list[str]
+    year: str = ""
+    journal: str = ""
+    source: str = ""
+    score: float = 0.0
+    dense_score: float = 0.0
+    doc_dense_score: float = 0.0
+    chunk_dense_score: float = 0.0
+    lexical_score: float = 0.0
+    section_name: str = ""
+    section_level: int = 0
+    paragraph_start: int = 0
+    paragraph_count: int = 0
+    snippet: str = ""
+
+
+@dataclass(frozen=True)
+class _ChunkWindowCandidate:
+    paragraph_start: int
+    paragraph_count: int
+    score: float
+    dense_score: float
+    doc_dense_score: float
+    chunk_dense_score: float
+    lexical_score: float
+    section_name: str = ""
+    section_level: int = 0
+
+
+@dataclass(frozen=True)
+class _MergedChunkWindow:
+    paragraph_start: int
+    paragraph_count: int
+    score: float
+    dense_score: float
+    doc_dense_score: float
+    chunk_dense_score: float
+    lexical_score: float
+    section_name: str = ""
+    section_level: int = 0
+
+
+@dataclass(frozen=True)
+class IndexStats:
+    total_chunks: int = 0
+    unique_papers: int = 0
+    embedding_provider: str = ""
+    embedding_model: str = ""
+    embedding_dim: int = 0
+    query_prompt_name: str = ""
+    reindex_required: bool = False
+    reindex_reason: str = ""
+    index_manifest_present: bool = False
 
 
 def _get_client(chroma_dir: Path) -> Any:
@@ -75,39 +136,56 @@ def _extract_headings(markdown: str) -> list[str]:
 
 
 def _extract_sections(markdown: str, *, fallback_title: str = "") -> list[dict[str, Any]]:
-    """Split markdown into section objects while preserving heading metadata."""
+    """Split markdown into section objects while preserving absolute paragraph metadata."""
     sections: list[dict[str, Any]] = []
+    paragraphs = _split_paragraphs(markdown)
     current_heading = ""
     current_name = fallback_title.strip() or "Preamble"
     current_level = 0
-    current_lines: list[str] = []
+    current_heading_index: int | None = None
+    current_paragraphs: list[str] = []
+    current_body_start: int | None = None
 
     def flush() -> None:
-        body = "\n".join(current_lines).strip()
-        if not body:
+        if not current_paragraphs:
             return
-        text = f"{current_heading}\n\n{body}".strip() if current_heading else body
+
+        body = "\n\n".join(current_paragraphs).strip()
+        text_parts = [current_heading] if current_heading else []
+        text_parts.extend(current_paragraphs)
+        section_start = current_heading_index
+        if section_start is None:
+            section_start = current_body_start if current_body_start is not None else 0
+
         sections.append(
             {
                 "name": current_name,
                 "level": current_level,
                 "heading": current_heading,
                 "content": body,
-                "text": text,
+                "text": "\n\n".join(part for part in text_parts if part).strip(),
+                "heading_paragraph_index": current_heading_index,
+                "body_paragraph_start": current_body_start if current_body_start is not None else section_start,
+                "paragraph_start": section_start,
+                "paragraph_count": len(current_paragraphs) + (1 if current_heading else 0),
             }
         )
 
-    for raw_line in markdown.splitlines():
-        line = raw_line.strip()
-        match = re.match(r"^(#{1,6})\s+(.+)$", line)
+    for index, paragraph in enumerate(paragraphs):
+        match = re.match(r"^(#{1,6})\s+(.+)$", paragraph)
         if match:
             flush()
-            current_heading = line
+            current_heading = paragraph
             current_name = match.group(2).strip()
             current_level = len(match.group(1))
-            current_lines = []
+            current_heading_index = index
+            current_paragraphs = []
+            current_body_start = None
             continue
-        current_lines.append(raw_line.rstrip())
+
+        if current_body_start is None:
+            current_body_start = index
+        current_paragraphs.append(paragraph)
 
     flush()
     return sections
@@ -132,6 +210,9 @@ def _chunk_text(
         body_paragraphs = _split_paragraphs(str(section["content"]))
         if not body_paragraphs:
             continue
+        body_start = int(section.get("body_paragraph_start", 0) or 0)
+        heading_index = section.get("heading_paragraph_index")
+        has_heading = isinstance(heading_index, int)
 
         start = 0
         while start < len(body_paragraphs):
@@ -154,14 +235,19 @@ def _chunk_text(
 
             parts = [str(section["heading"]).strip()] if section["heading"] else []
             parts.extend(current)
+            paragraph_start = body_start + start
+            paragraph_count = len(current)
+            if start == 0 and has_heading:
+                paragraph_start = int(heading_index)
+                paragraph_count += 1
             chunks.append(
                 {
                     "text": "\n\n".join(part for part in parts if part).strip(),
                     "section_name": str(section["name"]),
                     "section_level": int(section["level"]),
                     "section_index": section_index,
-                    "paragraph_start": start,
-                    "paragraph_count": len(current),
+                    "paragraph_start": paragraph_start,
+                    "paragraph_count": paragraph_count,
                 }
             )
 
@@ -300,6 +386,132 @@ def _doc_metadata(
         "embedding_dim": embedding_dim,
         "embedding_prompt_mode": embedding_prompt_mode,
     }
+
+
+def _resolve_papers_dir(chroma_dir: Path, papers_dir: Path | None = None) -> Path | None:
+    if papers_dir is not None:
+        return papers_dir
+    if not isinstance(chroma_dir, Path):
+        return None
+    if chroma_dir.name == "chroma" and chroma_dir.parent.name == "database":
+        return chroma_dir.parent.parent / "papers"
+    return None
+
+
+def _hydrate_canonical_documents(documents: list[dict[str, Any]], papers_dir: Path | None) -> list[dict[str, Any]]:
+    if papers_dir is None or not papers_dir.is_dir():
+        return documents
+
+    from grados.storage.papers import load_paper_record
+
+    hydrated: list[dict[str, Any]] = []
+    for document in documents:
+        safe_doi = str(document.get("safe_doi", "")).strip()
+        if not safe_doi:
+            continue
+        canonical = load_paper_record(papers_dir, safe_doi=safe_doi)
+        if not canonical:
+            continue
+        hydrated.append({**document, **asdict(canonical)})
+    return hydrated
+
+
+def _canonical_excerpt(record: dict[str, Any], paragraph_start: int, paragraph_count: int) -> str:
+    text = str(record.get("content_markdown", "") or "").strip()
+    if not text:
+        return ""
+    paragraphs = _split_paragraphs(text)
+    if not paragraphs:
+        return ""
+    start = max(0, paragraph_start)
+    if start >= len(paragraphs):
+        return ""
+    count = max(0, paragraph_count)
+    end = len(paragraphs) if count <= 0 else min(len(paragraphs), start + count)
+    return "\n\n".join(paragraphs[start:end]).strip()
+
+
+def _merge_chunk_windows(candidates: list[_ChunkWindowCandidate]) -> _MergedChunkWindow | None:
+    if not candidates:
+        return None
+
+    sorted_candidates = sorted(candidates, key=lambda item: (item.paragraph_start, item.paragraph_count))
+    clusters: list[list[_ChunkWindowCandidate]] = []
+    current_cluster: list[_ChunkWindowCandidate] = []
+    current_end = -1
+
+    for candidate in sorted_candidates:
+        start = max(0, candidate.paragraph_start)
+        end = start + max(0, candidate.paragraph_count)
+        if not current_cluster:
+            current_cluster = [candidate]
+            current_end = end
+            continue
+        if start <= current_end:
+            current_cluster.append(candidate)
+            current_end = max(current_end, end)
+            continue
+        clusters.append(current_cluster)
+        current_cluster = [candidate]
+        current_end = end
+
+    if current_cluster:
+        clusters.append(current_cluster)
+
+    def build_cluster(cluster: list[_ChunkWindowCandidate]) -> _MergedChunkWindow:
+        start = min(max(0, item.paragraph_start) for item in cluster)
+        end = max(max(0, item.paragraph_start) + max(0, item.paragraph_count) for item in cluster)
+        best = max(cluster, key=lambda item: item.score)
+        return _MergedChunkWindow(
+            paragraph_start=start,
+            paragraph_count=max(0, end - start),
+            score=max(item.score for item in cluster),
+            dense_score=max(item.dense_score for item in cluster),
+            doc_dense_score=max(item.doc_dense_score for item in cluster),
+            chunk_dense_score=max(item.chunk_dense_score for item in cluster),
+            lexical_score=max(item.lexical_score for item in cluster),
+            section_name=best.section_name,
+            section_level=best.section_level,
+        )
+
+    merged = [build_cluster(cluster) for cluster in clusters]
+    return max(merged, key=lambda item: (item.score, item.paragraph_count))
+
+
+def _build_search_result(
+    *,
+    record: dict[str, Any],
+    safe_doi: str,
+    score: float,
+    dense_score: float,
+    doc_dense_score: float,
+    chunk_dense_score: float,
+    lexical_score: float,
+    section_name: str = "",
+    section_level: int = 0,
+    paragraph_start: int = 0,
+    paragraph_count: int = 0,
+    snippet: str = "",
+) -> PaperSearchResult:
+    return PaperSearchResult(
+        doi=str(record.get("doi", "")),
+        safe_doi=safe_doi,
+        title=str(record.get("title", "")),
+        authors=[str(value) for value in record.get("authors", []) if str(value)],
+        year=str(record.get("year", "")),
+        journal=str(record.get("journal", "")),
+        source=str(record.get("source", "")),
+        score=score,
+        dense_score=dense_score,
+        doc_dense_score=doc_dense_score,
+        chunk_dense_score=chunk_dense_score,
+        lexical_score=lexical_score,
+        section_name=section_name,
+        section_level=section_level,
+        paragraph_start=paragraph_start,
+        paragraph_count=paragraph_count,
+        snippet=snippet,
+    )
 
 
 def _chunk_metadata(
@@ -533,6 +745,7 @@ def search_papers(
     query: str,
     limit: int = 10,
     *,
+    papers_dir: Path | None = None,
     doi: str = "",
     authors: str = "",
     year_from: int | None = None,
@@ -541,7 +754,7 @@ def search_papers(
     source: str = "",
     use_reranking: bool = True,
     indexing_config: IndexingConfig | None = None,
-) -> list[dict[str, Any]]:
+) -> list[PaperSearchResult]:
     """Two-stage semantic search over docs first, then chunks within candidates."""
     config = _resolve_indexing_config(indexing_config)
     _ensure_index_compatible(chroma_dir, config)
@@ -553,7 +766,10 @@ def search_papers(
     if docs_collection.count() == 0:
         return []
 
-    documents = list_paper_documents(chroma_dir)
+    documents = _hydrate_canonical_documents(
+        list_paper_documents(chroma_dir),
+        _resolve_papers_dir(chroma_dir, papers_dir),
+    )
     filtered_documents = [
         doc for doc in documents if _matches_filters(doc, doi, authors, year_from, year_to, journal, source)
     ]
@@ -577,7 +793,8 @@ def search_papers(
         limit=limit,
     )
 
-    seen: dict[str, dict[str, Any]] = {}
+    seen: dict[str, PaperSearchResult] = {}
+    semantic_windows: dict[str, list[_ChunkWindowCandidate]] = {}
     total_chunks = chunks_collection.count()
     if total_chunks > 0 and doc_scores:
         chunk_limit = min(max(limit * 8, 30), total_chunks)
@@ -612,53 +829,75 @@ def search_papers(
             lexical_score = _lexical_score(doc_text or "", query_terms, anchor_phrase)
             combined_score = _combine_scores(dense_score, lexical_score, use_reranking)
 
-            if safe_doi in seen and combined_score <= seen[safe_doi]["score"]:
-                continue
+            semantic_windows.setdefault(safe_doi, []).append(
+                _ChunkWindowCandidate(
+                    paragraph_start=int(metadata.get("paragraph_start", 0) or 0),
+                    paragraph_count=int(metadata.get("paragraph_count", 0) or 0),
+                    score=combined_score,
+                    dense_score=dense_score,
+                    doc_dense_score=doc_dense,
+                    chunk_dense_score=chunk_dense,
+                    lexical_score=lexical_score,
+                    section_name=str(metadata.get("section_name", "")),
+                    section_level=int(metadata.get("section_level", 0) or 0),
+                )
+            )
 
-            record = document_map[safe_doi]
-            seen[safe_doi] = {
-                "doi": record["doi"],
-                "safe_doi": safe_doi,
-                "title": record["title"],
-                "authors": record.get("authors", []),
-                "year": record.get("year", ""),
-                "journal": record.get("journal", ""),
-                "source": record.get("source", ""),
-                "score": combined_score,
-                "dense_score": dense_score,
-                "doc_dense_score": doc_dense,
-                "chunk_dense_score": chunk_dense,
-                "lexical_score": lexical_score,
-                "section_name": str(metadata.get("section_name", "")),
-                "section_level": int(metadata.get("section_level", 0) or 0),
-                "snippet": _make_snippet(doc_text or record.get("content_markdown", ""), query_terms, anchor_phrase),
-            }
+    for safe_doi, candidates in semantic_windows.items():
+        merged = _merge_chunk_windows(candidates)
+        if merged is None:
+            continue
+        record = document_map[safe_doi]
+        canonical_excerpt = _canonical_excerpt(record, merged.paragraph_start, merged.paragraph_count)
+        seen[safe_doi] = _build_search_result(
+            record=record,
+            safe_doi=safe_doi,
+            score=merged.score,
+            dense_score=merged.dense_score,
+            doc_dense_score=merged.doc_dense_score,
+            chunk_dense_score=merged.chunk_dense_score,
+            lexical_score=merged.lexical_score,
+            section_name=merged.section_name,
+            section_level=merged.section_level,
+            paragraph_start=merged.paragraph_start,
+            paragraph_count=merged.paragraph_count,
+            snippet=canonical_excerpt
+            or _make_snippet(
+                str(record.get("content_markdown", "") or ""),
+                query_terms,
+                anchor_phrase,
+            ),
+        )
 
     for record in filtered_documents:
         safe_doi = record["safe_doi"]
         if safe_doi in seen:
             continue
-        lexical_score = _lexical_score(record.get("content_markdown", ""), query_terms, anchor_phrase)
+        content_markdown = str(record.get("content_markdown", "") or "")
+        lexical_score = _lexical_score(content_markdown, query_terms, anchor_phrase)
         if lexical_score <= 0:
             continue
         doc_dense = doc_scores.get(safe_doi, 0.0)
-        seen[safe_doi] = {
-            "doi": record["doi"],
-            "safe_doi": safe_doi,
-            "title": record["title"],
-            "authors": record.get("authors", []),
-            "year": record.get("year", ""),
-            "journal": record.get("journal", ""),
-            "source": record.get("source", ""),
-            "score": _combine_scores(doc_dense, lexical_score, use_reranking),
-            "dense_score": doc_dense,
-            "doc_dense_score": doc_dense,
-            "chunk_dense_score": 0.0,
-            "lexical_score": lexical_score,
-            "snippet": _make_snippet(record.get("content_markdown", ""), query_terms, anchor_phrase),
-        }
+        paragraph_start, paragraph_count = _paragraph_window_for_query(
+            content_markdown,
+            query_terms,
+            anchor_phrase,
+        )
+        seen[safe_doi] = _build_search_result(
+            record=record,
+            safe_doi=safe_doi,
+            score=_combine_scores(doc_dense, lexical_score, use_reranking),
+            dense_score=doc_dense,
+            doc_dense_score=doc_dense,
+            chunk_dense_score=0.0,
+            lexical_score=lexical_score,
+            paragraph_start=paragraph_start,
+            paragraph_count=paragraph_count,
+            snippet=_canonical_excerpt(record, paragraph_start, paragraph_count)
+            or _make_snippet(content_markdown, query_terms, anchor_phrase),
+        )
 
-    return sorted(seen.values(), key=lambda item: item["score"], reverse=True)[:limit]
+    return sorted(seen.values(), key=lambda item: item.score, reverse=True)[:limit]
 
 
 def _select_doc_candidates(
@@ -927,6 +1166,31 @@ def _make_snippet(text: str, query_terms: list[str], anchor_phrase: str, max_cha
     return compact[:max_chars] + ("..." if len(compact) > max_chars else "")
 
 
+def _paragraph_window_for_query(text: str, query_terms: list[str], anchor_phrase: str) -> tuple[int, int]:
+    paragraphs = _split_paragraphs(text)
+    if not paragraphs:
+        return 0, 0
+
+    paragraph_scores = [_lexical_score(paragraph, query_terms, anchor_phrase) for paragraph in paragraphs]
+    best_index = max(range(len(paragraphs)), key=lambda index: paragraph_scores[index])
+    best_score = paragraph_scores[best_index]
+    if best_score <= 0:
+        return 0, 0
+
+    start = best_index
+    end = best_index
+
+    while start > 0 and paragraph_scores[start - 1] > 0:
+        start -= 1
+    while end + 1 < len(paragraphs) and paragraph_scores[end + 1] > 0:
+        end += 1
+
+    if start > 0 and re.match(r"^#{1,6}\s+", paragraphs[start - 1]):
+        start -= 1
+
+    return start, (end - start) + 1
+
+
 def index_all_papers(
     chroma_dir: Path,
     papers_dir: Path,
@@ -961,7 +1225,7 @@ def index_all_papers(
             markdown=body,
             source=metadata.get("source", ""),
             fetch_outcome=metadata.get("fetch_outcome", ""),
-            authors=None,
+            authors=_parse_frontmatter_authors(metadata),
             year=metadata.get("year", ""),
             journal=metadata.get("journal", ""),
             section_headings=headings,
@@ -976,30 +1240,39 @@ def get_index_stats(
     chroma_dir: Path,
     *,
     indexing_config: IndexingConfig | None = None,
-) -> dict[str, Any]:
+) -> IndexStats:
     """Return index stats plus compatibility / migration hints."""
     config = _resolve_indexing_config(indexing_config)
     compatibility = inspect_index_compatibility(chroma_dir, config)
     manifest = compatibility.get("manifest") or read_index_manifest(chroma_dir) or {}
 
-    stats: dict[str, Any] = {
-        "total_chunks": 0,
-        "unique_papers": 0,
-        "embedding_provider": str(manifest.get("provider", config.provider)),
-        "embedding_model": str(manifest.get("model_id", config.model_id)),
-        "embedding_dim": int(manifest.get("embedding_dim", 0) or 0),
-        "query_prompt_name": str(manifest.get("query_prompt_name", config.query_prompt_name)),
-        "reindex_required": bool(compatibility.get("reindex_required", False)),
-        "reindex_reason": str(compatibility.get("reason", "")),
-        "index_manifest_present": bool(manifest),
-    }
+    stats = IndexStats(
+        total_chunks=0,
+        unique_papers=0,
+        embedding_provider=str(manifest.get("provider", config.provider)),
+        embedding_model=str(manifest.get("model_id", config.model_id)),
+        embedding_dim=int(manifest.get("embedding_dim", 0) or 0),
+        query_prompt_name=str(manifest.get("query_prompt_name", config.query_prompt_name)),
+        reindex_required=bool(compatibility.get("reindex_required", False)),
+        reindex_reason=str(compatibility.get("reason", "")),
+        index_manifest_present=bool(manifest),
+    )
 
     try:
         client = _get_client(chroma_dir)
         docs_collection = _get_docs_collection(client)
         chunks_collection = _get_chunks_collection(client)
-        stats["unique_papers"] = docs_collection.count()
-        stats["total_chunks"] = chunks_collection.count()
+        stats = IndexStats(
+            total_chunks=chunks_collection.count(),
+            unique_papers=docs_collection.count(),
+            embedding_provider=stats.embedding_provider,
+            embedding_model=stats.embedding_model,
+            embedding_dim=stats.embedding_dim,
+            query_prompt_name=stats.query_prompt_name,
+            reindex_required=stats.reindex_required,
+            reindex_reason=stats.reindex_reason,
+            index_manifest_present=stats.index_manifest_present,
+        )
     except Exception:
         pass
 
@@ -1033,3 +1306,17 @@ def _parse_frontmatter_metadata(text: str) -> dict[str, str]:
         key, value = line.split(":", 1)
         metadata[key.strip()] = value.strip().strip('"').strip("'")
     return metadata
+
+
+def _parse_frontmatter_authors(metadata: dict[str, str]) -> list[str] | None:
+    raw = metadata.get("authors_json", "")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list):
+        return None
+    authors = [str(author) for author in payload if str(author)]
+    return authors or None

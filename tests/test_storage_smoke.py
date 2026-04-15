@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from grados.storage.papers import (
+    PaperListEntry,
     get_paper_structure,
     list_saved_papers,
     read_paper,
@@ -21,6 +22,11 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
     import grados.storage.vector as vector
 
     def fake_index_paper(chroma, doi, safe, title, markdown, **kwargs):
+        mirror_path = papers_dir / f"{safe}.md"
+        assert mirror_path.is_file()
+        saved = mirror_path.read_text(encoding="utf-8")
+        assert "# Demo Paper Title" in saved
+        assert 'authors_json: \'["Alice", "Bob"]\'' in saved
         calls.append(
             {
                 "chroma": str(chroma),
@@ -54,12 +60,19 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
         papers_dir=papers_dir,
         title="Demo Paper Title",
         source="Crossref",
+        authors=["Alice", "Bob"],
+        year="2025",
+        journal="Composite Structures",
         chroma_dir=chroma_dir,
     )
 
     assert Path(summary.file_path).is_file()
     assert summary.safe_doi == "10_1234_demo"
     assert summary.uri == "grados://papers/10_1234_demo"
+    saved_content = Path(summary.file_path).read_text(encoding="utf-8")
+    assert 'year: "2025"' in saved_content
+    assert 'journal: "Composite Structures"' in saved_content
+    assert 'authors_json: \'["Alice", "Bob"]\'' in saved_content
     assert calls == [
         {
             "chroma": str(chroma_dir),
@@ -70,9 +83,9 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
             "kwargs": {
                 "source": "Crossref",
                 "fetch_outcome": "",
-                "authors": None,
-                "year": "",
-                "journal": "",
+                "authors": ["Alice", "Bob"],
+                "year": "2025",
+                "journal": "Composite Structures",
                 "section_headings": ["Demo Paper Title", "Abstract", "Methods", "Results"],
                 "assets_manifest_path": "",
             },
@@ -90,18 +103,91 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
     assert read_result.start_paragraph > 0
 
     papers = list_saved_papers(papers_dir)
-    assert papers == [{
-        "file": "10_1234_demo.md",
-        "doi": "10.1234/demo",
-        "title": "Demo Paper Title",
-        "safe_doi": "10_1234_demo",
-    }]
+    assert papers == [
+        PaperListEntry(
+            file="10_1234_demo.md",
+            doi="10.1234/demo",
+            title="Demo Paper Title",
+            safe_doi="10_1234_demo",
+        )
+    ]
 
     pdf_path = save_pdf("10.1234/demo", b"%PDF-1.4\n%stub", downloads_dir)
     assert pdf_path.is_file()
 
 
-def test_read_and_list_can_use_canonical_records_without_markdown_mirror(
+def test_save_paper_markdown_surfaces_index_failure_without_blocking_mirror(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    papers_dir = tmp_path / "papers"
+    chroma_dir = tmp_path / "database" / "chroma"
+
+    import grados.storage.vector as vector
+
+    def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("embedding backend unavailable")
+
+    monkeypatch.setattr(vector, "index_paper", fake_index_paper)
+
+    summary = save_paper_markdown(
+        doi="10.1234/demo",
+        markdown="# Demo\n\n## Abstract\n\n" + ("content " * 40),
+        papers_dir=papers_dir,
+        title="Demo",
+        chroma_dir=chroma_dir,
+    )
+
+    assert Path(summary.file_path).is_file()
+    assert summary.mirror_written is True
+    assert summary.index_status == "failed"
+    assert "embedding backend unavailable" in summary.index_error
+
+
+def test_save_paper_markdown_skips_index_when_mirror_write_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    papers_dir = tmp_path / "papers"
+    chroma_dir = tmp_path / "database" / "chroma"
+    called = False
+
+    import grados.storage.vector as vector
+
+    def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        nonlocal called
+        called = True
+        return 1
+
+    monkeypatch.setattr(vector, "index_paper", fake_index_paper)
+
+    original_write_text = Path.write_text
+
+    def failing_write_text(self: Path, data: str, encoding: str | None = None, errors=None, newline=None) -> int:
+        if self.name == "10_1234_demo.md":
+            raise OSError("disk full")
+        return original_write_text(self, data, encoding=encoding, errors=errors, newline=newline)
+
+    monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+    try:
+        save_paper_markdown(
+            doi="10.1234/demo",
+            markdown="# Demo\n\n## Abstract\n\ncontent",
+            papers_dir=papers_dir,
+            title="Demo",
+            chroma_dir=chroma_dir,
+        )
+    except OSError as exc:
+        assert "disk full" in str(exc)
+    else:
+        raise AssertionError("Expected mirror write failure")
+
+    assert called is False
+    assert not (papers_dir / "10_1234_demo.md").exists()
+
+
+def test_read_and_list_require_markdown_mirror_source_of_truth(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -168,9 +254,7 @@ def test_read_and_list_can_use_canonical_records_without_markdown_mirror(
         chroma_dir=chroma_dir,
     )
 
-    assert frontmatter_result is not None
-    assert frontmatter_result.doi == "10.1234/demo"
-    assert 'doi: "10.1234/demo"' in frontmatter_result.text
+    assert frontmatter_result is None
 
     result = read_paper(
         papers_dir=papers_dir,
@@ -180,20 +264,10 @@ def test_read_and_list_can_use_canonical_records_without_markdown_mirror(
         chroma_dir=chroma_dir,
     )
 
-    assert result is not None
-    assert result.doi == "10.1234/demo"
-    assert "Methods" in result.text
-    assert result.start_paragraph > 0
+    assert result is None
 
     papers = list_saved_papers(papers_dir, chroma_dir=chroma_dir)
-    assert papers == [
-        {
-            "file": "10_1234_demo.md",
-            "doi": "10.1234/demo",
-            "title": "Demo Paper Title",
-            "safe_doi": "10_1234_demo",
-        }
-    ]
+    assert papers == []
 
 
 def test_asset_manifest_is_saved_and_exposed_in_structure_summary(tmp_path: Path, monkeypatch) -> None:
@@ -229,7 +303,7 @@ def test_asset_manifest_is_saved_and_exposed_in_structure_summary(tmp_path: Path
     )
 
     assert structure is not None
-    assert structure.assets_summary["has_assets"] is True
-    assert structure.assets_summary["figures"] == 1
-    assert structure.assets_summary["tables"] == 1
-    assert structure.assets_summary["objects"] == 1
+    assert structure.assets_summary.has_assets is True
+    assert structure.assets_summary.figures == 1
+    assert structure.assets_summary.tables == 1
+    assert structure.assets_summary.objects == 1

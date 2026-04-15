@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from grados.browser.generic import build_browser_page_strategies
 from grados.browser.manager import (
     VIEWPORTS,
     _get_managed_chromium_suffixes,
@@ -38,3 +39,9 @@ def test_pdf_classification_and_bot_detection() -> None:
     assert classify_pdf_content(pdf_data, "application/pdf") == {"is_pdf": True, "reason": "ok"}
     assert classify_pdf_content(html_data, "text/html")["reason"] == "html_or_challenge_page"
     assert detect_bot_challenge("Just a moment...", "<html>captcha</html>", "https://example.com") is True
+
+
+def test_browser_page_strategy_registry_preserves_order_and_filters_unknown_names() -> None:
+    strategies = build_browser_page_strategies(["GenericPdfClick", "Missing", "ScienceDirect"])
+
+    assert [strategy.name for strategy in strategies] == ["GenericPdfClick", "ScienceDirect"]

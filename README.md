@@ -29,7 +29,7 @@ GRaDOS is designed to sit inside an agent research workflow:
 1. Check the local paper library first with `search_saved_papers`, `get_saved_paper_structure`, or `grados://papers/{safe_doi}`
 2. Search remote academic sources in configured priority order
 3. Fetch full text through `TDM -> OA -> Sci-Hub -> Headless`
-4. Parse PDFs through `PyMuPDF -> Marker -> Docling`
+4. Parse PDFs through `Docling -> Marker -> PyMuPDF`
 5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, and semantic data to ChromaDB
 6. Re-open saved papers with low-token structure cards and deep-reading windows before citing them
 
@@ -78,9 +78,11 @@ After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 
 - `README.md` / `README.zh-CN.md`: primary installation and usage guides
 - `.mcp.json`: repo-local MCP wiring example
-- `.claude-plugin/` and `.codex-plugin/`: native plugin manifests for Claude Code and Codex
+- `.claude-plugin/`: native Claude Code plugin manifests
 - `.agents/plugins/marketplace.json`: repo-scoped Codex marketplace entry
-- `plugin.mcp.json`: plugin-scoped MCP config that only registers `grados`
+- `plugin.mcp.json`: root plugin-scoped MCP config used by the Claude Code plugin
+- `plugins/grados/.codex-plugin/`: self-contained Codex plugin bundle for local marketplace installs
+- `plugins/grados/plugin.mcp.json`: plugin-scoped MCP config copied into the Codex bundle
 - `skills/grados/SKILL.md`: structured research workflow built on top of the MCP tools
 - `grados-python-implementation-plan.md`: implementation plan and completion ledger
 - `TODO.md`: concise execution snapshot derived from the implementation plan
@@ -95,17 +97,16 @@ grados setup
 grados client install all
 ```
 
-This creates `~/GRaDOS/config.json`, prepares the visible directory layout, installs managed browser assets, and warms the default Harrier embedding runtime.
+This creates `~/GRaDOS/config.json`, prepares the visible directory layout, installs managed browser assets, and warms the default Harrier embedding runtime. `docling` is now included in the default install because the canonical parsing pipeline is Docling-first.
 
 ### Option B: extras, zero-install, or pip
 
 ```bash
-# Core install
+# Default install (includes Docling)
 uv tool install grados
 
-# Install optional parser extras
+# Optional heavier parser extras
 uv tool install "grados[marker]"
-uv tool install "grados[docling]"
 uv tool install "grados[full]"
 
 # Zero-install run
@@ -117,10 +118,10 @@ pip install grados
 
 Extras in the current package:
 
-- `grados`: core MCP server, CLI, ChromaDB storage, default parser, browser automation, and built-in Zotero save support
+- `grados`: core MCP server, CLI, ChromaDB storage, Docling-first default parser, PyMuPDF fallback, browser automation, and built-in Zotero save support
 - `grados[marker]`: core plus the Marker PDF parser
-- `grados[docling]`: core plus the Docling PDF parser
-- `grados[full]`: core plus both heavier parsers
+- `grados[docling]`: compatibility alias for the built-in Docling runtime
+- `grados[full]`: core plus the Marker parser
 
 ### Option C: from source
 
@@ -135,7 +136,7 @@ uv run grados status
 
 ### Quick Start ⚡
 
-1. Install GRaDOS with `uv tool install grados`
+1. Install GRaDOS with `uv tool install grados` (this now includes Docling by default)
 2. Run `grados setup`
 3. Run `grados client install all` to register Claude Code and Codex in one step
 4. Edit `~/GRaDOS/config.json`
@@ -188,11 +189,11 @@ command = "uvx"
 args = ["grados"]
 ```
 
-Use `uvx` when you want zero-install MCP launching. For long-lived local use, `uv tool install grados` plus the `grados` executable remains the primary path. If you want a custom data root, set `GRADOS_HOME` in your MCP client's environment.
+Use `uvx` when you want zero-install MCP launching. For long-lived local use, `uv tool install grados` plus the `grados` executable remains the primary path, and now brings Docling with it by default. If you want a custom data root, set `GRADOS_HOME` in your MCP client's environment.
 
 ### Native Plugin Install 🧩
 
-GRaDOS now ships native plugin metadata for both Claude Code and Codex, using the same repo-root `skills/` directory and a plugin-specific MCP config at `plugin.mcp.json`.
+GRaDOS now ships native plugin metadata for both Claude Code and Codex. The Codex path follows the current official local marketplace layout: `.agents/plugins/marketplace.json` points at a self-contained bundle under `plugins/grados/`, which mirrors the canonical `skills/grados/` files and includes its own `plugin.mcp.json`.
 
 Claude Code:
 
@@ -209,7 +210,7 @@ Codex:
 1. Clone and open this repository in Codex.
 2. Run `/plugins` to open the plugin directory.
 3. Choose the `GRaDOS Repository Plugins` marketplace from `.agents/plugins/marketplace.json`.
-4. Install the `GRaDOS` plugin from `.codex-plugin/plugin.json`.
+4. Install the `GRaDOS` plugin from `plugins/grados/.codex-plugin/plugin.json`.
 5. Start a new thread and ask Codex to use `@grados`, or describe the research task directly.
 
 This matches the current official Codex flow for custom repo plugins: repo marketplace + plugin directory. Codex does not currently document a public equivalent of Claude Code's `/plugin install owner/repo` workflow for arbitrary GitHub-hosted custom plugins.
@@ -217,6 +218,8 @@ This matches the current official Codex flow for custom repo plugins: repo marke
 ### Companion Skill 🤖
 
 GRaDOS still ships a repo-local skill in `skills/grados/`. The `grados client install ...` flow above is now the preferred path for local use. Plugin install remains the alternative when you specifically want the native plugin packaging.
+
+The Codex plugin bundle under `plugins/grados/skills/grados/` is a mirrored copy of the canonical `skills/grados/` directory so the local marketplace install remains self-contained.
 
 - `skills/grados/SKILL.md` contains the current `search -> structure -> deep read -> cite -> verify` workflow
 - `skills/grados/references/tools.md` documents the current 16 tools and 2 resources
@@ -333,7 +336,7 @@ PDF parsing priority:
 {
   "extract": {
     "parsing": {
-      "order": ["PyMuPDF", "Marker", "Docling"]
+      "order": ["Docling", "Marker", "PyMuPDF"]
     }
   }
 }
@@ -377,3 +380,12 @@ uv run grados version
 uv run pytest
 uv build
 ```
+
+## Project Docs 📚
+
+- [TODO.md](./TODO.md)
+  - Tracks only unfinished work and current priorities.
+- [ADR.md](./ADR.md)
+  - Records accepted architectural decisions and why the project chose them.
+- [CHANGELOG.md](./CHANGELOG.md)
+  - Records completed, user-visible changes across releases and unreleased work.

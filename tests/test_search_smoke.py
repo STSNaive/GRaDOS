@@ -7,7 +7,8 @@ from pathlib import Path
 from grados.config import IndexingConfig, SearchConfig
 from grados.search.academic import CrossrefState, PaperMetadata, PubMedState, SearchPageResult
 from grados.search.resumable import ContinuationData, decode_token, encode_token, run_resumable_search
-from grados.storage.vector import _chunk_text, get_index_stats, index_paper, search_papers
+from grados.storage.papers import save_paper_markdown
+from grados.storage.vector import PaperSearchResult, _chunk_text, get_index_stats, index_paper, search_papers
 
 
 def test_continuation_token_round_trip() -> None:
@@ -206,6 +207,8 @@ def test_search_papers_applies_metadata_filters_and_hybrid_reranking(monkeypatch
                             "title": "Composite Damping Study",
                             "section_name": "Abstract",
                             "section_level": 2,
+                            "paragraph_start": 1,
+                            "paragraph_count": 2,
                         },
                         {
                             "doi": "10.5678/demo-b",
@@ -228,10 +231,13 @@ def test_search_papers_applies_metadata_filters_and_hybrid_reranking(monkeypatch
     )
 
     assert len(results) == 1
-    assert results[0]["doi"] == "10.1234/demo-a"
-    assert results[0]["authors"] == ["Alice Smith", "Bob Lee"]
-    assert results[0]["section_name"] == "Abstract"
-    assert "Composite vibration damping" in results[0]["snippet"]
+    assert isinstance(results[0], PaperSearchResult)
+    assert results[0].doi == "10.1234/demo-a"
+    assert results[0].authors == ["Alice Smith", "Bob Lee"]
+    assert results[0].section_name == "Abstract"
+    assert results[0].paragraph_start == 1
+    assert results[0].paragraph_count == 2
+    assert "Composite vibration damping" in results[0].snippet
 
 
 def test_search_papers_can_fall_back_to_document_level_lexical_matching(monkeypatch) -> None:
@@ -287,8 +293,265 @@ def test_search_papers_can_fall_back_to_document_level_lexical_matching(monkeypa
     )
 
     assert len(results) == 1
-    assert results[0]["doi"] == "10.9999/local"
-    assert results[0]["dense_score"] == 0.0
+    assert isinstance(results[0], PaperSearchResult)
+    assert results[0].doi == "10.9999/local"
+    assert results[0].dense_score == 0.0
+
+
+def test_search_papers_prefers_canonical_markdown_for_lexical_fallback(monkeypatch, tmp_path: Path) -> None:
+    import grados.storage.vector as vector
+
+    papers_dir = tmp_path / "papers"
+    papers_dir.mkdir()
+    (papers_dir / "10_9999_local.md").write_text(
+        "---\n"
+        'doi: "10.9999/local"\n'
+        'title: "Local Composite Notes"\n'
+        "---\n\n"
+        "This canonical paper discusses composite vibration damping in detail.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
+
+    class FakeBackend:
+        def embed_query(self, query: str) -> list[float]:
+            return [0.1, 0.9]
+
+    class FakeDocs:
+        def count(self) -> int:
+            return 1
+
+        def query(self, **kwargs):
+            return {"distances": [[]], "documents": [[]], "metadatas": [[]]}
+
+    monkeypatch.setattr(vector, "load_embedding_backend", lambda config=None: FakeBackend())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: FakeDocs())
+    monkeypatch.setattr(
+        vector,
+        "list_paper_documents",
+        lambda chroma_dir: [
+            {
+                "doi": "10.9999/local",
+                "safe_doi": "10_9999_local",
+                "title": "Local Composite Notes",
+                "source": "Local PDF Library",
+                "fetch_outcome": "local_import",
+                "authors": [],
+                "year": "2026",
+                "journal": "",
+                "section_headings": ["Abstract"],
+                "word_count": 100,
+                "char_count": 700,
+                "uri": "grados://papers/10_9999_local",
+                "content_markdown": "Stale Chroma copy without the relevant lexical terms.",
+            }
+        ],
+    )
+
+    class EmptyChunks:
+        def count(self) -> int:
+            return 0
+
+    monkeypatch.setattr(vector, "_get_chunks_collection", lambda client: EmptyChunks())
+
+    results = search_papers(
+        chroma_dir=tmp_path / "database" / "chroma",
+        papers_dir=papers_dir,
+        query="composite vibration damping",
+        limit=5,
+    )
+
+    assert len(results) == 1
+    assert isinstance(results[0], PaperSearchResult)
+    assert results[0].doi == "10.9999/local"
+    assert "canonical paper discusses composite vibration damping" in results[0].snippet.lower()
+
+
+def test_search_papers_merges_overlapping_chunk_hits_into_one_canonical_window(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import grados.storage.vector as vector
+
+    papers_dir = tmp_path / "papers"
+    papers_dir.mkdir()
+    (papers_dir / "10_1234_demo_a.md").write_text(
+        "---\n"
+        'doi: "10.1234/demo-a"\n'
+        'title: "Composite Damping Study"\n'
+        "---\n\n"
+        "## Results\n\n"
+        "Composite damping improved vibration attenuation by 18%.\n\n"
+        "The resonance peak was also reduced in the same experiment.\n\n"
+        "Residual vibrations became negligible after treatment.\n\n"
+        "An unrelated appendix note.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
+
+    class FakeBackend:
+        def embed_query(self, query: str) -> list[float]:
+            return [0.2, 0.8]
+
+    class FakeDocs:
+        def count(self) -> int:
+            return 1
+
+        def query(self, **kwargs):
+            return {
+                "distances": [[0.05]],
+                "documents": [["Composite damping improved vibration attenuation by 18%."]],
+                "metadatas": [[
+                    {
+                        "doi": "10.1234/demo-a",
+                        "safe_doi": "10_1234_demo_a",
+                        "title": "Composite Damping Study",
+                    }
+                ]],
+            }
+
+    monkeypatch.setattr(vector, "load_embedding_backend", lambda config=None: FakeBackend())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: FakeDocs())
+    monkeypatch.setattr(
+        vector,
+        "list_paper_documents",
+        lambda chroma_dir: [
+            {
+                "doi": "10.1234/demo-a",
+                "safe_doi": "10_1234_demo_a",
+                "title": "Composite Damping Study",
+                "source": "Crossref",
+                "fetch_outcome": "native_full_text",
+                "authors": ["Alice Smith"],
+                "year": "2025",
+                "journal": "Composite Structures",
+                "section_headings": ["Results"],
+                "word_count": 100,
+                "char_count": 800,
+                "uri": "grados://papers/10_1234_demo_a",
+                "content_markdown": "Stale Chroma copy.",
+            }
+        ],
+    )
+
+    class FakeChunks:
+        def count(self) -> int:
+            return 2
+
+        def query(self, **kwargs):
+            return {
+                "distances": [[0.08, 0.12]],
+                "documents": [[
+                    "Composite damping improved vibration attenuation by 18%. The resonance peak was reduced.",
+                    "The resonance peak was reduced. Residual vibrations became negligible after treatment.",
+                ]],
+                "metadatas": [[
+                    {
+                        "doi": "10.1234/demo-a",
+                        "safe_doi": "10_1234_demo_a",
+                        "title": "Composite Damping Study",
+                        "section_name": "Results",
+                        "section_level": 2,
+                        "paragraph_start": 0,
+                        "paragraph_count": 3,
+                    },
+                    {
+                        "doi": "10.1234/demo-a",
+                        "safe_doi": "10_1234_demo_a",
+                        "title": "Composite Damping Study",
+                        "section_name": "Results",
+                        "section_level": 2,
+                        "paragraph_start": 2,
+                        "paragraph_count": 2,
+                    },
+                ]],
+            }
+
+    monkeypatch.setattr(vector, "_get_chunks_collection", lambda client: FakeChunks())
+
+    results = search_papers(
+        chroma_dir=tmp_path / "database" / "chroma",
+        papers_dir=papers_dir,
+        query="composite damping attenuation resonance",
+        limit=5,
+    )
+
+    assert len(results) == 1
+    assert isinstance(results[0], PaperSearchResult)
+    assert results[0].paragraph_start == 0
+    assert results[0].paragraph_count == 4
+    assert "residual vibrations became negligible" in results[0].snippet.lower()
+    assert "unrelated appendix note" not in results[0].snippet.lower()
+
+
+def test_search_papers_end_to_end_rereads_updated_canonical_mirror(monkeypatch, tmp_path: Path) -> None:
+    import grados.storage.vector as vector
+
+    class FakeBackend:
+        provider = "test"
+        model_id = "test-backend"
+        query_prompt_mode = "none"
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+
+        def embed_query(self, query: str) -> list[float]:
+            return [1.0, 0.0, 0.0, 0.0]
+
+    monkeypatch.setattr(vector, "load_embedding_backend", lambda config=None: FakeBackend())
+    monkeypatch.setattr(vector, "_ensure_index_compatible", lambda *args, **kwargs: None)
+
+    papers_dir = tmp_path / "papers"
+    chroma_dir = tmp_path / "database" / "chroma"
+
+    save_paper_markdown(
+        doi="10.1234/demo-e2e",
+        markdown=(
+            "# Composite Damping Study\n\n"
+            "## Abstract\n\n"
+            "This study investigates laminate damping behaviour.\n\n"
+            "## Results\n\n"
+            "Indexed wording reports a generic improvement in vibration response.\n\n"
+            "## Discussion\n\n"
+            "Closing discussion paragraph.\n"
+        ),
+        papers_dir=papers_dir,
+        title="Composite Damping Study",
+        source="Crossref",
+        chroma_dir=chroma_dir,
+    )
+
+    (papers_dir / "10_1234_demo_e2e.md").write_text(
+        '---\n'
+        'doi: "10.1234/demo-e2e"\n'
+        'title: "Composite Damping Study"\n'
+        'source: "Crossref"\n'
+        'fetched_at: "2026-04-15T00:00:00+00:00"\n'
+        'extraction_status: "OK"\n'
+        "---\n\n"
+        "# Composite Damping Study\n\n"
+        "## Abstract\n\n"
+        "This study investigates laminate damping behaviour.\n\n"
+        "## Results\n\n"
+        "Canonical mirror wording says attenuation rose by 18 percent after laminate treatment.\n\n"
+        "## Discussion\n\n"
+        "Closing discussion paragraph.\n",
+        encoding="utf-8",
+    )
+
+    results = search_papers(
+        chroma_dir=chroma_dir,
+        papers_dir=papers_dir,
+        query="laminate attenuation treatment",
+        limit=5,
+    )
+
+    assert len(results) == 1
+    assert isinstance(results[0], PaperSearchResult)
+    assert results[0].doi == "10.1234/demo-e2e"
+    assert "attenuation rose by 18 percent after laminate treatment" in results[0].snippet.lower()
+    assert "indexed wording reports a generic improvement" not in results[0].snippet.lower()
 
 
 def test_chunk_text_uses_section_aware_chunking_with_overlap() -> None:
@@ -312,6 +575,9 @@ def test_chunk_text_uses_section_aware_chunking_with_overlap() -> None:
     assert "Second abstract paragraph" in abstract_chunks[0]["text"]
     assert "Second abstract paragraph" in abstract_chunks[1]["text"]
     assert abstract_chunks[0]["section_level"] == 2
+    methods_chunk = next(chunk for chunk in chunks if chunk["section_name"] == "Methods")
+    assert methods_chunk["paragraph_start"] == 5
+    assert methods_chunk["paragraph_count"] == 2
 
 
 def test_index_paper_writes_real_embeddings_and_section_metadata(tmp_path: Path, monkeypatch) -> None:
@@ -389,22 +655,22 @@ def test_index_paper_writes_real_embeddings_and_section_metadata(tmp_path: Path,
     doc_metadata = fake_docs.last_upsert["metadatas"][0]
     assert doc_metadata["cites_json"] == '["10.9999/example-ref"]'
     stats = get_index_stats(tmp_path / "chroma", indexing_config=IndexingConfig())
-    assert stats["index_manifest_present"] is True
-    assert stats["embedding_model"] == "microsoft/harrier-oss-v1-0.6b"
+    assert stats.index_manifest_present is True
+    assert stats.embedding_model == "microsoft/harrier-oss-v1-0.6b"
 
 
 def test_get_index_stats_reports_reindex_when_manifest_mismatches(tmp_path: Path) -> None:
     chroma_dir = tmp_path / "chroma"
     chroma_dir.mkdir()
     (chroma_dir / "index-manifest.json").write_text(
-        '{"schema_version": 2, "provider": "harrier", "model_id": "all-MiniLM-L6-v2", '
+        '{"schema_version": 3, "provider": "harrier", "model_id": "all-MiniLM-L6-v2", '
         '"max_length": 512, "retrieval_strategy": "two-stage-v1", '
-        '"chunking_strategy": "section-aware-v1", "chunk_min_chars": 300, '
+        '"chunking_strategy": "section-aware-v2", "chunk_min_chars": 300, '
         '"chunk_max_chars": 2000, "chunk_overlap_paragraphs": 1}',
         encoding="utf-8",
     )
 
     stats = get_index_stats(chroma_dir, indexing_config=IndexingConfig())
 
-    assert stats["reindex_required"] is True
-    assert "model_id" in stats["reindex_reason"]
+    assert stats.reindex_required is True
+    assert "model_id" in stats.reindex_reason

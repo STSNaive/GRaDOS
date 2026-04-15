@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import httpx
-from bs4 import BeautifulSoup
 
 
 @dataclass
@@ -24,6 +23,7 @@ class SpringerFetchResult:
     text: str = ""
     pdf_buffer: bytes = b""
     outcome: str = ""  # native_full_text | pdf_obtained | failed
+    text_format: str = ""  # xml | html | markdown | text
     asset_hints: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -95,7 +95,7 @@ async def fetch_springer_article(
     oa_api_key: str,
     client: httpx.AsyncClient,
 ) -> SpringerFetchResult:
-    """Fetch article via Springer APIs: OA JATS → HTML → PDF."""
+    """Fetch article via Springer APIs: OA JATS XML → HTML → PDF."""
     meta = await fetch_springer_meta(doi, meta_api_key, client)
     if not meta:
         return SpringerFetchResult(outcome="failed")
@@ -109,11 +109,11 @@ async def fetch_springer_article(
                 timeout=30,
             )
             if resp.status_code == 200 and resp.text:
-                text = _extract_jats_text(resp.text)
-                if text and len(text) > 1000:
+                if len(resp.text) > 1000:
                     return SpringerFetchResult(
-                        text=text,
+                        text=resp.text,
                         outcome="native_full_text",
+                        text_format="xml",
                         asset_hints=_build_asset_hints(meta),
                     )
         except Exception:
@@ -124,11 +124,11 @@ async def fetch_springer_article(
         try:
             resp = await client.get(meta.html_url, timeout=30, follow_redirects=True)
             if resp.status_code == 200:
-                text = _extract_html_text(resp.text, meta.title, meta.abstract)
-                if text and len(text) > 1000:
+                if resp.text and len(resp.text) > 1000:
                     return SpringerFetchResult(
-                        text=text,
+                        text=resp.text,
                         outcome="native_full_text",
+                        text_format="html",
                         asset_hints=_build_asset_hints(meta),
                     )
         except Exception:
@@ -148,42 +148,3 @@ async def fetch_springer_article(
             pass
 
     return SpringerFetchResult(outcome="failed")
-
-
-def _extract_jats_text(xml: str) -> str:
-    """Extract text from Springer JATS XML."""
-    soup = BeautifulSoup(xml, "lxml-xml")
-    body = soup.find("body")
-    if not body:
-        return ""
-    sections: list[str] = []
-    for sec in body.find_all("sec"):
-        title = sec.find("title")
-        if title:
-            sections.append(f"## {title.get_text(strip=True)}")
-        for p in sec.find_all("p", recursive=False):
-            sections.append(p.get_text(separator=" ", strip=True))
-    return "\n\n".join(sections)
-
-
-def _extract_html_text(html: str, title: str, abstract: str) -> str:
-    """Extract main article text from Springer HTML page."""
-    soup = BeautifulSoup(html, "lxml")
-    parts: list[str] = []
-    if title:
-        parts.append(f"# {title}")
-    if abstract:
-        parts.append(f"## Abstract\n\n{abstract}")
-
-    # Try article body
-    article = soup.find("article") or soup.find("main") or soup
-    for section in article.find_all(["section", "div"], class_=lambda c: c and "section" in str(c).lower()):
-        heading = section.find(["h1", "h2", "h3", "h4"])
-        if heading:
-            parts.append(f"## {heading.get_text(strip=True)}")
-        for p in section.find_all("p", recursive=False):
-            text = p.get_text(separator=" ", strip=True)
-            if text:
-                parts.append(text)
-
-    return "\n\n".join(parts)

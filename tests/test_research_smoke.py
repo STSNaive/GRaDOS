@@ -10,6 +10,8 @@ from grados.research_tools import (
     get_citation_graph,
     get_papers_full_context,
 )
+from grados.storage.papers import save_paper_markdown
+from grados.storage.vector import PaperSearchResult
 
 
 def test_research_artifacts_round_trip(tmp_path: Path) -> None:
@@ -63,93 +65,65 @@ def test_failure_memory_records_queries_and_suggests_retry(tmp_path: Path) -> No
 
 
 def test_citation_graph_full_context_and_compare_papers(monkeypatch, tmp_path: Path) -> None:
-    import grados.research_tools as research_tools
+    chroma_dir = tmp_path / "database" / "chroma"
+    papers_dir = tmp_path / "papers"
 
-    documents = [
-        {
-            "doi": "10.1000/a",
-            "safe_doi": "10_1000_a",
-            "title": "Paper A",
-            "year": "2025",
-            "journal": "Composite Structures",
-            "section_headings": ["Abstract", "Methods", "References"],
-            "cites": ["10.1000/shared", "10.1000/b"],
-            "content_markdown": "",
-        },
-        {
-            "doi": "10.1000/b",
-            "safe_doi": "10_1000_b",
-            "title": "Paper B",
-            "year": "2024",
-            "journal": "Engineering Reports",
-            "section_headings": ["Abstract", "Methods", "References"],
-            "cites": ["10.1000/shared"],
-            "content_markdown": "",
-        },
-    ]
+    save_paper_markdown(
+        "10.1000/a",
+        (
+            "## Abstract\n\n"
+            "Paper A studies composite damping.\n\n"
+            "## Methods\n\n"
+            "Paper A uses modal analysis on laminate plates.\n\n"
+            "## References\n\n"
+            "10.1000/shared\n\n"
+            "10.1000/b"
+        ),
+        papers_dir,
+        title="Paper A",
+        year="2025",
+        journal="Composite Structures",
+    )
+    save_paper_markdown(
+        "10.1000/b",
+        (
+            "## Abstract\n\n"
+            "Paper B studies vibration control.\n\n"
+            "## Methods\n\n"
+            "Paper B uses finite-element evaluation on sandwich panels.\n\n"
+            "## References\n\n"
+            "10.1000/shared"
+        ),
+        papers_dir,
+        title="Paper B",
+        year="2024",
+        journal="Engineering Reports",
+    )
 
-    doc_map = {
-        "10_1000_a": {
-            "doi": "10.1000/a",
-            "safe_doi": "10_1000_a",
-            "title": "Paper A",
-            "year": "2025",
-            "journal": "Composite Structures",
-            "section_headings": ["Abstract", "Methods", "References"],
-            "content_markdown": (
-                "## Abstract\n\n"
-                "Paper A studies composite damping.\n\n"
-                "## Methods\n\n"
-                "Paper A uses modal analysis on laminate plates.\n\n"
-                "## References\n\n"
-                "10.1000/shared\n\n"
-                "10.1000/b"
-            ),
-        },
-        "10_1000_b": {
-            "doi": "10.1000/b",
-            "safe_doi": "10_1000_b",
-            "title": "Paper B",
-            "year": "2024",
-            "journal": "Engineering Reports",
-            "section_headings": ["Abstract", "Methods", "References"],
-            "content_markdown": (
-                "## Abstract\n\n"
-                "Paper B studies vibration control.\n\n"
-                "## Methods\n\n"
-                "Paper B uses finite-element evaluation on sandwich panels.\n\n"
-                "## References\n\n"
-                "10.1000/shared"
-            ),
-        },
-    }
-
-    monkeypatch.setattr(research_tools, "list_paper_documents", lambda chroma_dir: documents)
-    monkeypatch.setattr(research_tools, "get_paper_document", lambda chroma_dir, safe_doi: doc_map.get(safe_doi))
-
-    graph = get_citation_graph(tmp_path / "chroma", mode="neighbors", doi="10.1000/a")
+    graph = get_citation_graph(chroma_dir, mode="neighbors", doi="10.1000/a")
     common = get_citation_graph(
-        tmp_path / "chroma",
+        chroma_dir,
         mode="common_references",
         dois=["10.1000/a", "10.1000/b"],
     )
     context = get_papers_full_context(
-        tmp_path / "chroma",
+        chroma_dir,
         dois=["10.1000/a"],
         mode="full",
         max_total_tokens=500,
     )
     comparison = compare_papers(
-        tmp_path / "chroma",
+        chroma_dir,
         dois=["10.1000/a", "10.1000/b"],
         focus="methods",
         comparison_axes=["method"],
     )
 
-    assert graph["summary"]["cited_local"][0]["doi"] == "10.1000/b"
-    assert common["common_references"][0]["doi"] == "10.1000/shared"
-    assert context["papers"][0]["sections"][0]["content"].startswith("## Abstract")
-    assert "| Paper | method |" in comparison["rendered"]
+    assert graph.summary is not None
+    assert graph.summary.cited_local[0].doi == "10.1000/b"
+    assert common.common_references[0].doi == "10.1000/shared"
+    assert context.papers[0].sections[0].content.startswith("## Abstract")
+    assert "| Paper | method |" in comparison.rendered
 
 
 def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path) -> None:
@@ -159,31 +133,31 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
         doi = kwargs.get("doi", "")
         if "composite damping" in query.lower() and doi in {"", "10.1234/demo"}:
             return [
-                {
-                    "doi": "10.1234/demo",
-                    "safe_doi": "10_1234_demo",
-                    "title": "Composite Damping Study",
-                    "authors": ["Smith", "Lee"],
-                    "year": "2025",
-                    "journal": "Composite Structures",
-                    "section_name": "Results",
-                    "snippet": "Composite damping improved vibration attenuation by 18%.",
-                    "score": 1.35,
-                }
+                PaperSearchResult(
+                    doi="10.1234/demo",
+                    safe_doi="10_1234_demo",
+                    title="Composite Damping Study",
+                    authors=["Smith", "Lee"],
+                    year="2025",
+                    journal="Composite Structures",
+                    section_name="Results",
+                    snippet="Composite damping improved vibration attenuation by 18%.",
+                    score=1.35,
+                )
             ]
         if "baseline mismatch" in query.lower():
             return [
-                {
-                    "doi": "10.5555/other",
-                    "safe_doi": "10_5555_other",
-                    "title": "Other Study",
-                    "authors": ["Garcia"],
-                    "year": "2024",
-                    "journal": "Mechanical Systems",
-                    "section_name": "Discussion",
-                    "snippet": "A different baseline was evaluated.",
-                    "score": 0.9,
-                }
+                PaperSearchResult(
+                    doi="10.5555/other",
+                    safe_doi="10_5555_other",
+                    title="Other Study",
+                    authors=["Garcia"],
+                    year="2024",
+                    journal="Mechanical Systems",
+                    section_name="Discussion",
+                    snippet="A different baseline was evaluated.",
+                    score=0.9,
+                )
             ]
         return []
 
@@ -206,6 +180,6 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
         strictness="strict",
     )
 
-    assert grid["grids"][0]["rows"][0]["support_strength"] == "high"
-    assert supported["claims"][0]["status"] == "supported"
-    assert misattributed["claims"][0]["status"] == "misattributed"
+    assert grid.grids[0].rows[0].support_strength == "high"
+    assert supported.claims[0].status == "supported"
+    assert misattributed.claims[0].status == "misattributed"

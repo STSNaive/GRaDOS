@@ -104,11 +104,11 @@ def test_migrate_legacy_install_copies_assets_and_skips_lancedb(tmp_path: Path) 
     assert result.wrote_config is True
     assert migrated_config["debug"] is True
     assert migrated_config["academic_etiquette_email"] == "research@example.edu"
-    assert migrated_config["extract"]["parsing"]["order"] == ["Marker", "PyMuPDF"]
+    assert migrated_config["extract"]["parsing"]["order"] == ["Docling", "Marker", "PyMuPDF"]
     assert migrated_config["extract"]["parsing"]["enabled"] == {
         "PyMuPDF": True,
         "Marker": True,
-        "Docling": False,
+        "Docling": True,
     }
     assert "localRag" not in migrated_config
     assert migrated_config["api_keys"]["ELSEVIER_API_KEY"] == "elsevier-key"

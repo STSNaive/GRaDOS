@@ -289,7 +289,7 @@ def build_migrated_config(
     data["extract"]["parsing"]["enabled"] = {
         "PyMuPDF": bool(raw_parsing_enabled.get("Native", True)),
         "Marker": bool(raw_parsing_enabled.get("Marker", False)),
-        "Docling": bool(raw_parsing_enabled.get("Docling", False)),
+        "Docling": bool(raw_parsing_enabled.get("Docling", True)),
     }
     data["extract"]["parsing"]["marker_timeout"] = int(
         parsing_cfg.get("markerTimeout", data["extract"]["parsing"]["marker_timeout"])
@@ -391,7 +391,7 @@ def _bool_map(value: Any, default: dict[str, bool]) -> dict[str, bool]:
 
 
 def _migrate_parser_order(order: list[str]) -> list[str]:
-    mapped: list[str] = []
+    mapped: list[str] = ["Docling"]
     for item in order:
         normalized = item.strip()
         replacement = {
@@ -404,7 +404,7 @@ def _migrate_parser_order(order: list[str]) -> list[str]:
             mapped.append(replacement)
 
     if "PyMuPDF" not in mapped:
-        mapped.insert(0, "PyMuPDF")
+        mapped.append("PyMuPDF")
 
     return mapped
 

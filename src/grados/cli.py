@@ -35,7 +35,6 @@ def _check_extra(module_name: str) -> bool:
 _EXTRAS: list[tuple[str, str, str]] = [
     # (display name, module to probe, extra name)
     ("marker-pdf", "marker", "marker"),
-    ("docling", "docling", "docling"),
 ]
 
 
@@ -130,8 +129,12 @@ def setup() -> None:
         console.print(f"[green]已生成[/green] {paths.config_file}")
         console.print("  [dim]请用编辑器打开配置文件填写 API keys[/dim]")
 
-    # 3. Check installed extras
-    console.print("[bold]3/4[/bold] 检测可选依赖...")
+    # 3. Check parser runtime + optional extras
+    console.print("[bold]3/4[/bold] 检测解析器依赖...")
+    docling_ok = _check_extra("docling")
+    docling_mark = "[green]✓[/green]" if docling_ok else "[red]✗[/red]"
+    docling_hint = "" if docling_ok else "  [red]docling 缺失，请重新运行 `uv tool install grados`[/red]"
+    console.print(f"  {docling_mark} docling (默认解析器){docling_hint}")
     for display_name, module_name, extra in _EXTRAS:
         installed = _check_extra(module_name)
         mark = "[green]✓[/green]" if installed else "[dim]—[/dim]"
@@ -176,10 +179,25 @@ def _setup_browser(paths: GRaDOSPaths) -> None:
 
 
 def _setup_models(paths: GRaDOSPaths) -> None:
-    """Pre-download the configured embedding backend and verify query/doc encoding."""
+    """Pre-download parser and embedding runtimes used by the default local stack."""
+    from grados.extract.parse import prewarm_docling_models
     from grados.storage.embedding import load_embedding_backend
 
     config = load_config(paths)
+    console.print("  预热 Docling 模型...", end=" ")
+    try:
+        docling = prewarm_docling_models()
+        if docling.markdown:
+            console.print("[green]✓[/green]")
+        else:
+            console.print("[yellow]跳过[/yellow]")
+            for warning in docling.warnings[:2]:
+                console.print(f"  [dim]{warning}[/dim]")
+            for entry in docling.debug[:2]:
+                console.print(f"  [dim]{entry}[/dim]")
+    except Exception as e:
+        console.print(f"[yellow]跳过: {e}[/yellow]")
+
     console.print(f"  预热嵌入模型 ({config.indexing.model_id})...", end=" ")
     try:
         backend = load_embedding_backend(paths=paths, config=config.indexing)
@@ -429,7 +447,7 @@ def import_pdfs(source: Path, recursive: bool, glob_pattern: str, copy_to_librar
         table.add_column("说明", overflow="fold")
         for item in result.items[:20]:
             identifier = item.doi or item.safe_doi or "—"
-            detail = item.detail or item.copied_pdf_path or "—"
+            detail = "; ".join(item.warnings) or item.detail or item.copied_pdf_path or "—"
             table.add_row(item.status, identifier, item.title or "—", item.source_path, detail)
         console.print(table)
         remaining = len(result.items) - 20
@@ -488,6 +506,7 @@ def status() -> None:
     core_deps = [
         ("fastmcp", "fastmcp"),
         ("httpx", "httpx"),
+        ("docling", "docling"),
         ("pymupdf4llm", "pymupdf4llm"),
         ("patchright", "patchright"),
         ("chromadb", "chromadb"),
@@ -539,19 +558,19 @@ def status() -> None:
         f"  {'[green]✓[/green]' if all(runtime['dependencies'].values()) else '[yellow]![/yellow]'}  "
         f"嵌入运行时 ({runtime['runtime']})"
     )
-    compatibility_mark = "[green]✓[/green]" if not stats["reindex_required"] else "[yellow]![/yellow]"
+    compatibility_mark = "[green]✓[/green]" if not stats.reindex_required else "[yellow]![/yellow]"
     console.print(f"  {compatibility_mark}  索引兼容性")
     console.print(f"     provider: {runtime['provider']}")
     console.print(f"     model: {runtime['model_id']}")
     console.print(f"     query prompt: {runtime['query_prompt_mode']}")
     console.print(f"     cache: {runtime['cache_dir']}")
-    if stats["embedding_dim"]:
+    if stats.embedding_dim:
         console.print(
             "     indexed dim: "
-            f"{stats['embedding_dim']}  |  papers: {stats['unique_papers']}  chunks: {stats['total_chunks']}"
+            f"{stats.embedding_dim}  |  papers: {stats.unique_papers}  chunks: {stats.total_chunks}"
         )
-    if stats["reindex_required"]:
-        console.print(f"     {stats['reindex_reason']}")
+    if stats.reindex_required:
+        console.print(f"     {stats.reindex_reason}")
 
     # API Keys
     console.print()
@@ -629,8 +648,8 @@ def update_db() -> None:
         return
 
     existing_stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
-    if existing_stats["reindex_required"]:
-        console.print(f"[yellow]{existing_stats['reindex_reason']}[/yellow]")
+    if existing_stats.reindex_required:
+        console.print(f"[yellow]{existing_stats.reindex_reason}[/yellow]")
         console.print("请先运行 [cyan]grados reindex[/cyan] 以重建整个语义索引。")
         console.print()
         return
@@ -645,7 +664,7 @@ def update_db() -> None:
     console.print(f"  已索引 [bold]{papers_indexed}[/bold] 篇论文，共 [bold]{total_chunks}[/bold] 个文本块")
 
     stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
-    console.print(f"  数据库总计: {stats['unique_papers']} 篇 / {stats['total_chunks']} 块")
+    console.print(f"  数据库总计: {stats.unique_papers} 篇 / {stats.total_chunks} 块")
     console.print()
 
 
@@ -689,7 +708,7 @@ def reindex() -> None:
 
     stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
     console.print(f"  已重建 [bold]{papers_indexed}[/bold] 篇论文，共 [bold]{total_chunks}[/bold] 个文本块")
-    console.print(f"  当前索引: {stats['unique_papers']} 篇 / {stats['total_chunks']} 块")
+    console.print(f"  当前索引: {stats.unique_papers} 篇 / {stats.total_chunks} 块")
     console.print()
 
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from grados.config import GRaDOSPaths, load_config
-from grados.extract.parse import parse_pdf
+from grados.extract.parse import parse_pdf_with_diagnostics
 from grados.extract.qa import is_valid_paper_content
 from grados.publisher.common import normalize_doi, safe_doi_filename
 from grados.storage.papers import list_saved_papers, save_paper_markdown, save_pdf
@@ -25,6 +25,8 @@ class ImportItemResult:
     title: str = ""
     detail: str = ""
     copied_pdf_path: str = ""
+    warnings: list[str] = field(default_factory=list)
+    debug: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -53,9 +55,9 @@ async def import_local_pdf_library(
 
     pdf_files = _discover_pdf_files(source_path, recursive=recursive, glob_pattern=glob_pattern)
     existing_safe_dois = {
-        item.get("safe_doi", "")
+        item.safe_doi
         for item in list_saved_papers(paths.papers, chroma_dir=paths.database_chroma)
-        if item.get("safe_doi")
+        if item.safe_doi
     }
     seen_hashes: set[str] = set()
 
@@ -87,23 +89,29 @@ async def import_local_pdf_library(
             continue
         seen_hashes.add(pdf_hash)
 
-        parsed = await parse_pdf(
+        parse_result = await parse_pdf_with_diagnostics(
             pdf_bytes,
             filename=pdf_file.name,
             parse_order=config.extract.parsing.order,
             parse_enabled=config.extract.parsing.enabled,
             marker_timeout=config.extract.parsing.marker_timeout,
         )
-        if not parsed:
+        parser_warnings = list(parse_result.warnings)
+        parser_debug = list(parse_result.debug)
+        if not parse_result.markdown:
             result.failed += 1
+            result.warnings.extend(f"{pdf_file.name}: {warning}" for warning in parser_warnings)
             result.items.append(
                 ImportItemResult(
                     source_path=str(pdf_file),
                     status="failed",
                     detail="parse_failed",
+                    warnings=parser_warnings,
+                    debug=parser_debug,
                 )
             )
             continue
+        parsed = parse_result.markdown
 
         doi = _infer_doi(parsed, pdf_file) or f"local-pdf/{pdf_hash[:16]}"
         safe_doi = safe_doi_filename(doi)
@@ -122,8 +130,18 @@ async def import_local_pdf_library(
 
         title = _infer_title(parsed, pdf_file)
         qa_ok = is_valid_paper_content(parsed, config.extract.qa.min_characters, title or None)
+        item_warnings: list[str] = []
+        item_debug: list[str] = parser_debug.copy()
+        detail_tokens: list[str] = []
+        if parser_warnings:
+            result.warnings.extend(f"{pdf_file.name}: {warning}" for warning in parser_warnings)
+            item_warnings.extend(parser_warnings)
+            detail_tokens.append("parser_warning")
         if not qa_ok:
-            result.warnings.append(f"{pdf_file.name}: QA validation failed, imported with warning.")
+            warning = f"{pdf_file.name}: QA validation failed, imported with warning."
+            result.warnings.append(warning)
+            item_warnings.append("QA validation failed — imported anyway.")
+            detail_tokens.append("qa_warning")
 
         copied_pdf_path = ""
         if copy_to_library:
@@ -143,17 +161,29 @@ async def import_local_pdf_library(
             chroma_dir=paths.database_chroma,
         )
         existing_safe_dois.add(summary.safe_doi)
+        if summary.index_status == "failed":
+            warning = (
+                f"{pdf_file.name}: search index refresh failed after canonical mirror save. "
+                f"Error: {summary.index_error}"
+            )
+            result.warnings.append(warning)
+            item_warnings.append(
+                f"Search index refresh failed — paper saved to papers/ only. Error: {summary.index_error}"
+            )
+            detail_tokens.append("index_warning")
 
         result.imported += 1
         result.items.append(
             ImportItemResult(
                 source_path=str(pdf_file),
-                status="imported",
+                status="imported_with_warnings" if item_warnings else "imported",
                 doi=doi,
                 safe_doi=summary.safe_doi,
                 title=title,
-                detail="qa_warning" if not qa_ok else "",
+                detail=",".join(detail_tokens),
                 copied_pdf_path=copied_pdf_path,
+                warnings=item_warnings,
+                debug=item_debug,
             )
         )
 
