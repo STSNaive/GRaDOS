@@ -6,6 +6,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-04-15
+
 ### Added
 - Added Phase A indexing configuration (`config.indexing`) with Harrier 0.6B as the default local embedding model.
 - Added a dedicated embedding backend abstraction with explicit query/document separation, Harrier prompt support, and model warmup in `grados setup`.
