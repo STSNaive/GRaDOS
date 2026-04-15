@@ -311,14 +311,21 @@ async def audit_draft_support(
     ],
     citation_style: Annotated[
         Literal["author_year", "numeric"],
-        Field(description="Citation style used in the draft so GRaDOS can parse citation markers more accurately."),
+        Field(
+            description=(
+                "Citation style used in the draft. "
+                "`author_year` supports attribution checks; `numeric` is currently support-only until "
+                "citation numbers can be mapped back to bibliography entries."
+            )
+        ),
     ] = "author_year",
     strictness: Annotated[
         Literal["strict", "balanced"],
         Field(
             description=(
-                "Strict mode treats mismatched citations as "
-                "`misattributed`; balanced mode softens that to `weak`."
+                "Strict mode treats mismatched resolvable citations as "
+                "`misattributed`; balanced mode softens that to `weak`. "
+                "Numeric citations stay support-only until bibliography mapping exists."
             )
         ),
     ] = "strict",
@@ -401,6 +408,7 @@ def register_research_tools_api(mcp: FastMCP) -> None:
         description=(
             "Audit draft claims against the local paper library. "
             "Returns claim-level `supported`, `weak`, `unsupported`, or "
-            "`misattributed` statuses plus candidate evidence snippets."
+            "`misattributed` statuses plus candidate evidence snippets; "
+            "`misattributed` currently requires resolvable author-year citations."
         )
     )(audit_draft_support)

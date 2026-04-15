@@ -11,7 +11,12 @@ import httpx
 from bs4 import BeautifulSoup
 
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
-from grados.publisher.common import classify_pdf_content, detect_bot_challenge
+from grados.publisher.common import (
+    PublisherMetadata,
+    classify_pdf_content,
+    detect_bot_challenge,
+    normalize_publisher_metadata,
+)
 from grados.publisher.elsevier import ElsevierFetchResult, fetch_elsevier_article
 from grados.publisher.springer import SpringerFetchResult, fetch_springer_article
 
@@ -23,7 +28,7 @@ class FetchResult:
     outcome: str = ""  # native_full_text | pdf_obtained | metadata_only | failed
     source: str = ""  # e.g. "Elsevier TDM", "Unpaywall OA", "Sci-Hub"
     text_format: str = ""  # markdown | text | html | xml
-    metadata: Any = None
+    metadata: PublisherMetadata | None = None
     asset_hints: list[dict[str, str]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -131,10 +136,15 @@ async def _run_elsevier_tdm_provider(context: TDMProviderContext) -> FetchResult
             outcome="native_full_text",
             source="Elsevier TDM",
             text_format=result.text_format,
-            metadata=result.metadata,
+            metadata=normalize_publisher_metadata(result.metadata),
             asset_hints=result.asset_hints,
         )
-    return FetchResult(outcome=result.outcome or "failed")
+    return FetchResult(
+        outcome=result.outcome or "failed",
+        source="Elsevier TDM",
+        metadata=normalize_publisher_metadata(result.metadata),
+        asset_hints=result.asset_hints,
+    )
 
 
 async def _run_springer_tdm_provider(context: TDMProviderContext) -> FetchResult:
@@ -150,6 +160,7 @@ async def _run_springer_tdm_provider(context: TDMProviderContext) -> FetchResult
             outcome="native_full_text",
             source="Springer TDM",
             text_format=result.text_format,
+            metadata=normalize_publisher_metadata(result.metadata),
             asset_hints=result.asset_hints,
         )
     if result.outcome == "pdf_obtained":
@@ -157,9 +168,15 @@ async def _run_springer_tdm_provider(context: TDMProviderContext) -> FetchResult
             pdf_buffer=result.pdf_buffer,
             outcome="pdf_obtained",
             source="Springer TDM",
+            metadata=normalize_publisher_metadata(result.metadata),
             asset_hints=result.asset_hints,
         )
-    return FetchResult(outcome=result.outcome or "failed")
+    return FetchResult(
+        outcome=result.outcome or "failed",
+        source="Springer TDM",
+        metadata=normalize_publisher_metadata(result.metadata),
+        asset_hints=result.asset_hints,
+    )
 
 
 FETCH_STRATEGY_REGISTRY: dict[str, FetchStrategy] = {
@@ -189,6 +206,48 @@ def _is_fetch_success(result: FetchResult) -> bool:
     return result.outcome in {"native_full_text", "pdf_obtained"}
 
 
+def _is_fetch_partial(result: FetchResult) -> bool:
+    return result.outcome == "metadata_only"
+
+
+def _metadata_signal_score(metadata: PublisherMetadata | None) -> int:
+    if metadata is None:
+        return 0
+    return sum(
+        1
+        for value in [
+            metadata.doi.strip(),
+            metadata.title.strip(),
+            metadata.abstract.strip(),
+            metadata.year.strip(),
+            metadata.journal.strip(),
+            metadata.publisher.strip(),
+            metadata.pii.strip(),
+            metadata.eid.strip(),
+            metadata.scidir_url.strip(),
+            metadata.html_url.strip(),
+            metadata.pdf_url.strip(),
+        ]
+        if value
+    ) + len(metadata.authors)
+
+
+def _prefer_partial_result(current: FetchResult | None, candidate: FetchResult) -> FetchResult:
+    if current is None:
+        return candidate
+
+    current_score = _metadata_signal_score(current.metadata) + len(current.asset_hints)
+    candidate_score = _metadata_signal_score(candidate.metadata) + len(candidate.asset_hints)
+    return candidate if candidate_score > current_score else current
+
+
+def _format_fetch_warning(prefix: str, exc: Exception) -> str:
+    detail = str(exc).strip()
+    if detail:
+        return f"{prefix}: {exc.__class__.__name__}: {detail}"
+    return f"{prefix}: {exc.__class__.__name__}"
+
+
 async def fetch_paper(
     doi: str,
     api_keys: dict[str, str],
@@ -205,6 +264,7 @@ async def fetch_paper(
     strategies = build_fetch_strategies(fetch_order)
     enabled = fetch_enabled or {strategy.name: True for strategy in strategies}
     warnings: list[str] = []
+    partial_result: FetchResult | None = None
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
         context = FetchStrategyContext(
@@ -228,6 +288,12 @@ async def fetch_paper(
             if _is_fetch_success(result):
                 result.warnings = warnings.copy()
                 return result
+            if _is_fetch_partial(result):
+                partial_result = _prefer_partial_result(partial_result, result)
+
+    if partial_result is not None:
+        partial_result.warnings = warnings.copy()
+        return partial_result
 
     return FetchResult(outcome="failed", warnings=warnings)
 
@@ -245,6 +311,7 @@ async def _fetch_tdm(
     providers = build_tdm_providers(tdm_order)
     enabled = tdm_enabled or {provider.name: True for provider in providers}
     context = TDMProviderContext(doi=doi, api_keys=api_keys, client=client)
+    partial_result: FetchResult | None = None
 
     for provider in providers:
         if not enabled.get(provider.name, True):
@@ -252,6 +319,11 @@ async def _fetch_tdm(
         result = await provider.run(context)
         if _is_fetch_success(result):
             return result
+        if _is_fetch_partial(result):
+            partial_result = _prefer_partial_result(partial_result, result)
+
+    if partial_result is not None:
+        return partial_result
 
     return FetchResult(outcome="failed")
 
@@ -264,6 +336,7 @@ async def _fetch_oa(
     etiquette_email: str,
     client: httpx.AsyncClient,
 ) -> FetchResult:
+    warnings: list[str] = []
     try:
         resp = await client.get(
             f"https://api.unpaywall.org/v2/{doi}",
@@ -271,7 +344,7 @@ async def _fetch_oa(
             timeout=30,
         )
         if resp.status_code != 200:
-            return FetchResult(outcome="failed")
+            return FetchResult(outcome="failed", warnings=[f"OA lookup failed: HTTP {resp.status_code}"])
 
         locations = resp.json().get("oa_locations", [])
         # Prefer repository sources (arXiv, PMC) over publisher
@@ -287,11 +360,12 @@ async def _fetch_oa(
                 check = classify_pdf_content(pdf_resp.content, ct)
                 if check["is_pdf"]:
                     return FetchResult(pdf_buffer=pdf_resp.content, outcome="pdf_obtained", source="Unpaywall OA")
-            except Exception:
+            except Exception as exc:
+                warnings.append(_format_fetch_warning("OA PDF fetch failed", exc))
                 continue
-    except Exception:
-        pass
-    return FetchResult(outcome="failed")
+    except Exception as exc:
+        warnings.append(_format_fetch_warning("OA lookup failed", exc))
+    return FetchResult(outcome="failed", warnings=warnings)
 
 
 # ── Sci-Hub ──────────────────────────────────────────────────────────────────
@@ -303,6 +377,7 @@ async def _fetch_scihub(
     config: dict[str, Any],
 ) -> FetchResult:
     mirror = config.get("fallback_mirror") or config.get("fallbackMirror") or "https://sci-hub.se"
+    warnings: list[str] = []
 
     try:
         resp = await client.get(
@@ -311,7 +386,7 @@ async def _fetch_scihub(
             timeout=30,
         )
         if resp.status_code != 200:
-            return FetchResult(outcome="failed")
+            return FetchResult(outcome="failed", warnings=[f"Sci-Hub lookup failed: HTTP {resp.status_code}"])
 
         if detect_bot_challenge("", resp.text, f"{mirror}/{doi}"):
             return FetchResult(outcome="failed", warnings=["Sci-Hub challenge detected"])
@@ -319,17 +394,18 @@ async def _fetch_scihub(
         # Extract PDF link
         pdf_url = _extract_scihub_pdf_url(resp.text, mirror)
         if not pdf_url:
-            return FetchResult(outcome="failed")
+            return FetchResult(outcome="failed", warnings=["Sci-Hub lookup failed: no PDF link found"])
 
         pdf_resp = await client.get(pdf_url, timeout=30)
         ct = pdf_resp.headers.get("content-type", "")
         check = classify_pdf_content(pdf_resp.content, ct)
         if check["is_pdf"]:
             return FetchResult(pdf_buffer=pdf_resp.content, outcome="pdf_obtained", source="Sci-Hub")
+        warnings.append(f"Sci-Hub PDF fetch failed: {check['reason']}")
 
-    except Exception:
-        pass
-    return FetchResult(outcome="failed")
+    except Exception as exc:
+        warnings.append(_format_fetch_warning("Sci-Hub fetch failed", exc))
+    return FetchResult(outcome="failed", warnings=warnings)
 
 
 def _extract_scihub_pdf_url(html: str, mirror: str) -> str | None:

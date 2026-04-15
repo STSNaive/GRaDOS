@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from grados.publisher.common import PublisherMetadata
 from grados.server import (
     audit_draft_support,
     build_evidence_grid,
@@ -19,7 +20,7 @@ from grados.server import (
     save_research_artifact,
     search_saved_papers,
 )
-from grados.storage.papers import PaperListEntry, save_paper_markdown
+from grados.storage.papers import PaperListEntry, load_paper_record, save_paper_markdown
 from grados.storage.vector import PaperSearchResult
 
 
@@ -79,6 +80,7 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
 
     audit = tools["audit_draft_support"]
     assert "claim-level `supported`, `weak`, `unsupported`, or `misattributed`" in (audit.description or "")
+    assert "author-year citations" in (audit.description or "")
     assert audit.parameters["properties"]["draft_text"]["minLength"] == 1
     assert "project_id" not in tools["query_research_artifacts"].parameters["properties"]
     assert "project_id" not in audit.parameters["properties"]
@@ -435,6 +437,82 @@ def test_extract_paper_full_text_reports_partial_success_when_indexing_fails(
     assert "Paper Extracted with Partial Success" in result
     assert "Index Status:** failed" in result
     assert "saved to papers/ only" in result
+
+
+def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.extract.fetch as fetch_module
+
+    async def fake_fetch_paper(**kwargs):
+        return fetch_module.FetchResult(
+            outcome="metadata_only",
+            source="Elsevier TDM",
+            metadata=PublisherMetadata(
+                doi="10.1234/demo",
+                title="Metadata Only Demo",
+                authors=["Alice Smith", "Bob Lee"],
+                year="2026",
+                journal="Fallback Journal",
+                publisher="Elsevier",
+            ),
+            asset_hints=[{"kind": "article_landing", "url": "https://example.com/article"}],
+            warnings=["OA lookup failed", "Browser fallback unavailable"],
+        )
+
+    monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
+
+    result = asyncio.run(
+        extract_paper_full_text(
+            doi="10.1234/demo",
+            publisher="Elsevier",
+        )
+    )
+
+    assert "Paper Located but Full Text Unavailable" in result
+    assert "Outcome:** metadata_only" in result
+    assert "Canonical Save:** not_written" in result
+    assert "Metadata Only Demo" in result
+    assert "https://example.com/article" in result
+    assert not (tmp_path / "grados-home" / "papers" / "10_1234_demo.md").exists()
+
+
+def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.extract.fetch as fetch_module
+    import grados.extract.qa as qa_module
+    import grados.storage.vector as vector
+
+    async def fake_fetch_paper(**kwargs):
+        return fetch_module.FetchResult(
+            text="# Typed Metadata Demo\n\n## Abstract\n\n" + ("Composite vibration content. " * 80),
+            outcome="native_full_text",
+            source="Elsevier TDM",
+            metadata=PublisherMetadata(
+                doi="10.1234/demo",
+                title="Typed Metadata Demo",
+                authors=["Alice Smith", "Bob Lee"],
+                year="2025",
+                journal="Composite Structures",
+                publisher="Elsevier",
+            ),
+        )
+
+    monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: 1)
+
+    asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
+
+    record = load_paper_record(tmp_path / "grados-home" / "papers", doi="10.1234/demo")
+
+    assert record is not None
+    assert record.title == "Typed Metadata Demo"
+    assert record.authors == ["Alice Smith", "Bob Lee"]
+    assert record.year == "2025"
+    assert record.journal == "Composite Structures"
+    assert record.source == "Elsevier TDM"
 
 
 def test_stage_b_state_tools_round_trip(tmp_path: Path, monkeypatch) -> None:

@@ -4,8 +4,8 @@ from runtime_env import configure_runtime_env
 
 runtime_paths = configure_runtime_env()
 
-from marker.models import create_model_dict
-from marker.util import download_font
+from marker.models import create_model_dict  # noqa: E402
+from marker.util import download_font  # noqa: E402
 
 
 def main() -> int:

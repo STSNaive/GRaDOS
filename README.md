@@ -52,7 +52,7 @@ GRaDOS is designed to sit inside an agent research workflow:
 | GRaDOS | `get_papers_full_context` | Return structured full-context material for a small paper set, with token estimates or actual section content for CAG-style deep reading. |
 | GRaDOS | `build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. |
 | GRaDOS | `compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. |
-| GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return `supported`, `weak`, `unsupported`, or `misattributed` statuses with candidate evidence. |
+| GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return `supported`, `weak`, `unsupported`, or `misattributed` statuses with candidate evidence. `misattributed` currently requires resolvable author-year citations; numeric citations stay support-only until bibliography mapping exists. |
 
 ### MCP Resources 📚
 

@@ -9,8 +9,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from grados.storage.chunking import extract_sections
 from grados.storage.papers import PaperRecord, list_saved_papers, load_paper_record
-from grados.storage.vector import PaperSearchResult, _extract_sections, search_papers
+from grados.storage.vector import PaperSearchResult, search_papers
 
 __all__ = [
     "audit_draft_support",
@@ -293,7 +294,7 @@ def _resolve_documents(chroma_dir: Path, dois: list[str]) -> tuple[list[PaperRec
 
 
 def _extract_reference_dois(markdown: str) -> list[str]:
-    sections = _extract_sections(markdown)
+    sections = extract_sections(markdown)
     reference_sections = [
         section
         for section in sections
@@ -337,7 +338,7 @@ def _select_sections(
     focus: str = "full_text",
 ) -> list[dict[str, Any]]:
     markdown = record.content_markdown
-    all_sections = _extract_sections(markdown, fallback_title=record.title)
+    all_sections = extract_sections(markdown, fallback_title=record.title)
     if not all_sections:
         return []
 
@@ -861,6 +862,10 @@ def _citation_matches_result(marker: AuditCitationMarker, result: PaperSearchRes
     return bool(authors) and any(author in candidate for candidate in authors) and year == marker.year
 
 
+def _citation_style_supports_attribution(citation_style: str) -> bool:
+    return citation_style == "author_year"
+
+
 def audit_draft_support(
     chroma_dir: Path,
     *,
@@ -897,7 +902,7 @@ def audit_draft_support(
         elif top_score >= 0.55:
             status = "weak"
 
-        if markers and evidence:
+        if markers and evidence and _citation_style_supports_attribution(citation_style):
             marker_matched = any(
                 _citation_matches_result(marker, result)
                 for marker in markers

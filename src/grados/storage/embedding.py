@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from grados.config import GRaDOSPaths, IndexingConfig
@@ -14,6 +15,7 @@ __all__ = [
     "EmbeddingBackend",
     "IndexCompatibilityError",
     "build_index_manifest",
+    "clear_embedding_backend_cache",
     "inspect_embedding_runtime",
     "inspect_index_compatibility",
     "load_embedding_backend",
@@ -26,6 +28,8 @@ _INDEX_SCHEMA_VERSION = 3
 _RETRIEVAL_STRATEGY = "two-stage-v1"
 _CHUNKING_STRATEGY = "section-aware-v2"
 _BACKEND_RUNTIME = "sentence-transformers"
+_EMBEDDING_BACKEND_CACHE: dict[tuple[Any, ...], EmbeddingBackend] = {}
+_EMBEDDING_BACKEND_CACHE_LOCK = RLock()
 
 
 class IndexCompatibilityError(RuntimeError):
@@ -39,6 +43,7 @@ class EmbeddingBackend:
     config: IndexingConfig
     cache_dir: Path
     _model: Any | None = None
+    _model_lock: Any = field(default_factory=RLock, init=False, repr=False)
 
     @property
     def model_id(self) -> str:
@@ -87,33 +92,37 @@ class EmbeddingBackend:
         if self._model is not None:
             return self._model
 
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:
-            raise RuntimeError(
-                "Missing embedding runtime. Install `sentence-transformers` (and its torch/transformers "
-                "dependencies) before using semantic indexing."
-            ) from exc
+        with self._model_lock:
+            if self._model is not None:
+                return self._model
 
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        kwargs: dict[str, Any] = {"cache_folder": str(self.cache_dir)}
-        if self.config.device != "auto":
-            kwargs["device"] = self.config.device
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Missing embedding runtime. Install `sentence-transformers` (and its torch/transformers "
+                    "dependencies) before using semantic indexing."
+                ) from exc
 
-        try:
-            model = SentenceTransformer(
-                self.model_id,
-                model_kwargs={"dtype": "auto"},
-                **kwargs,
-            )
-        except TypeError:
-            model = SentenceTransformer(self.model_id, **kwargs)
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            kwargs: dict[str, Any] = {"cache_folder": str(self.cache_dir)}
+            if self.config.device != "auto":
+                kwargs["device"] = self.config.device
 
-        if hasattr(model, "max_seq_length") and self.config.max_length > 0:
-            model.max_seq_length = self.config.max_length
+            try:
+                model = SentenceTransformer(
+                    self.model_id,
+                    model_kwargs={"dtype": "auto"},
+                    **kwargs,
+                )
+            except TypeError:
+                model = SentenceTransformer(self.model_id, **kwargs)
 
-        self._model = model
-        return model
+            if hasattr(model, "max_seq_length") and self.config.max_length > 0:
+                model.max_seq_length = self.config.max_length
+
+            self._model = model
+            return model
 
     def _encode(self, texts: list[str], *, query_mode: bool = False) -> list[list[float]]:
         model = self._load_model()
@@ -148,11 +157,33 @@ def load_embedding_backend(
     paths: GRaDOSPaths | None = None,
     config: IndexingConfig | None = None,
 ) -> EmbeddingBackend:
-    """Construct the default embedding backend from config + resolved paths."""
+    """Construct process-local embedding backend from config + resolved paths.
+
+    Cache lifecycle:
+    - Lives only in current Python process
+    - Reused while backend-significant config stays same
+    - Invalidated automatically when model/device/prompt/max_length/cache_dir changes
+    - Cleared on process exit or `clear_embedding_backend_cache()`
+    """
     resolved_paths = paths or GRaDOSPaths()
-    resolved_config = config or IndexingConfig()
+    resolved_config = config.model_copy(deep=True) if config is not None else IndexingConfig()
     cache_dir = _resolve_cache_dir(resolved_paths, resolved_config)
-    return EmbeddingBackend(config=resolved_config, cache_dir=cache_dir)
+    cache_key = _backend_cache_key(resolved_config, cache_dir)
+
+    with _EMBEDDING_BACKEND_CACHE_LOCK:
+        cached = _EMBEDDING_BACKEND_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+        backend = EmbeddingBackend(config=resolved_config, cache_dir=cache_dir)
+        _EMBEDDING_BACKEND_CACHE[cache_key] = backend
+        return backend
+
+
+def clear_embedding_backend_cache() -> None:
+    """Clear process-local embedding backend cache."""
+    with _EMBEDDING_BACKEND_CACHE_LOCK:
+        _EMBEDDING_BACKEND_CACHE.clear()
 
 
 def inspect_embedding_runtime(paths: GRaDOSPaths, config: IndexingConfig) -> dict[str, Any]:
@@ -311,6 +342,18 @@ def _resolve_cache_dir(paths: GRaDOSPaths, config: IndexingConfig) -> Path:
     if config.cache_dir:
         return Path(config.cache_dir).expanduser().resolve()
     return paths.models_embedding
+
+
+def _backend_cache_key(config: IndexingConfig, cache_dir: Path) -> tuple[Any, ...]:
+    return (
+        config.provider,
+        config.model_id,
+        config.query_prompt_name,
+        config.query_instruction,
+        config.max_length,
+        config.device,
+        str(cache_dir),
+    )
 
 
 def _module_available(module_name: str) -> bool:

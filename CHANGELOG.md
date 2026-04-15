@@ -18,6 +18,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a canonical full-text normalization layer so publisher-native XML/HTML and document-style inputs are converted into a shared Markdown contract before indexing and deep reading.
 - Added absolute paragraph-coordinate metadata (`paragraph_start`, `paragraph_count`) to retrieval chunks so search hits can be mapped back to canonical source paragraphs in `papers/*.md`.
 - Added a typed `PaperSearchResult` boundary for the high-frequency local retrieval path so internal search results no longer have to propagate as another loose `dict[str, Any]` contract.
+- Added `tests/LIVE_CHECKS.md` to separate offline contract fixtures from manually triggered live checks for Elsevier, Springer, browser fetch, and local import validation.
 
 ### Changed
 - Changed semantic retrieval from chunk-only search to abstract-first docs → chunks two-stage retrieval.
@@ -41,6 +42,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed local saved-paper retrieval so lexical fallback and result snippets now prefer canonical content from `papers/*.md` when available, instead of continuing to lean on Chroma doc copies for the final returned evidence text.
 - Changed local saved-paper retrieval so overlapping chunk hits for the same paper are merged into a single canonical paragraph window before evidence is returned, reducing duplicate or fragmented excerpts.
 - Changed canonical save ordering so `save_paper_markdown()` writes `papers/*.md` before refreshing Chroma, preventing index-only state when mirror writes fail.
+- Changed canonical paper frontmatter handling to use `python-frontmatter` + `PyYAML` for save/read/list flows, so multiline YAML values and colon-rich metadata round-trip correctly through `papers/*.md`.
+- Changed `list_saved_papers()` frontmatter scanning to read until the closing `---` marker (bounded to 4 KB) instead of truncating metadata after 500 characters.
+- Changed publisher fetch handling so `metadata_only` outcomes, typed publisher metadata, and asset hints now survive the TDM waterfall into user-visible extraction receipts, instead of collapsing into generic fetch failures.
+- Changed OA/Sci-Hub fetch failures and Chroma filter/projection fallbacks to surface warnings, degraded-filter markers, and logged exceptions instead of silently dropping into opaque fallback behavior.
+- Changed embedding backend loading to use a process-local cache keyed by backend-significant config, so repeated `grados setup`, `index_paper()`, and `search_papers()` calls in one process reuse the same heavy model runtime instead of reinitializing it.
 - Changed local citation-graph analysis so `research_tools.get_citation_graph` now rebuilds local citation relationships from canonical records in `papers/*.md` instead of depending on Chroma doc listings as an internal source.
 - Changed the canonical paper-store boundary so `load_paper_record()` and `list_saved_papers()` now return explicit dataclasses, with `server`, `importing`, and `research_tools` migrated to attribute-based access instead of loose dict payloads.
 - Changed typed local-search results from transitional dict-compatible wrappers to plain `PaperSearchResult` dataclasses, removing temporary `.get(...)` / item-access compatibility shims after callers were migrated.
@@ -49,6 +55,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed the MCP server layout from one monolithic `server.py` file to a thin entrypoint plus domain registration modules: `search_tools`, `library_tools`, `research_tools_api`, and `admin_tools`.
 - Changed `fetch`, `parse`, and browser automation orchestration from hard-coded `if/elif` waterfalls to static strategy registries, so new publishers, parsers, and browser flows can be added without inflating the core dispatch loops.
 - Changed the TDM stage from publisher-name branching to a provider registry, and changed non-PDF normalization to a format resolver that maps `markdown/text/html/xml` inputs onto explicit normalization strategies.
+- Changed local saved-paper retrieval to use an index-first candidate pipeline before canonical hydration, so search and Stage B audit tools only reread candidate `papers/*.md` files instead of reopening the whole library on each query.
+- Changed `audit_draft_support` so `misattributed` remains reserved for resolvable author-year citations; numeric citations now stay in a conservative support-only mode until bibliography mapping exists.
+- Changed storage internals so `storage/vector.py` now acts as a thinner facade over dedicated `chunking`, `chroma_client`, and `hydration` helpers, and `research_tools` now consumes public chunking APIs instead of importing private vector symbols.
 
 ### Removed
 - Removed the Claude-only startup hook at `hooks/hooks.json`.
@@ -61,6 +70,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added end-to-end regression coverage for the full "index recall + canonical reread" path, including user-facing `search_saved_papers` output after an indexed paper's canonical mirror is updated.
 - Added regression coverage for fetch/parser/browser strategy registries so order preservation and unknown-strategy filtering stay stable during future extensions.
 - Added regression coverage for mirror-first canonical saves so failed `papers/*.md` writes cannot leave Chroma in an index-only state.
+- Added regression coverage for YAML frontmatter round-trips, long-header saved-paper listing, and visible Chroma/OA/Sci-Hub fallback warnings.
+- Added regression coverage for process-local embedding cache reuse and invalidation, including shared backend reuse across `index_paper()` and `search_papers()`.
+- Added offline contract-fixture coverage for Elsevier metadata fallback, Springer waterfall fallback, browser anti-bot HTML masquerading as PDF, and nested local-import warning paths.
+- Added regression coverage for metadata-only extraction receipts, typed publisher metadata persistence, candidate-only canonical hydration, and numeric-citation support-only auditing.
 
 ## [0.6.6] - 2026-04-03
 

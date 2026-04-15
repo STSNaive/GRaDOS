@@ -15,7 +15,10 @@ def build_minimal_pdf(text: str) -> bytes:
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] "
+            b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
+        ),
         b"<< /Length "
         + str(len(stream_bytes)).encode("ascii")
         + b" >>\nstream\n"

@@ -3,6 +3,60 @@
 from __future__ import annotations
 
 import re
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+
+class PublisherMetadata(BaseModel):
+    """Shared publisher metadata shape that can cross fetch / save boundaries safely."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    doi: str = ""
+    title: str = ""
+    abstract: str = ""
+    authors: list[str] = Field(default_factory=list)
+    year: str = ""
+    journal: str = ""
+    publisher: str = ""
+    openaccess: bool = False
+    pii: str = ""
+    eid: str = ""
+    scidir_url: str = ""
+    html_url: str = ""
+    pdf_url: str = ""
+
+
+def normalize_publisher_metadata(value: Any) -> PublisherMetadata | None:
+    """Normalize dicts, dataclasses, or model instances into one shared metadata model."""
+    if value is None:
+        return None
+    if isinstance(value, PublisherMetadata):
+        return value
+
+    try:
+        metadata = PublisherMetadata.model_validate(value, from_attributes=True)
+    except ValidationError:
+        return None
+
+    if not (
+        metadata.doi.strip()
+        or metadata.title.strip()
+        or metadata.abstract.strip()
+        or metadata.authors
+        or metadata.year.strip()
+        or metadata.journal.strip()
+        or metadata.publisher.strip()
+        or metadata.openaccess
+        or metadata.pii.strip()
+        or metadata.eid.strip()
+        or metadata.scidir_url.strip()
+        or metadata.html_url.strip()
+        or metadata.pdf_url.strip()
+    ):
+        return None
+    return metadata
 
 
 def classify_pdf_content(data: bytes, content_type: str = "") -> dict[str, object]:

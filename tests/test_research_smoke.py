@@ -179,7 +179,14 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
         draft_text="Baseline mismatch is resolved in the experiment [Smith et al., 2025].",
         strictness="strict",
     )
+    numeric = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text="Baseline mismatch is resolved in the experiment [12].",
+        citation_style="numeric",
+        strictness="strict",
+    )
 
     assert grid.grids[0].rows[0].support_strength == "high"
     assert supported.claims[0].status == "supported"
     assert misattributed.claims[0].status == "misattributed"
+    assert numeric.claims[0].status == "weak"

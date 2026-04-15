@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+from grados.storage.frontmatter import read_frontmatter_metadata
 from grados.storage.papers import (
     PaperListEntry,
     get_paper_structure,
@@ -25,8 +27,9 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
         mirror_path = papers_dir / f"{safe}.md"
         assert mirror_path.is_file()
         saved = mirror_path.read_text(encoding="utf-8")
+        metadata = read_frontmatter_metadata(saved)
         assert "# Demo Paper Title" in saved
-        assert 'authors_json: \'["Alice", "Bob"]\'' in saved
+        assert json.loads(metadata["authors_json"]) == ["Alice", "Bob"]
         calls.append(
             {
                 "chroma": str(chroma),
@@ -70,9 +73,10 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
     assert summary.safe_doi == "10_1234_demo"
     assert summary.uri == "grados://papers/10_1234_demo"
     saved_content = Path(summary.file_path).read_text(encoding="utf-8")
-    assert 'year: "2025"' in saved_content
-    assert 'journal: "Composite Structures"' in saved_content
-    assert 'authors_json: \'["Alice", "Bob"]\'' in saved_content
+    metadata = read_frontmatter_metadata(saved_content)
+    assert metadata["year"] == "2025"
+    assert metadata["journal"] == "Composite Structures"
+    assert json.loads(metadata["authors_json"]) == ["Alice", "Bob"]
     assert calls == [
         {
             "chroma": str(chroma_dir),
@@ -114,6 +118,37 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
 
     pdf_path = save_pdf("10.1234/demo", b"%PDF-1.4\n%stub", downloads_dir)
     assert pdf_path.is_file()
+
+
+def test_list_saved_papers_reads_complete_frontmatter_header(tmp_path: Path, monkeypatch) -> None:
+    papers_dir = tmp_path / "papers"
+
+    import grados.storage.vector as vector
+
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: 1)
+
+    long_abstract = (
+        "Background:\n"
+        + "Long context line with colon: retained.\n" * 40
+        + "Closing line for semantic parse."
+    )
+
+    save_paper_markdown(
+        doi="10.7777/long-header",
+        markdown="# Long Header Demo\n\n## Abstract\n\nBody content.",
+        papers_dir=papers_dir,
+        title="Long Header Demo",
+        extra_frontmatter={"abstract": long_abstract},
+    )
+
+    assert list_saved_papers(papers_dir) == [
+        PaperListEntry(
+            file="10_7777_long_header.md",
+            doi="10.7777/long-header",
+            title="Long Header Demo",
+            safe_doi="10_7777_long_header",
+        )
+    ]
 
 
 def test_save_paper_markdown_surfaces_index_failure_without_blocking_mirror(

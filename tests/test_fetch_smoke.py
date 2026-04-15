@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 
 from grados.extract.fetch import FetchResult, _fetch_tdm, build_fetch_strategies, build_tdm_providers
-from grados.publisher.elsevier import ElsevierFetchResult, _extract_elsevier_markdown_from_xml
+from grados.publisher.common import PublisherMetadata
+from grados.publisher.elsevier import ElsevierFetchResult, ElsevierMetadataSignal, _extract_elsevier_markdown_from_xml
 from grados.publisher.springer import SpringerFetchResult
 
 
@@ -61,6 +62,142 @@ def test_fetch_strategy_builders_preserve_order_and_filter_unknown_names() -> No
 
     assert [strategy.name for strategy in strategies] == ["OA", "Headless"]
     assert [provider.name for provider in providers] == ["Springer", "Elsevier"]
+
+
+def test_fetch_tdm_returns_metadata_only_when_no_full_text_available(monkeypatch) -> None:
+    async def fake_elsevier(doi, key, client):
+        return ElsevierFetchResult(
+            metadata=ElsevierMetadataSignal(
+                doi=doi,
+                title="Metadata Only Paper",
+                authors=["Alice Smith"],
+                year="2026",
+                journal="Fallback Journal",
+                pii="S123456789000001",
+                scidir_url="https://www.sciencedirect.com/science/article/pii/S123456789000001",
+            ),
+            outcome="metadata_only",
+            asset_hints=[{"kind": "article_landing", "url": "https://example.com/article"}],
+        )
+
+    async def fake_springer(doi, meta_key, oa_key, client):
+        return SpringerFetchResult(outcome="failed")
+
+    monkeypatch.setattr("grados.extract.fetch.fetch_elsevier_article", fake_elsevier)
+    monkeypatch.setattr("grados.extract.fetch.fetch_springer_article", fake_springer)
+
+    result = asyncio.run(
+        _fetch_tdm(
+            doi="10.1234/demo",
+            api_keys={
+                "ELSEVIER_API_KEY": "elsevier-key",
+                "SPRINGER_meta_API_KEY": "springer-key",
+            },
+            client=object(),  # type: ignore[arg-type]
+            tdm_order=["Elsevier", "Springer"],
+        )
+    )
+
+    assert result.outcome == "metadata_only"
+    assert result.source == "Elsevier TDM"
+    assert result.metadata is not None
+    assert result.metadata.title == "Metadata Only Paper"
+    assert result.metadata.pii == "S123456789000001"
+    assert result.asset_hints == [{"kind": "article_landing", "url": "https://example.com/article"}]
+
+
+def test_fetch_paper_preserves_metadata_only_after_later_failures(monkeypatch) -> None:
+    import grados.extract.fetch as fetch_module
+
+    async def fake_fetch_tdm(*args, **kwargs):
+        return FetchResult(
+            outcome="metadata_only",
+            source="Elsevier TDM",
+            metadata=PublisherMetadata(
+                doi="10.1234/demo",
+                title="Metadata Only Paper",
+                authors=["Alice Smith"],
+                year="2026",
+                journal="Fallback Journal",
+            ),
+            asset_hints=[{"kind": "article_landing", "url": "https://example.com/article"}],
+        )
+
+    async def fake_fetch_oa(*args, **kwargs):
+        return FetchResult(outcome="failed", warnings=["OA lookup failed"])
+
+    monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
+    monkeypatch.setattr(fetch_module, "_fetch_oa", fake_fetch_oa)
+
+    result = asyncio.run(
+        fetch_module.fetch_paper(
+            doi="10.1234/demo",
+            api_keys={"ELSEVIER_API_KEY": "elsevier-key"},
+            etiquette_email="test@example.com",
+            fetch_order=["TDM", "OA"],
+        )
+    )
+
+    assert result.outcome == "metadata_only"
+    assert result.source == "Elsevier TDM"
+    assert result.metadata is not None
+    assert result.metadata.title == "Metadata Only Paper"
+    assert result.warnings == ["OA lookup failed"]
+
+
+def test_fetch_oa_surfaces_warning_when_pdf_download_fails() -> None:
+    from grados.extract.fetch import _fetch_oa
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "oa_locations": [
+                    {
+                        "host_type": "repository",
+                        "url_for_pdf": "https://example.com/demo.pdf",
+                    }
+                ]
+            }
+
+    class FakeClient:
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            if "unpaywall" in url:
+                return FakeResponse()
+            raise RuntimeError("network down")
+
+    result = asyncio.run(_fetch_oa("10.1234/demo", "test@example.com", FakeClient()))  # type: ignore[arg-type]
+
+    assert result.outcome == "failed"
+    assert result.warnings == ["OA PDF fetch failed: RuntimeError: network down"]
+
+
+def test_fetch_scihub_surfaces_warning_when_pdf_link_missing() -> None:
+    from grados.extract.fetch import _fetch_scihub
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.status_code = 200
+            self.text = "<html><body>no pdf here</body></html>"
+            self.headers: dict[str, str] = {}
+            self.content = self.text.encode("utf-8")
+
+    class FakeClient:
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            return FakeResponse()
+
+    result = asyncio.run(
+        _fetch_scihub(
+            "10.1234/demo",
+            FakeClient(),  # type: ignore[arg-type]
+            {"fallback_mirror": "https://sci-hub.se"},
+        )
+    )
+
+    assert result.outcome == "failed"
+    assert result.warnings == ["Sci-Hub lookup failed: no PDF link found"]
 
 
 def test_elsevier_xml_is_parsed_deterministically_into_markdown() -> None:

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
-from grados.config import IndexingConfig, SearchConfig
+from grados.config import GRaDOSPaths, IndexingConfig, SearchConfig
 from grados.search.academic import CrossrefState, PaperMetadata, PubMedState, SearchPageResult
 from grados.search.resumable import ContinuationData, decode_token, encode_token, run_resumable_search
+from grados.storage.chroma_client import collection_get, delete_paper_chunks, query_collection
+from grados.storage.embedding import clear_embedding_backend_cache, load_embedding_backend
 from grados.storage.papers import save_paper_markdown
 from grados.storage.vector import PaperSearchResult, _chunk_text, get_index_stats, index_paper, search_papers
 
@@ -485,6 +490,96 @@ def test_search_papers_merges_overlapping_chunk_hits_into_one_canonical_window(
     assert "unrelated appendix note" not in results[0].snippet.lower()
 
 
+def test_search_papers_uses_index_candidates_before_canonical_hydration(monkeypatch) -> None:
+    import grados.storage.vector as vector
+
+    monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(
+        vector,
+        "list_paper_documents",
+        lambda chroma_dir: (_ for _ in ()).throw(AssertionError("full-library document listing should not run")),
+    )
+
+    class FakeBackend:
+        def embed_query(self, query: str) -> list[float]:
+            return [0.1, 0.9]
+
+    summaries = [
+        {
+            "doi": f"10.1000/{index}",
+            "safe_doi": f"10_1000_{index}",
+            "title": f"Paper {index}",
+            "source": "Crossref",
+            "fetch_outcome": "native_full_text",
+            "authors_json": '["Alice Smith"]',
+            "year": "2025",
+            "journal": "Composite Structures",
+            "section_headings_json": '["Abstract"]',
+            "word_count": 100,
+            "char_count": 600,
+        }
+        for index in range(40)
+    ]
+
+    class FakeDocs:
+        def count(self) -> int:
+            return len(summaries)
+
+        def query(self, **kwargs):
+            return {
+                "distances": [[0.01]],
+                "documents": [["Composite vibration damping evidence."]],
+                "metadatas": [[summaries[0]]],
+            }
+
+        def get(self, ids=None, limit=None, include=None):  # noqa: ANN001
+            if ids is not None:
+                docs = [
+                    (
+                        "Composite vibration damping evidence."
+                        if safe_doi == "10_1000_0"
+                        else f"Generic paper content for {safe_doi}."
+                    )
+                    for safe_doi in ids
+                ]
+                selected = [
+                    next(item for item in summaries if item["safe_doi"] == safe_doi)
+                    for safe_doi in ids
+                ]
+                return {"ids": ids, "metadatas": selected, "documents": docs}
+            assert include == ["metadatas"]
+            selected = summaries[:limit]
+            return {
+                "ids": [item["safe_doi"] for item in selected],
+                "metadatas": selected,
+            }
+
+    class EmptyChunks:
+        def count(self) -> int:
+            return 0
+
+    hydrated_counts: list[int] = []
+
+    monkeypatch.setattr(vector, "load_embedding_backend", lambda config=None: FakeBackend())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: FakeDocs())
+    monkeypatch.setattr(vector, "_get_chunks_collection", lambda client: EmptyChunks())
+    monkeypatch.setattr(
+        vector,
+        "_hydrate_canonical_documents",
+        lambda documents, papers_dir: hydrated_counts.append(len(documents)) or documents,
+    )
+
+    results = search_papers(
+        chroma_dir=Path("/tmp/chroma"),
+        query="composite vibration damping",
+        limit=1,
+    )
+
+    assert len(results) == 1
+    assert results[0].doi == "10.1000/0"
+    assert hydrated_counts == [30]
+
+
 def test_search_papers_end_to_end_rereads_updated_canonical_mirror(monkeypatch, tmp_path: Path) -> None:
     import grados.storage.vector as vector
 
@@ -674,3 +769,254 @@ def test_get_index_stats_reports_reindex_when_manifest_mismatches(tmp_path: Path
 
     assert stats.reindex_required is True
     assert "model_id" in stats.reindex_reason
+
+
+def test_query_collection_surfaces_degraded_filter_when_filters_are_unsupported() -> None:
+    class FakeCollection:
+        def query(self, **kwargs):  # noqa: ANN003
+            if "where_document" in kwargs:
+                raise TypeError("where_document unsupported")
+            if "where" in kwargs:
+                raise TypeError("where unsupported")
+            return {
+                "documents": [["demo chunk"]],
+                "metadatas": [[{"safe_doi": "10_1234_demo"}]],
+                "distances": [[0.1]],
+            }
+
+    result = query_collection(
+        collection=FakeCollection(),
+        query_embedding=[0.1, 0.2],
+        n_results=3,
+        where={"source": "Crossref"},
+        where_document={"$contains": "demo"},
+    )
+
+    assert result["degraded_filter"] is True
+    assert result["warnings"] == [
+        "Chroma query() does not support where_document; retried without document filter.",
+        "Chroma query() does not support where filter; retried without metadata filter.",
+    ]
+    assert result["documents"] == [["demo chunk"]]
+
+
+def test_collection_get_surfaces_degraded_filter_when_projection_is_unsupported() -> None:
+    class FakeCollection:
+        def get(self, **kwargs):  # noqa: ANN003
+            if "include" in kwargs:
+                raise TypeError("include unsupported")
+            return {"ids": ["10_1234_demo"], "documents": ["demo"]}
+
+    result = collection_get(
+        collection=FakeCollection(),
+        ids=["10_1234_demo"],
+        include=["documents"],
+    )
+
+    assert result["degraded_filter"] is True
+    assert result["warnings"] == ["Chroma get() does not support include projection; retried without include."]
+    assert result["ids"] == ["10_1234_demo"]
+
+
+def test_delete_paper_chunks_logs_failures(caplog) -> None:
+    class FakeCollection:
+        def get(self, **kwargs):  # noqa: ANN003
+            raise RuntimeError("db unavailable")
+
+    with caplog.at_level(logging.ERROR):
+        delete_paper_chunks(FakeCollection(), "10_1234_demo")
+
+    assert "Failed to delete Chroma chunks for 10_1234_demo" in caplog.text
+
+
+def test_get_index_stats_logs_collection_failures(tmp_path: Path, monkeypatch, caplog) -> None:
+    import grados.storage.vector as vector
+
+    monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: (_ for _ in ()).throw(RuntimeError("db unavailable")))
+
+    with caplog.at_level(logging.ERROR):
+        stats = get_index_stats(tmp_path / "chroma", indexing_config=IndexingConfig())
+
+    assert stats.total_chunks == 0
+    assert stats.unique_papers == 0
+    assert "Failed to inspect Chroma index stats" in caplog.text
+
+
+def test_load_embedding_backend_reuses_process_cache_for_same_key(tmp_path: Path, monkeypatch) -> None:
+    class FakeSentenceTransformer:
+        init_count = 0
+
+        def __init__(self, model_id: str, **kwargs) -> None:
+            type(self).init_count += 1
+            self.model_id = model_id
+            self.max_seq_length = 0
+
+        def encode(self, texts: list[str], **kwargs) -> list[list[float]]:
+            return [[1.0, 2.0, 3.0] for _ in texts]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=FakeSentenceTransformer),
+    )
+
+    clear_embedding_backend_cache()
+    paths = GRaDOSPaths(tmp_path / "grados-home")
+    config = IndexingConfig()
+
+    first = load_embedding_backend(config=config, paths=paths)
+    second = load_embedding_backend(config=config.model_copy(deep=True), paths=paths)
+
+    first.embed_documents(["doc"])
+    second.embed_query("query")
+
+    assert first is second
+    assert FakeSentenceTransformer.init_count == 1
+
+    clear_embedding_backend_cache()
+
+
+def test_load_embedding_backend_invalidates_when_backend_key_changes(tmp_path: Path) -> None:
+    clear_embedding_backend_cache()
+    try:
+        paths = GRaDOSPaths(tmp_path / "grados-home")
+        base = load_embedding_backend(
+            config=IndexingConfig(),
+            paths=paths,
+        )
+        different_model = load_embedding_backend(
+            config=IndexingConfig(model_id="demo/model"),
+            paths=paths,
+        )
+        different_cache_dir = load_embedding_backend(
+            config=IndexingConfig(cache_dir=str(tmp_path / "alt-embedding-cache")),
+            paths=paths,
+        )
+
+        assert base is not different_model
+        assert base is not different_cache_dir
+    finally:
+        clear_embedding_backend_cache()
+
+
+def test_index_and_search_share_cached_embedding_backend(tmp_path: Path, monkeypatch) -> None:
+    import grados.storage.vector as vector
+
+    class FakeSentenceTransformer:
+        init_count = 0
+
+        def __init__(self, model_id: str, **kwargs) -> None:
+            type(self).init_count += 1
+            self.max_seq_length = 0
+
+        def encode(self, texts: list[str], **kwargs) -> list[list[float]]:
+            return [[float(index + 1)] * 4 for index, _ in enumerate(texts)]
+
+        def get_sentence_embedding_dimension(self) -> int:
+            return 4
+
+    class FakeDocs:
+        def __init__(self) -> None:
+            self.last_upsert: dict[str, object] | None = None
+
+        def upsert(self, **kwargs) -> None:
+            self.last_upsert = kwargs
+
+        def count(self) -> int:
+            return 1
+
+        def query(self, **kwargs) -> dict[str, object]:
+            return {
+                "distances": [[0.05]],
+                "documents": [["Composite vibration damping evidence."]],
+                "metadatas": [[{"safe_doi": "10_1234_demo", "doi": "10.1234/demo", "title": "Demo Paper"}]],
+            }
+
+    class FakeChunks:
+        def __init__(self) -> None:
+            self.last_upsert: dict[str, object] | None = None
+
+        def get(self, where=None):  # noqa: ANN001
+            return {"ids": []}
+
+        def delete(self, ids):  # noqa: ANN001
+            return None
+
+        def upsert(self, **kwargs) -> None:
+            self.last_upsert = kwargs
+
+        def count(self) -> int:
+            return 1 if self.last_upsert is not None else 0
+
+        def query(self, **kwargs) -> dict[str, object]:
+            return {
+                "distances": [[0.1]],
+                "documents": [["Composite vibration damping evidence."]],
+                "metadatas": [[
+                    {
+                        "safe_doi": "10_1234_demo",
+                        "paragraph_start": 0,
+                        "paragraph_count": 2,
+                        "section_name": "Abstract",
+                        "section_level": 2,
+                    }
+                ]],
+            }
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=FakeSentenceTransformer),
+    )
+
+    fake_docs = FakeDocs()
+    fake_chunks = FakeChunks()
+    monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: fake_docs)
+    monkeypatch.setattr(vector, "_get_chunks_collection", lambda client: fake_chunks)
+    monkeypatch.setattr(vector, "_hydrate_canonical_documents", lambda documents, papers_dir: documents)
+    monkeypatch.setattr(
+        vector,
+        "list_paper_documents",
+        lambda chroma_dir: [
+            {
+                "doi": "10.1234/demo",
+                "safe_doi": "10_1234_demo",
+                "title": "Demo Paper",
+                "source": "Crossref",
+                "fetch_outcome": "native_full_text",
+                "authors": ["Alice Smith"],
+                "year": "2025",
+                "journal": "Composite Structures",
+                "section_headings": ["Abstract"],
+                "word_count": 20,
+                "char_count": 120,
+                "uri": "grados://papers/10_1234_demo",
+                "content_markdown": "Composite vibration damping evidence.",
+            }
+        ],
+    )
+
+    clear_embedding_backend_cache()
+    try:
+        index_paper(
+            chroma_dir=tmp_path / "chroma",
+            doi="10.1234/demo",
+            safe_doi="10_1234_demo",
+            title="Demo Paper",
+            markdown="## Abstract\n\nComposite vibration damping evidence.",
+            indexing_config=IndexingConfig(),
+        )
+
+        results = search_papers(
+            chroma_dir=tmp_path / "chroma",
+            papers_dir=tmp_path / "papers",
+            query="composite vibration damping",
+            limit=5,
+            indexing_config=IndexingConfig(),
+        )
+
+        assert len(results) == 1
+        assert FakeSentenceTransformer.init_count == 1
+    finally:
+        clear_embedding_backend_cache()

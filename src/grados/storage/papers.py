@@ -10,46 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from grados.publisher.common import safe_doi_filename
-
-# ── Frontmatter ──────────────────────────────────────────────────────────────
-
-
-def build_front_matter(
-    doi: str,
-    title: str = "",
-    source: str = "",
-    publisher: str = "",
-    fetch_outcome: str = "",
-    authors: list[str] | None = None,
-    year: str = "",
-    journal: str = "",
-    extra: dict[str, str] | None = None,
-) -> str:
-    """Build YAML front-matter for a saved paper."""
-    lines = ["---"]
-    lines.append(f'doi: "{doi}"')
-    if title:
-        lines.append(f'title: "{title.replace(chr(34), chr(39))}"')
-    if source:
-        lines.append(f'source: "{source}"')
-    lines.append(f'fetched_at: "{datetime.now(UTC).isoformat()}"')
-    if publisher:
-        lines.append(f'publisher: "{publisher}"')
-    if fetch_outcome:
-        lines.append(f'fetch_outcome: "{fetch_outcome}"')
-    if year:
-        lines.append(f'year: "{year}"')
-    if journal:
-        lines.append(f'journal: "{journal.replace(chr(34), chr(39))}"')
-    if authors:
-        lines.append(f"authors_json: '{json.dumps([author for author in authors if author], ensure_ascii=False)}'")
-    lines.append('extraction_status: "OK"')
-    if extra:
-        for k, v in extra.items():
-            lines.append(f'{k}: "{v}"')
-    lines.append("---")
-    return "\n".join(lines)
-
+from grados.storage.frontmatter import (
+    build_front_matter,
+    parse_authors_metadata,
+    read_frontmatter_metadata,
+    read_frontmatter_metadata_from_file,
+    strip_front_matter,
+)
 
 # ── Save / Read ──────────────────────────────────────────────────────────────
 
@@ -294,8 +261,8 @@ def load_paper_record(
         return None
 
     raw_content = file_path.read_text(encoding="utf-8")
-    metadata = _read_frontmatter_metadata(raw_content)
-    content = _strip_front_matter(raw_content)
+    metadata = read_frontmatter_metadata(raw_content)
+    content = strip_front_matter(raw_content)
     paragraphs = _split_paragraphs(content, include_front_matter=False)
     headings = [
         re.sub(r"^#{1,6}\s+", "", paragraph).strip()
@@ -311,7 +278,7 @@ def load_paper_record(
         title=title,
         source=metadata.get("source", ""),
         fetch_outcome=metadata.get("fetch_outcome", ""),
-        authors=_parse_authors_metadata(metadata),
+        authors=parse_authors_metadata(metadata),
         year=metadata.get("year", ""),
         journal=metadata.get("journal", ""),
         section_headings=headings,
@@ -354,7 +321,7 @@ def read_paper(
         for p in paragraphs
         if re.match(r"^#{1,6}\s+", p)
     ]
-    metadata = _read_frontmatter_metadata(content)
+    metadata = read_frontmatter_metadata(content)
     resolved_doi = metadata.get("doi", doi or safe_doi)
 
     if not paragraphs:
@@ -428,21 +395,15 @@ def get_paper_structure(
 
 def _split_paragraphs(text: str, include_front_matter: bool) -> list[str]:
     """Split text into paragraphs, optionally stripping YAML front-matter."""
-    if not include_front_matter and text.startswith("---"):
-        end = text.find("---", 3)
-        if end != -1:
-            text = text[end + 3:]
+    if not include_front_matter:
+        text = strip_front_matter(text)
     parts = re.split(r"\n{2,}", text.strip())
     return [p.strip() for p in parts if p.strip()]
 
 
 def _strip_front_matter(text: str) -> str:
     """Remove YAML front-matter from paper content."""
-    if text.startswith("---"):
-        end = text.find("---", 3)
-        if end != -1:
-            return text[end + 3 :].strip()
-    return text.strip()
+    return strip_front_matter(text)
 
 
 def _find_section_start(paragraphs: list[str], query: str) -> int:
@@ -564,22 +525,12 @@ def list_saved_papers(papers_dir: Path, chroma_dir: Path | None = None) -> list[
     if not papers_dir.is_dir():
         return results
     for f in sorted(papers_dir.glob("*.md")):
-        content = f.read_text(encoding="utf-8", errors="replace")[:500]
-        doi = ""
-        title = ""
-        if content.startswith("---"):
-            for line in content.split("\n"):
-                if line.startswith("doi:"):
-                    doi = line.split(":", 1)[1].strip().strip('"')
-                elif line.startswith("title:"):
-                    title = line.split(":", 1)[1].strip().strip('"')
-                elif line == "---" and doi:
-                    break
+        metadata = read_frontmatter_metadata_from_file(f)
         results.append(
             PaperListEntry(
                 file=f.name,
-                doi=doi,
-                title=title,
+                doi=metadata.get("doi", ""),
+                title=metadata.get("title", ""),
                 safe_doi=f.stem,
             )
         )
@@ -602,33 +553,3 @@ def _prepend_front_matter(markdown: str, record: PaperRecord) -> str:
         extra=extra or None,
     )
     return f"{front}\n\n{markdown}"
-
-
-def _read_frontmatter_metadata(content: str) -> dict[str, str]:
-    metadata: dict[str, str] = {}
-    if not content.startswith("---"):
-        return metadata
-
-    end = content.find("---", 3)
-    if end == -1:
-        return metadata
-
-    for line in content[3:end].splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        metadata[key.strip()] = value.strip().strip('"').strip("'")
-    return metadata
-
-
-def _parse_authors_metadata(metadata: dict[str, str]) -> list[str]:
-    raw = metadata.get("authors_json", "")
-    if not raw:
-        return []
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(payload, list):
-        return []
-    return [str(author) for author in payload if str(author)]

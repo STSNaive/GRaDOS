@@ -9,6 +9,7 @@ from typing import Annotated
 from fastmcp import FastMCP
 from pydantic import Field
 
+from grados.publisher.common import PublisherMetadata, normalize_publisher_metadata
 from grados.server_tools.shared import (
     format_paper_index_resource,
     format_paper_overview_resource,
@@ -26,6 +27,68 @@ __all__ = [
     "read_saved_paper",
     "register_library_tools",
 ]
+
+
+def _format_asset_hint_lines(asset_hints: list[dict[str, object]]) -> list[str]:
+    lines: list[str] = []
+    for hint in asset_hints:
+        label = str(hint.get("label", "")).strip() or str(hint.get("kind", "")).strip() or "asset_hint"
+        target = str(hint.get("url", "")).strip() or str(hint.get("value", "")).strip()
+        if target:
+            lines.append(f"- {label}: {target}")
+        else:
+            lines.append(f"- {label}")
+    return lines
+
+
+def _metadata_only_receipt(
+    doi: str,
+    *,
+    source: str,
+    metadata: PublisherMetadata | None,
+    asset_hints: list[dict[str, str]],
+    warnings: list[str],
+) -> str:
+    lines = [
+        "## Paper Located but Full Text Unavailable",
+        "",
+        f"- **DOI:** {doi}",
+        f"- **Source:** {source or 'Unknown'}",
+        "- **Outcome:** metadata_only",
+        "- **Canonical Save:** not_written",
+        "- **Index Status:** not_requested",
+    ]
+
+    if metadata is not None:
+        if metadata.title:
+            lines.append(f"- **Title:** {metadata.title}")
+        if metadata.authors:
+            lines.append(f"- **Authors:** {', '.join(metadata.authors[:8])}")
+        if metadata.year:
+            lines.append(f"- **Year:** {metadata.year}")
+        if metadata.journal:
+            lines.append(f"- **Journal:** {metadata.journal}")
+        if metadata.publisher:
+            lines.append(f"- **Publisher:** {metadata.publisher}")
+
+    lines.extend(
+        [
+            "",
+            "### Next Step",
+            "- No canonical markdown was saved because no full text was obtained.",
+            (
+                "- Use the metadata and asset hints to decide whether to retry with another route "
+                "or save the citation only."
+            ),
+        ]
+    )
+
+    if asset_hints:
+        lines.extend(["", "### Asset Hints", *_format_asset_hint_lines(asset_hints)])
+    if warnings:
+        lines.extend(["", "### Warnings", *[f"- {warning}" for warning in warnings]])
+
+    return "\n".join(lines)
 
 
 def papers_index_resource() -> str:
@@ -91,6 +154,19 @@ async def extract_paper_full_text(
         paths=paths,
     )
 
+    metadata = normalize_publisher_metadata(fetch_result.metadata)
+    if metadata is not None and expected_title and not metadata.title:
+        metadata = metadata.model_copy(update={"title": expected_title})
+
+    if fetch_result.outcome == "metadata_only":
+        return _metadata_only_receipt(
+            doi,
+            source=fetch_result.source,
+            metadata=metadata,
+            asset_hints=fetch_result.asset_hints,
+            warnings=fetch_result.warnings,
+        )
+
     if fetch_result.outcome not in ("native_full_text", "pdf_obtained"):
         return f"Failed to fetch paper: {doi}\nWarnings: " + "; ".join(fetch_result.warnings or [])
 
@@ -134,18 +210,20 @@ async def extract_paper_full_text(
     if not is_valid_paper_content(markdown, config.extract.qa.min_characters, expected_title):
         warnings.append("QA validation failed — saved content may be incomplete.")
 
-    metadata = fetch_result.metadata or {}
     title = ""
     authors: list[str] = []
     year = ""
     journal = ""
+    publisher_name = ""
     extra_frontmatter: dict[str, str] = {}
 
-    if isinstance(metadata, dict):
-        title = str(metadata.get("title", ""))
-        authors = [str(value) for value in metadata.get("authors", []) if str(value)]
-        year = str(metadata.get("year", ""))
-        journal = str(metadata.get("journal", ""))
+    if metadata is not None:
+        dump = metadata.model_dump()
+        title = str(dump.get("title", ""))
+        authors = [str(value) for value in dump.get("authors", []) if str(value)]
+        year = str(dump.get("year", ""))
+        journal = str(dump.get("journal", ""))
+        publisher_name = str(dump.get("publisher", ""))
 
     if expected_title and not title:
         title = expected_title
@@ -165,8 +243,8 @@ async def extract_paper_full_text(
         markdown=markdown,
         papers_dir=paths.papers,
         title=title,
-        source=publisher or fetch_result.source,
-        publisher=publisher or "",
+        source=fetch_result.source,
+        publisher=publisher or publisher_name,
         fetch_outcome=fetch_result.outcome,
         extra_frontmatter=extra_frontmatter or None,
         chroma_dir=paths.database_chroma,

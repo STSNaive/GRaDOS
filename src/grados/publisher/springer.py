@@ -22,6 +22,7 @@ class SpringerMetaRecord:
 class SpringerFetchResult:
     text: str = ""
     pdf_buffer: bytes = b""
+    metadata: SpringerMetaRecord | None = None
     outcome: str = ""  # native_full_text | pdf_obtained | failed
     text_format: str = ""  # xml | html | markdown | text
     asset_hints: list[dict[str, str]] = field(default_factory=list)
@@ -112,6 +113,7 @@ async def fetch_springer_article(
                 if len(resp.text) > 1000:
                     return SpringerFetchResult(
                         text=resp.text,
+                        metadata=meta,
                         outcome="native_full_text",
                         text_format="xml",
                         asset_hints=_build_asset_hints(meta),
@@ -127,6 +129,7 @@ async def fetch_springer_article(
                 if resp.text and len(resp.text) > 1000:
                     return SpringerFetchResult(
                         text=resp.text,
+                        metadata=meta,
                         outcome="native_full_text",
                         text_format="html",
                         asset_hints=_build_asset_hints(meta),
@@ -141,6 +144,7 @@ async def fetch_springer_article(
             if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
                 return SpringerFetchResult(
                     pdf_buffer=resp.content,
+                    metadata=meta,
                     outcome="pdf_obtained",
                     asset_hints=_build_asset_hints(meta),
                 )

@@ -52,7 +52,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `get_papers_full_context` | 为少量论文返回结构化全文上下文，可先拿 token 估计，也可直接进入 CAG 风格的深读模式。 |
 | GRaDOS | `build_evidence_grid` | 围绕主题或子问题，从本地论文库构建写作前的证据网格。 |
 | GRaDOS | `compare_papers` | 跨多篇已保存论文抽取并行对比材料，聚焦 methods、results 或 full text。 |
-| GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 `supported`、`weak`、`unsupported` 或 `misattributed` 状态。 |
+| GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 `supported`、`weak`、`unsupported` 或 `misattributed` 状态。当前只有可解析的 author-year 引文才能可靠判定 `misattributed`；numeric citation 在建立 bibliography 映射前只做 support 检查。 |
 
 ### MCP 资源 📚
 

@@ -9,9 +9,9 @@ from runtime_env import configure_runtime_env
 
 configure_runtime_env()
 
-from marker.config.parser import ConfigParser
-from marker.models import create_model_dict
-from marker.output import text_from_rendered
+from marker.config.parser import ConfigParser  # noqa: E402
+from marker.models import create_model_dict  # noqa: E402
+from marker.output import text_from_rendered  # noqa: E402
 
 
 def compact_markdown(text: str) -> str:
