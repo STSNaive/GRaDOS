@@ -1,6 +1,6 @@
 {
   "name": "grados",
-  "version": "0.6.6",
+  "version": "0.6.9",
   "description": "Academic paper search, full-text extraction, and citation-grounded research workflow for Codex.",
   "author": {
     "name": "macfish",
