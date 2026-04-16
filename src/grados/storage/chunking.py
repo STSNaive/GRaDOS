@@ -9,6 +9,7 @@ paragraph coordinates.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from grados.config import GRaDOSPaths, IndexingConfig, load_config
@@ -31,6 +32,15 @@ __all__ = [
 
 DOC_SUMMARY_MAX_CHARS = 4000
 DOI_PATTERN = re.compile(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", re.IGNORECASE)
+_SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？;；])\s+")
+_CLAUSE_SPLIT_PATTERN = re.compile(r"(?<=[,:，：])\s+")
+_HARD_SPLIT_OVERLAP_CHARS = 120
+
+
+@dataclass(frozen=True)
+class _ChunkUnit:
+    text: str
+    paragraph_offset: int
 
 
 def resolve_indexing_config(indexing_config: IndexingConfig | None) -> IndexingConfig:
@@ -46,6 +56,107 @@ def strip_frontmatter(text: str) -> str:
 
 def split_paragraphs(text: str) -> list[str]:
     return [part.strip() for part in re.split(r"\n{2,}", text.strip()) if part.strip()]
+
+
+def _split_sentences(text: str, pattern: re.Pattern[str]) -> list[str]:
+    return [part.strip() for part in pattern.split(text.strip()) if part.strip()]
+
+
+def _pack_segments_with_overlap(segments: list[str], max_chars: int) -> list[str]:
+    packed: list[str] = []
+    start = 0
+    while start < len(segments):
+        current: list[str] = []
+        current_length = 0
+        index = start
+        while index < len(segments):
+            segment = segments[index]
+            proposed = current_length + len(segment) + (1 if current else 0)
+            if current and proposed > max_chars:
+                break
+            current.append(segment)
+            current_length = proposed
+            index += 1
+            if current_length >= max_chars:
+                break
+
+        if not current:
+            break
+
+        packed.append(" ".join(current).strip())
+        if index >= len(segments):
+            break
+
+        next_start = max(start + 1, index - 1)
+        if next_start == start:
+            next_start = index
+        start = next_start
+
+    return packed
+
+
+def _hard_split_text(text: str, max_chars: int) -> list[str]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+    if max_chars <= 0 or len(stripped) <= max_chars:
+        return [stripped]
+
+    overlap = min(_HARD_SPLIT_OVERLAP_CHARS, max(40, max_chars // 8))
+    parts: list[str] = []
+    start = 0
+    while start < len(stripped):
+        end = min(len(stripped), start + max_chars)
+        piece = stripped[start:end].strip()
+        if piece:
+            parts.append(piece)
+        if end >= len(stripped):
+            break
+        next_start = max(start + 1, end - overlap)
+        if next_start <= start:
+            next_start = end
+        start = next_start
+    return parts
+
+
+def _split_long_paragraph(paragraph: str, max_chars: int) -> list[str]:
+    stripped = paragraph.strip()
+    if not stripped:
+        return []
+    if max_chars <= 0 or len(stripped) <= max_chars:
+        return [stripped]
+
+    sentence_segments = _split_sentences(stripped, _SENTENCE_SPLIT_PATTERN)
+    if len(sentence_segments) > 1:
+        expanded: list[str] = []
+        for segment in sentence_segments:
+            if len(segment) > max_chars:
+                expanded.extend(_hard_split_text(segment, max_chars))
+            else:
+                expanded.append(segment)
+        return _pack_segments_with_overlap(expanded, max_chars)
+
+    clause_segments = _split_sentences(stripped, _CLAUSE_SPLIT_PATTERN)
+    if len(clause_segments) > 1:
+        expanded = []
+        for segment in clause_segments:
+            if len(segment) > max_chars:
+                expanded.extend(_hard_split_text(segment, max_chars))
+            else:
+                expanded.append(segment)
+        return _pack_segments_with_overlap(expanded, max_chars)
+
+    return _hard_split_text(stripped, max_chars)
+
+
+def _build_chunk_units(paragraphs: list[str], config: IndexingConfig) -> list[_ChunkUnit]:
+    units: list[_ChunkUnit] = []
+    for paragraph_offset, paragraph in enumerate(paragraphs):
+        pieces = _split_long_paragraph(paragraph, config.chunk_max_chars)
+        if not pieces:
+            continue
+        units.extend(_ChunkUnit(text=piece, paragraph_offset=paragraph_offset) for piece in pieces)
+    return units
 
 
 def extract_headings(markdown: str) -> list[str]:
@@ -123,21 +234,24 @@ def chunk_text(
         body_paragraphs = split_paragraphs(str(section["content"]))
         if not body_paragraphs:
             continue
+        body_units = _build_chunk_units(body_paragraphs, config)
+        if not body_units:
+            continue
         body_start = int(section.get("body_paragraph_start", 0) or 0)
         heading_index = section.get("heading_paragraph_index")
         has_heading = isinstance(heading_index, int)
 
         start = 0
-        while start < len(body_paragraphs):
-            current: list[str] = []
+        while start < len(body_units):
+            current: list[_ChunkUnit] = []
             current_length = 0
             index = start
-            while index < len(body_paragraphs):
-                paragraph = body_paragraphs[index]
-                proposed = current_length + len(paragraph) + (2 if current else 0)
+            while index < len(body_units):
+                unit = body_units[index]
+                proposed = current_length + len(unit.text) + (2 if current else 0)
                 if current and current_length >= config.chunk_min_chars and proposed > config.chunk_max_chars:
                     break
-                current.append(paragraph)
+                current.append(unit)
                 current_length = proposed
                 index += 1
                 if current_length >= config.chunk_max_chars:
@@ -147,9 +261,10 @@ def chunk_text(
                 break
 
             parts = [str(section["heading"]).strip()] if section["heading"] else []
-            parts.extend(current)
-            paragraph_start = body_start + start
-            paragraph_count = len(current)
+            parts.extend(unit.text for unit in current)
+            paragraph_offsets = sorted({unit.paragraph_offset for unit in current})
+            paragraph_start = body_start + paragraph_offsets[0]
+            paragraph_count = paragraph_offsets[-1] - paragraph_offsets[0] + 1
             if start == 0 and has_heading:
                 paragraph_start = int(heading_index)
                 paragraph_count += 1
@@ -164,7 +279,7 @@ def chunk_text(
                 }
             )
 
-            if index >= len(body_paragraphs):
+            if index >= len(body_units):
                 break
 
             next_start = max(start + 1, index - max(0, config.chunk_overlap_paragraphs))

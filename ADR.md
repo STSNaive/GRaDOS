@@ -5,6 +5,26 @@
 - `TODO.md` 只保留未完成事项；不再重复维护已完成决策。
 - `CHANGELOG.md` 记录对外可见的行为变化；本文更关注“为什么这样设计”。
 
+## ADR-000：release tag 必须晚于 version bump commit
+
+- 状态：Accepted
+- 日期：2026-04-15
+
+### 背景
+- 发布 workflow 会校验 Git tag `vX.Y.Z` 与 `pyproject.toml` 中的包版本完全一致。
+- 如果先推 tag、后改版本，或在已有 tag 上重复试错，容易触发失败 workflow、重复 workflow，甚至让 release 记录与实际包内容错位。
+
+### 决策
+- 发布 `vX.Y.Z` 前，必须先把 `pyproject.toml` 与 `src/grados/__init__.py` 的版本号提升到同一版本，并提交到 git。
+- 发布顺序固定为：`version bump commit -> push main -> create/push tag vX.Y.Z`。
+- 默认依赖 tag push 自动触发 `publish.yml`；只有自动未触发或需要补跑时，才使用 `workflow_dispatch` 手动触发。
+- 若必须重指已存在的 release tag，必须先确认是否会导致重复 workflow / 重复发布，再决定是否强推 tag。
+
+### 结果与影响
+- release tag、包版本、GitHub workflow 与 PyPI 版本之间保持一一对应。
+- 版本错误会在本地 commit/tag 阶段被规避，而不是等到 CI 才暴露。
+- 发布流程的重试方式明确为“先修版本与提交，再处理 tag”，避免同一版本产生多次含义不同的 run。
+
 ## ADR-001：`papers/*.md` 是唯一 canonical full-text source of truth
 
 - 状态：Accepted

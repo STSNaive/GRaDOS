@@ -20,7 +20,7 @@ The Python MCP server for academic paper search, full-text extraction, visible l
 
 GRaDOS gives AI agents (Claude, Codex, Cursor, and similar clients) a single stdio MCP server that can search academic databases, fetch papers through paywalls, parse PDFs into canonical Markdown, and revisit saved papers for citation-grounded writing.
 
-Phase A now ships with a stronger local retrieval stack by default: `microsoft/harrier-oss-v1-0.6b`, abstract-first document embeddings, section-aware chunking, and docs → chunks two-stage retrieval.
+Phase A now ships with a stronger but safer local retrieval stack by default: `microsoft/harrier-oss-v1-270m`, abstract-first document embeddings, section-aware chunking, and docs → chunks two-stage retrieval. `microsoft/harrier-oss-v1-0.6b` is still supported, but it is now an opt-in choice for roomier machines.
 
 ## Architecture 🧭
 
@@ -267,6 +267,18 @@ This fallback assumes the `grados` MCP server is already registered in your clie
 | `grados version` | Show package versions |
 
 If you change `indexing.model_id`, `indexing.max_length`, or the section-aware chunking settings in `config.json`, use `grados reindex` instead of `grados update-db`.
+
+Changing only `indexing.batch_size` is a runtime-only tuning knob and does not require a rebuild.
+
+### Indexing Defaults 🧠
+
+- Default model: `microsoft/harrier-oss-v1-270m`
+- Heavier opt-in model: `microsoft/harrier-oss-v1-0.6b`
+- Default `indexing.max_length`: `4096`
+- Default `indexing.batch_size`: `0` (`auto`, conservative on CPU/MPS and wider on CUDA)
+- Overlong single paragraphs are re-split by sentence or clause before embedding so `grados reindex` does not send giant chunks into `SentenceTransformer.encode()`
+
+GRaDOS does not assume FlashAttention is available on local macOS / CPU setups. If your runtime says it can use SDPA, that still does not guarantee a fused CUDA FlashAttention path; the safer default is smaller chunks, a shorter indexing length, and conservative batching.
 
 ### Filesystem Layout 🗄️
 

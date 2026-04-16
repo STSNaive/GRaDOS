@@ -207,12 +207,13 @@ class ExtractConfig(BaseModel):
 
 class IndexingConfig(BaseModel):
     provider: str = "harrier"
-    model_id: str = "microsoft/harrier-oss-v1-0.6b"
+    model_id: str = "microsoft/harrier-oss-v1-270m"
     query_prompt_name: str = "web_search_query"
     query_instruction: str = (
         "Given a scientific literature search query, retrieve relevant abstracts and passages that answer the query"
     )
-    max_length: int = 32768
+    max_length: int = 4096
+    batch_size: int = Field(default=0, ge=0)
     device: str = "auto"
     cache_dir: str = ""
     chunk_min_chars: int = 300
@@ -295,9 +296,17 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "Semantic indexing defaults. Changing model_id or section-aware chunking settings requires `grados reindex`."
     )
     data["indexing"]["_comment_provider"] = "Default local embedding provider used for semantic indexing."
-    data["indexing"]["_comment_model_id"] = "Default embedding model. Harrier is the new default for Phase A."
+    data["indexing"]["_comment_model_id"] = (
+        "Default embedding model. Harrier 270M is the stable local default; use 0.6B only when you have headroom."
+    )
     data["indexing"]["_comment_query_prompt_name"] = (
         "Harrier query-side prompt name. Query/document encoding is intentionally asymmetric."
+    )
+    data["indexing"]["_comment_max_length"] = (
+        "Recommended indexing length cap. Model max context is not the same as a safe local indexing length."
+    )
+    data["indexing"]["_comment_batch_size"] = (
+        "Embedding encode batch size. Use 0 for conservative auto-sizing by device."
     )
     data["indexing"]["_comment_cache_dir"] = (
         "Optional model cache override. Leave empty to use GRaDOS_HOME/models/embedding."

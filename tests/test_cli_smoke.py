@@ -45,7 +45,8 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
     assert "配置文件" in status_result.output
     assert "数据根目录" in status_result.output
     assert "已加载" in status_result.output
-    assert "harrier-oss-v1-0.6b" in status_result.output
+    assert "harrier-oss-v1-270m" in status_result.output
+    assert "4096" in status_result.output
 
 
 def test_update_db_command_reports_index_summary(tmp_path: Path, monkeypatch) -> None:

@@ -6,6 +6,16 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-04-16
+
+### Changed
+- Changed the local indexing defaults from Harrier 0.6B / `max_length=32768` to `microsoft/harrier-oss-v1-270m` with `max_length=4096`; Harrier 0.6B remains available as an explicit opt-in for roomier machines.
+- Changed section-aware chunking so overlong single paragraphs are re-split by sentence or clause with small overlap before embedding, preventing giant one-paragraph chunks from exploding memory during `grados reindex`.
+- Changed embedding runtime diagnostics so `grados setup`, `grados status`, `grados update-db`, and `grados reindex` now surface `max_length`, batch sizing, and clearer OOM guidance instead of opaque allocator failures.
+
+### Tests
+- Added regression coverage for overlong single-paragraph chunk splitting, conservative local batching, and OOM diagnostic surfacing in the embedding backend.
+
 ## [0.6.7] - 2026-04-15
 
 ### Added

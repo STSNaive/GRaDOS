@@ -26,7 +26,7 @@ __all__ = [
 _INDEX_MANIFEST_NAME = "index-manifest.json"
 _INDEX_SCHEMA_VERSION = 3
 _RETRIEVAL_STRATEGY = "two-stage-v1"
-_CHUNKING_STRATEGY = "section-aware-v2"
+_CHUNKING_STRATEGY = "section-aware-v3"
 _BACKEND_RUNTIME = "sentence-transformers"
 _EMBEDDING_BACKEND_CACHE: dict[tuple[Any, ...], EmbeddingBackend] = {}
 _EMBEDDING_BACKEND_CACHE_LOCK = RLock()
@@ -118,8 +118,9 @@ class EmbeddingBackend:
             except TypeError:
                 model = SentenceTransformer(self.model_id, **kwargs)
 
-            if hasattr(model, "max_seq_length") and self.config.max_length > 0:
-                model.max_seq_length = self.config.max_length
+            max_length = self._resolved_max_length(model)
+            if hasattr(model, "max_seq_length") and max_length > 0:
+                model.max_seq_length = max_length
 
             self._model = model
             return model
@@ -127,22 +128,33 @@ class EmbeddingBackend:
     def _encode(self, texts: list[str], *, query_mode: bool = False) -> list[list[float]]:
         model = self._load_model()
         encode_kwargs: dict[str, Any] = {
+            "batch_size": self._resolved_batch_size(model, query_mode=query_mode),
             "normalize_embeddings": True,
             "show_progress_bar": False,
         }
 
-        if query_mode:
-            if self.config.query_prompt_name:
-                try:
-                    encoded = model.encode(texts, prompt_name=self.config.query_prompt_name, **encode_kwargs)
-                except TypeError:
+        try:
+            if query_mode:
+                if self.config.query_prompt_name:
+                    try:
+                        encoded = model.encode(texts, prompt_name=self.config.query_prompt_name, **encode_kwargs)
+                    except TypeError:
+                        encoded = self._encode_with_instruction(model, texts, encode_kwargs)
+                elif self.config.query_instruction:
                     encoded = self._encode_with_instruction(model, texts, encode_kwargs)
-            elif self.config.query_instruction:
-                encoded = self._encode_with_instruction(model, texts, encode_kwargs)
+                else:
+                    encoded = model.encode(texts, **encode_kwargs)
             else:
                 encoded = model.encode(texts, **encode_kwargs)
-        else:
-            encoded = model.encode(texts, **encode_kwargs)
+        except Exception as exc:
+            if not _looks_like_oom(exc):
+                raise
+            diagnostics = self._encoding_diagnostics(model, texts, query_mode=query_mode)
+            raise RuntimeError(
+                "Embedding encode ran out of memory. "
+                f"{diagnostics}. Consider lowering `indexing.max_length`, reducing `indexing.batch_size`, "
+                "or switching to `microsoft/harrier-oss-v1-270m` on memory-constrained machines."
+            ) from exc
 
         rows = encoded.tolist() if hasattr(encoded, "tolist") else encoded
         return [[float(value) for value in row] for row in rows]
@@ -150,6 +162,77 @@ class EmbeddingBackend:
     def _encode_with_instruction(self, model: Any, texts: list[str], encode_kwargs: dict[str, Any]) -> Any:
         prompt = f"Instruct: {self.config.query_instruction}\nQuery: "
         return model.encode(texts, prompt=prompt, **encode_kwargs)
+
+    def _resolved_max_length(self, model: Any) -> int:
+        if self.config.max_length <= 0:
+            return 0
+
+        tokenizer = getattr(model, "tokenizer", None)
+        tokenizer_limit = getattr(tokenizer, "model_max_length", 0)
+        if isinstance(tokenizer_limit, int) and 0 < tokenizer_limit < 1_000_000:
+            return min(self.config.max_length, tokenizer_limit)
+        return self.config.max_length
+
+    def _resolved_runtime_device(self, model: Any) -> str:
+        if self.config.device != "auto":
+            return str(self.config.device)
+        device = getattr(model, "device", None)
+        if device is None:
+            return "cpu"
+        return str(getattr(device, "type", device))
+
+    def _resolved_batch_size(self, model: Any, *, query_mode: bool) -> int:
+        if query_mode:
+            return 1
+        if self.config.batch_size > 0:
+            return self.config.batch_size
+
+        device = self._resolved_runtime_device(model).lower()
+        if device.startswith("cuda"):
+            return 16
+        if _is_harrier_0_6b(self.model_id):
+            return 1
+        return 2
+
+    def _encoding_diagnostics(self, model: Any, texts: list[str], *, query_mode: bool) -> str:
+        batch_size = self._resolved_batch_size(model, query_mode=query_mode)
+        device = self._resolved_runtime_device(model)
+        max_length = self._resolved_max_length(model)
+        longest = sorted(
+            ((len(text), index, text) for index, text in enumerate(texts)),
+            reverse=True,
+        )[:3]
+        summaries: list[str] = []
+        for char_count, index, text in longest:
+            token_count = self._token_count(model, text)
+            summary = f"#{index}: {char_count} chars"
+            if token_count is not None:
+                summary += f", ~{token_count} tokens"
+            summaries.append(summary)
+        return (
+            f"model={self.model_id}, device={device}, batch_size={batch_size}, max_length={max_length}, "
+            f"texts={len(texts)}, longest=[{'; '.join(summaries)}]"
+        )
+
+    def _token_count(self, model: Any, text: str) -> int | None:
+        tokenize = getattr(model, "tokenize", None)
+        if not callable(tokenize):
+            return None
+        try:
+            payload = tokenize([text])
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        input_ids = payload.get("input_ids")
+        if input_ids is None:
+            return None
+        if hasattr(input_ids, "shape") and len(getattr(input_ids, "shape", ())) >= 2:
+            return int(input_ids.shape[1])
+        try:
+            return len(input_ids[0])
+        except (IndexError, TypeError):
+            return None
 
 
 def load_embedding_backend(
@@ -201,10 +284,14 @@ def inspect_embedding_runtime(paths: GRaDOSPaths, config: IndexingConfig) -> dic
         "query_prompt_name": config.query_prompt_name,
         "query_prompt_mode": _query_prompt_mode(config),
         "device": config.device,
+        "max_length": config.max_length,
+        "batch_size": config.batch_size,
+        "batch_size_hint": _batch_size_hint(config),
         "cache_dir": str(cache_dir),
         "cache_ready": cache_ready,
         "runtime": _BACKEND_RUNTIME,
         "dependencies": deps,
+        "warnings": _runtime_warnings(config),
         "ready": all(deps.values()) and cache_ready,
     }
 
@@ -366,3 +453,49 @@ def _query_prompt_mode(config: IndexingConfig) -> str:
     if config.query_instruction:
         return "instruction"
     return "none"
+
+
+def _is_harrier_0_6b(model_id: str) -> bool:
+    return model_id.strip().lower() == "microsoft/harrier-oss-v1-0.6b"
+
+
+def _batch_size_hint(config: IndexingConfig) -> str:
+    if config.batch_size > 0:
+        return str(config.batch_size)
+    if config.device == "cuda":
+        return "auto (16 on CUDA)"
+    if config.device in {"cpu", "mps"}:
+        return "auto (1 for Harrier 0.6B, else 2)"
+    return "auto (1-2 on CPU/MPS, 16 on CUDA)"
+
+
+def _runtime_warnings(config: IndexingConfig) -> list[str]:
+    warnings: list[str] = []
+    if _is_harrier_0_6b(config.model_id):
+        warnings.append(
+            "Harrier 0.6B is opt-in for roomy machines now; on CPU/MPS, keep `batch_size` small and prefer "
+            "`max_length` around 4096 for reindex runs."
+        )
+    if config.max_length > 8192:
+        warnings.append(
+            "`indexing.max_length` is above the recommended local indexing range. Model max context is not the "
+            "same as a safe indexing length."
+        )
+    return warnings
+
+
+def _looks_like_oom(exc: Exception) -> bool:
+    if isinstance(exc, MemoryError):
+        return True
+    message = str(exc).lower()
+    markers = (
+        "out of memory",
+        "unable to allocate",
+        "cannot allocate",
+        "can't allocate",
+        "mps backend out of memory",
+        "cuda out of memory",
+        "std::bad_alloc",
+        "insufficient memory",
+    )
+    return any(marker in message for marker in markers)

@@ -70,6 +70,14 @@ def _api_key_status(key: str) -> str:
     return f"[green]✓[/green] ...{key[-4:]}"
 
 
+def _print_embedding_runtime_warnings(runtime: dict[str, object]) -> None:
+    warnings = runtime.get("warnings")
+    if not isinstance(warnings, list):
+        return
+    for warning in warnings:
+        console.print(f"[yellow]![/yellow] {warning}")
+
+
 # ── CLI Group ────────────────────────────────────────────────────────────────
 
 
@@ -181,9 +189,10 @@ def _setup_browser(paths: GRaDOSPaths) -> None:
 def _setup_models(paths: GRaDOSPaths) -> None:
     """Pre-download parser and embedding runtimes used by the default local stack."""
     from grados.extract.parse import prewarm_docling_models
-    from grados.storage.embedding import load_embedding_backend
+    from grados.storage.embedding import inspect_embedding_runtime, load_embedding_backend
 
     config = load_config(paths)
+    runtime = inspect_embedding_runtime(paths, config.indexing)
     console.print("  预热 Docling 模型...", end=" ")
     try:
         docling = prewarm_docling_models()
@@ -198,7 +207,12 @@ def _setup_models(paths: GRaDOSPaths) -> None:
     except Exception as e:
         console.print(f"[yellow]跳过: {e}[/yellow]")
 
-    console.print(f"  预热嵌入模型 ({config.indexing.model_id})...", end=" ")
+    _print_embedding_runtime_warnings(runtime)
+    console.print(
+        "  预热嵌入模型 "
+        f"({config.indexing.model_id}, max_length={runtime['max_length']}, batch={runtime['batch_size_hint']})...",
+        end=" ",
+    )
     try:
         backend = load_embedding_backend(paths=paths, config=config.indexing)
         backend.warmup()
@@ -497,6 +511,8 @@ def status() -> None:
     table.add_row("数据根目录", str(paths.root))
     table.add_row("调试模式", "开启" if config.debug else "关闭")
     table.add_row("默认 embedding", config.indexing.model_id)
+    table.add_row("索引 max_length", str(runtime["max_length"]))
+    table.add_row("编码 batch", str(runtime["batch_size_hint"]))
     table.add_row("检索管线", "docs → chunks (two-stage)")
     console.print(table)
     console.print()
@@ -563,7 +579,10 @@ def status() -> None:
     console.print(f"     provider: {runtime['provider']}")
     console.print(f"     model: {runtime['model_id']}")
     console.print(f"     query prompt: {runtime['query_prompt_mode']}")
+    console.print(f"     max length: {runtime['max_length']}")
+    console.print(f"     batch size: {runtime['batch_size_hint']}")
     console.print(f"     cache: {runtime['cache_dir']}")
+    _print_embedding_runtime_warnings(runtime)
     if stats.embedding_dim:
         console.print(
             "     indexed dim: "
@@ -626,16 +645,22 @@ def paths() -> None:
 @main.command("update-db")
 def update_db() -> None:
     """Batch-index papers/ into ChromaDB for semantic search."""
+    from grados.storage.embedding import inspect_embedding_runtime
     from grados.storage.vector import get_index_stats, index_all_papers
 
     paths = GRaDOSPaths()
     config = load_config(paths)
+    runtime = inspect_embedding_runtime(paths, config.indexing)
 
     console.print()
     console.print("[bold]GRaDOS Update-DB[/bold]")
     console.print(f"论文目录: [cyan]{paths.papers}[/cyan]")
     console.print(f"ChromaDB: [cyan]{paths.database_chroma}[/cyan]")
     console.print(f"默认 embedding: [cyan]{config.indexing.model_id}[/cyan]")
+    console.print(
+        f"max_length: [cyan]{runtime['max_length']}[/cyan]  |  batch: [cyan]{runtime['batch_size_hint']}[/cyan]"
+    )
+    _print_embedding_runtime_warnings(runtime)
     console.print()
 
     if not paths.papers.is_dir():
@@ -655,11 +680,14 @@ def update_db() -> None:
         return
 
     console.print(f"发现 {len(md_files)} 篇论文，正在索引...", end=" ")
-    papers_indexed, total_chunks = index_all_papers(
-        paths.database_chroma,
-        paths.papers,
-        indexing_config=config.indexing,
-    )
+    try:
+        papers_indexed, total_chunks = index_all_papers(
+            paths.database_chroma,
+            paths.papers,
+            indexing_config=config.indexing,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
     console.print("[green]✓[/green]")
     console.print(f"  已索引 [bold]{papers_indexed}[/bold] 篇论文，共 [bold]{total_chunks}[/bold] 个文本块")
 
@@ -671,16 +699,22 @@ def update_db() -> None:
 @main.command("reindex")
 def reindex() -> None:
     """Rebuild the entire semantic index from scratch for the active embedding config."""
+    from grados.storage.embedding import inspect_embedding_runtime
     from grados.storage.vector import get_index_stats, index_all_papers
 
     paths = GRaDOSPaths()
     config = load_config(paths)
+    runtime = inspect_embedding_runtime(paths, config.indexing)
 
     console.print()
     console.print("[bold]GRaDOS Reindex[/bold]")
     console.print(f"论文目录: [cyan]{paths.papers}[/cyan]")
     console.print(f"ChromaDB: [cyan]{paths.database_chroma}[/cyan]")
     console.print(f"目标 embedding: [cyan]{config.indexing.model_id}[/cyan]")
+    console.print(
+        f"max_length: [cyan]{runtime['max_length']}[/cyan]  |  batch: [cyan]{runtime['batch_size_hint']}[/cyan]"
+    )
+    _print_embedding_runtime_warnings(runtime)
     console.print()
 
     if paths.database_chroma.exists():
@@ -699,11 +733,14 @@ def reindex() -> None:
         return
 
     console.print(f"发现 {len(md_files)} 篇论文，正在全量重建...", end=" ")
-    papers_indexed, total_chunks = index_all_papers(
-        paths.database_chroma,
-        paths.papers,
-        indexing_config=config.indexing,
-    )
+    try:
+        papers_indexed, total_chunks = index_all_papers(
+            paths.database_chroma,
+            paths.papers,
+            indexing_config=config.indexing,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
     console.print("[green]✓[/green]")
 
     stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)

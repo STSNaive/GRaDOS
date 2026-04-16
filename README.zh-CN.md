@@ -20,7 +20,7 @@ GRaDOS 是一个面向学术检索、全文提取、本地论文存储与 Chroma
 
 GRaDOS 为 Claude、Codex、Cursor 等 AI agent 提供单一 stdio MCP 服务，用来检索学术数据库、跨付费墙抓取论文、把 PDF 解析为 canonical Markdown，并在写作时回读已保存论文做引用核验。
 
-阶段 A 默认启用了更强的本地检索栈：`microsoft/harrier-oss-v1-0.6b`、abstract-first 文档级 embedding、section-aware chunking，以及 docs → chunks 的两阶段检索。
+阶段 A 默认启用了更强但更稳的本地检索栈：`microsoft/harrier-oss-v1-270m`、abstract-first 文档级 embedding、section-aware chunking，以及 docs → chunks 的两阶段检索。`microsoft/harrier-oss-v1-0.6b` 仍然支持，但现在改为资源更充足机器上的显式选择。
 
 ## 架构概览 🧭
 
@@ -267,6 +267,18 @@ cp -R skills/grados "<skills-root>/"
 | `grados version` | 查看包版本信息 |
 
 如果你修改了 `config.json` 里的 `indexing.model_id`、`indexing.max_length` 或 section-aware chunking 参数，请使用 `grados reindex`，不要只跑 `grados update-db`。
+
+如果你只改了 `indexing.batch_size`，它只是运行时调优参数，不需要重建索引。
+
+### 索引默认值 🧠
+
+- 默认模型：`microsoft/harrier-oss-v1-270m`
+- 更重的可选模型：`microsoft/harrier-oss-v1-0.6b`
+- 默认 `indexing.max_length`：`4096`
+- 默认 `indexing.batch_size`：`0`（`auto`，在 CPU/MPS 上更保守，在 CUDA 上更放宽）
+- 遇到“整段超长”的旧 markdown 时，会先按句子或分句二次切块，再送进 embedding，避免 `grados reindex` 把巨型单块直接喂给 `SentenceTransformer.encode()`
+
+GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行时提示能走 SDPA，也不等于当前设备一定有 CUDA fused FlashAttention 内核；更稳妥的默认策略仍然是更小的 chunk、更短的 indexing length 和更保守的 batch。
 
 ### 文件布局 🗄️
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "grados"
-version = "0.6.7"
+version = "0.6.8"
 description = "Academic research MCP server — search, extract, and manage papers"
 readme = "README.md"
 license = "MIT"

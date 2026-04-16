@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from grados.config import GRaDOSPaths, IndexingConfig, SearchConfig
 from grados.search.academic import CrossrefState, PaperMetadata, PubMedState, SearchPageResult
 from grados.search.resumable import ContinuationData, decode_token, encode_token, run_resumable_search
@@ -675,12 +677,34 @@ def test_chunk_text_uses_section_aware_chunking_with_overlap() -> None:
     assert methods_chunk["paragraph_count"] == 2
 
 
+def test_chunk_text_splits_overlong_single_paragraph_by_sentence() -> None:
+    config = IndexingConfig(chunk_min_chars=40, chunk_max_chars=190, chunk_overlap_paragraphs=1)
+    markdown = (
+        "# Title\n\n"
+        "## Abstract\n\n"
+        "Sentence one carries the first half of the finding in a deliberately long style. "
+        "Sentence two keeps the same paragraph long enough to exceed the chunk budget cleanly. "
+        "Sentence three should appear in an overlapping follow-up chunk for retrieval stability. "
+        "Sentence four closes the paragraph with one more long clause for safety."
+    )
+
+    chunks = _chunk_text(markdown, config, fallback_title="Demo")
+
+    assert len(chunks) >= 3
+    assert chunks[0]["paragraph_count"] == 2
+    assert all(chunk["paragraph_count"] == 1 for chunk in chunks[1:])
+    assert "Sentence two keeps the same paragraph" in chunks[0]["text"]
+    assert "Sentence two keeps the same paragraph" in chunks[1]["text"]
+    assert "Sentence three should appear" in chunks[1]["text"]
+    assert "Sentence three should appear" in chunks[2]["text"]
+
+
 def test_index_paper_writes_real_embeddings_and_section_metadata(tmp_path: Path, monkeypatch) -> None:
     import grados.storage.vector as vector
 
     class FakeBackend:
         provider = "harrier"
-        model_id = "microsoft/harrier-oss-v1-0.6b"
+        model_id = "microsoft/harrier-oss-v1-270m"
         query_prompt_mode = "prompt_name:web_search_query"
         embedding_dim = 4
 
@@ -751,7 +775,7 @@ def test_index_paper_writes_real_embeddings_and_section_metadata(tmp_path: Path,
     assert doc_metadata["cites_json"] == '["10.9999/example-ref"]'
     stats = get_index_stats(tmp_path / "chroma", indexing_config=IndexingConfig())
     assert stats.index_manifest_present is True
-    assert stats.embedding_model == "microsoft/harrier-oss-v1-0.6b"
+    assert stats.embedding_model == "microsoft/harrier-oss-v1-270m"
 
 
 def test_get_index_stats_reports_reindex_when_manifest_mismatches(tmp_path: Path) -> None:
@@ -845,13 +869,16 @@ def test_get_index_stats_logs_collection_failures(tmp_path: Path, monkeypatch, c
 def test_load_embedding_backend_reuses_process_cache_for_same_key(tmp_path: Path, monkeypatch) -> None:
     class FakeSentenceTransformer:
         init_count = 0
+        encode_calls: list[dict[str, object]] = []
 
         def __init__(self, model_id: str, **kwargs) -> None:
             type(self).init_count += 1
             self.model_id = model_id
             self.max_seq_length = 0
+            self.device = SimpleNamespace(type="mps")
 
         def encode(self, texts: list[str], **kwargs) -> list[list[float]]:
+            type(self).encode_calls.append(dict(kwargs))
             return [[1.0, 2.0, 3.0] for _ in texts]
 
     monkeypatch.setitem(
@@ -872,8 +899,85 @@ def test_load_embedding_backend_reuses_process_cache_for_same_key(tmp_path: Path
 
     assert first is second
     assert FakeSentenceTransformer.init_count == 1
+    assert FakeSentenceTransformer.encode_calls[0]["batch_size"] == 2
+    assert FakeSentenceTransformer.encode_calls[1]["batch_size"] == 1
+    assert first._load_model().max_seq_length == 4096
 
     clear_embedding_backend_cache()
+
+
+def test_load_embedding_backend_uses_batch_size_1_for_harrier_0_6b_on_mps(tmp_path: Path, monkeypatch) -> None:
+    class FakeSentenceTransformer:
+        encode_calls: list[dict[str, object]] = []
+
+        def __init__(self, model_id: str, **kwargs) -> None:
+            self.model_id = model_id
+            self.max_seq_length = 0
+            self.device = SimpleNamespace(type="mps")
+
+        def encode(self, texts: list[str], **kwargs) -> list[list[float]]:
+            type(self).encode_calls.append(dict(kwargs))
+            return [[1.0, 2.0, 3.0] for _ in texts]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=FakeSentenceTransformer),
+    )
+
+    clear_embedding_backend_cache()
+    try:
+        backend = load_embedding_backend(
+            config=IndexingConfig(model_id="microsoft/harrier-oss-v1-0.6b"),
+            paths=GRaDOSPaths(tmp_path / "grados-home"),
+        )
+
+        backend.embed_documents(["doc one", "doc two"])
+
+        assert FakeSentenceTransformer.encode_calls[0]["batch_size"] == 1
+    finally:
+        clear_embedding_backend_cache()
+
+
+def test_embed_documents_surfaces_oom_diagnostics(tmp_path: Path, monkeypatch) -> None:
+    class FakeSentenceTransformer:
+        def __init__(self, model_id: str, **kwargs) -> None:
+            self.model_id = model_id
+            self.max_seq_length = 0
+            self.device = SimpleNamespace(type="mps")
+
+        def encode(self, texts: list[str], **kwargs) -> list[list[float]]:
+            raise MemoryError("Unable to allocate 52.38 GiB")
+
+        def tokenize(self, texts: list[str]) -> dict[str, list[list[int]]]:
+            token_count = min(len(texts[0].split()) + 2, 128)
+            return {"input_ids": [[0] * token_count]}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=FakeSentenceTransformer),
+    )
+
+    clear_embedding_backend_cache()
+    try:
+        backend = load_embedding_backend(
+            config=IndexingConfig(model_id="microsoft/harrier-oss-v1-0.6b"),
+            paths=GRaDOSPaths(tmp_path / "grados-home"),
+        )
+
+        with pytest.raises(RuntimeError, match="Embedding encode ran out of memory") as excinfo:
+            backend.embed_documents(
+                [
+                    "This is a deliberately long text batch entry for diagnostics.",
+                    "Another text makes sure the batch summary reports the count.",
+                ]
+            )
+        assert "batch_size=1" in str(excinfo.value)
+        assert "max_length=4096" in str(excinfo.value)
+        assert "texts=2" in str(excinfo.value)
+    finally:
+        clear_embedding_backend_cache()
 
 
 def test_load_embedding_backend_invalidates_when_backend_key_changes(tmp_path: Path) -> None:
