@@ -6,6 +6,12 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed
+- Changed package versioning from dual static declarations (`pyproject.toml` + `__init__.py`) to `hatch-vcs` dynamic versioning derived from git tags; no manual version bump is needed before releasing.
+- Changed `__init__.py` to read version at runtime via `importlib.metadata.version()` instead of a hardcoded string.
+- Changed `publish.yml` to remove the tag-vs-pyproject version verification step (now redundant).
+- Added `scripts/release.py` to bump plugin JSON versions, commit, tag, and optionally push in a single command.
+
 ## [0.6.8] - 2026-04-16
 
 ### Changed

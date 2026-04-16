@@ -1065,7 +1065,6 @@ wheels = [
 
 [[package]]
 name = "grados"
-version = "0.6.8"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -1108,9 +1107,9 @@ requires-dist = [
     { name = "click", specifier = ">=8.0" },
     { name = "docling" },
     { name = "fastmcp", specifier = ">=2.0" },
-    { name = "grados", extras = ["marker"], marker = "extra == 'full'" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "lxml", specifier = ">=5.0" },
+    { name = "marker-pdf", marker = "extra == 'full'", specifier = "==1.10.2" },
     { name = "marker-pdf", marker = "extra == 'marker'", specifier = "==1.10.2" },
     { name = "patchright", specifier = ">=1.50" },
     { name = "platformdirs", specifier = ">=4.0" },
@@ -1122,7 +1121,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0" },
     { name = "sentence-transformers", specifier = ">=3.0" },
 ]
-provides-extras = ["docling", "marker", "full"]
+provides-extras = ["docling", "full", "marker"]
 
 [package.metadata.requires-dev]
 dev = [

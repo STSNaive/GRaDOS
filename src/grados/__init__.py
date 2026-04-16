@@ -1,5 +1,7 @@
 """GRaDOS — Academic research MCP server."""
 
-__version__ = "0.6.8"
+from importlib.metadata import version
+
+__version__ = version("grados")
 
 __all__ = ["__version__"]

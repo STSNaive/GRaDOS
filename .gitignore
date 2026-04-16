@@ -11,6 +11,7 @@ dist-final/
 __pycache__/
 *.pyc
 python/
+src/grados/_version.py
 
 # Secrets & user config
 .env
@@ -54,6 +55,10 @@ desktop.ini
 Thumbs.db
 %SystemDrive%/
 
+# Agent/project docs (local only)
+CLAUDE.md
+AGENTS.md
+
 # Plan docs (local only)
 *-plan.md
 *_plan.md
@@ -62,7 +67,6 @@ Thumbs.db
 *-decisions.md
 status.md
 grados-issues-checklist.md
-grados-python-migration-plan.md
 TODO.md
 plan.md
 roadmap.md

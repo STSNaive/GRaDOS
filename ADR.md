@@ -5,26 +5,6 @@
 - `TODO.md` 只保留未完成事项；不再重复维护已完成决策。
 - `CHANGELOG.md` 记录对外可见的行为变化；本文更关注“为什么这样设计”。
 
-## ADR-000：release tag 必须晚于 version bump commit
-
-- 状态：Accepted
-- 日期：2026-04-15
-
-### 背景
-- 发布 workflow 会校验 Git tag `vX.Y.Z` 与 `pyproject.toml` 中的包版本完全一致。
-- 如果先推 tag、后改版本，或在已有 tag 上重复试错，容易触发失败 workflow、重复 workflow，甚至让 release 记录与实际包内容错位。
-
-### 决策
-- 发布 `vX.Y.Z` 前，必须先把 `pyproject.toml` 与 `src/grados/__init__.py` 的版本号提升到同一版本，并提交到 git。
-- 发布顺序固定为：`version bump commit -> push main -> create/push tag vX.Y.Z`。
-- 默认依赖 tag push 自动触发 `publish.yml`；只有自动未触发或需要补跑时，才使用 `workflow_dispatch` 手动触发。
-- 若必须重指已存在的 release tag，必须先确认是否会导致重复 workflow / 重复发布，再决定是否强推 tag。
-
-### 结果与影响
-- release tag、包版本、GitHub workflow 与 PyPI 版本之间保持一一对应。
-- 版本错误会在本地 commit/tag 阶段被规避，而不是等到 CI 才暴露。
-- 发布流程的重试方式明确为“先修版本与提交，再处理 tag”，避免同一版本产生多次含义不同的 run。
-
 ## ADR-001：`papers/*.md` 是唯一 canonical full-text source of truth
 
 - 状态：Accepted
@@ -167,3 +147,30 @@
 - 配置中的顺序字段可以直接映射到 registry 执行顺序，行为更容易理解和测试。
 - 核心 orchestration 函数更薄，更接近 FastAPI / Home Assistant 一类项目常见的“模块注册 + 统一调度”组织方式。
 - 运行时 fallback 仍然保留在策略层，但 warning/debug 继续保持显式可见，不回退到静默失败。
+
+---
+
+## ADR-007：版本号由 git tag 唯一决定（hatch-vcs 动态版本）
+
+- 状态：Accepted（取代原 ADR-000 "release tag 必须晚于 version bump commit"）
+- 日期：2026-04-16
+
+### 背景
+- 原方案要求先手动 bump `pyproject.toml` 与 `__init__.py` 的版本号、commit、再打 tag 推送。
+- 实际操作中多次因忘记 bump 或版本不一致导致 CI 失败、tag 需要重建。
+- 手动维护两处版本号是不必要的同步负担。
+
+### 决策
+- 采用 `hatch-vcs`（基于 `setuptools-scm`），Python 包版本在构建时自动从 git tag 派生。
+- `pyproject.toml` 使用 `dynamic = ["version"]`，不再包含静态版本号。
+- `src/grados/__init__.py` 通过 `importlib.metadata.version("grados")` 在运行时获取版本。
+- 构建时 `hatch-vcs` 自动生成 `src/grados/_version.py` 写入版本。
+- Claude Code / Codex plugin JSON 中的 `version` 字段由 `scripts/release.py` 在打 tag 前统一更新。
+- 发布流程简化为：`uv run python scripts/release.py X.Y.Z --push`（更新 plugin → commit → tag → push）。
+- `publish.yml` 不再校验 tag 与文件版本一致性（因为版本本身来源于 tag）。
+- 开发环境安装（`uv sync`）会显示带 dev 后缀的版本号（如 `0.6.9.dev3+g1a2b3c4`），发布包版本严格等于 tag。
+
+### 结果与影响
+- Python 包版本唯一真源为 git tag，plugin 版本由 release 脚本同步，不可能产生不一致。
+- 发布操作步骤减少一半，消除了人为遗漏 bump 的风险。
+- `_version.py` 是构建产物，已加入 `.gitignore`。
