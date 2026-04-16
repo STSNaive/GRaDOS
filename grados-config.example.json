@@ -70,10 +70,8 @@
             "_comment_closePdfPageAfterCapture": "If true, close the spawned PDF tab/page after a real PDF is captured, while keeping the reusable browser window alive."
         },
         "parsing": {
-            "markerWorkerDirectory": "./marker-worker",
-            "_comment_markerWorkerDirectory": "Optional Marker worker directory override. Point this to the marker-worker folder itself (the directory containing worker.py, install.sh/install.ps1, and local.env after installation), not to its parent directory. Relative paths resolve from PROJECT_ROOT.",
             "markerTimeout": 120000,
-            "_comment_markerTimeout": "Maximum time in milliseconds to wait for the local Marker worker process. If markerWorkerDirectory is set, GRaDOS uses it directly; otherwise it falls back to PROJECT_ROOT/marker-worker (if present) and then PACKAGE_ROOT/marker-worker (default: 120000).",
+            "_comment_markerTimeout": "Maximum time in milliseconds to wait for the isolated Marker subprocess (default: 120000).",
             "order": ["Docling", "Marker", "PyMuPDF"],
             "enabled": {
                 "Docling": true,

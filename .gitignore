@@ -13,20 +13,13 @@ __pycache__/
 python/
 src/grados/_version.py
 
+# Legacy marker worker (replaced by in-process subprocess)
+marker-worker/
+
 # Secrets & user config
 .env
 grados-config.json
 manifest.json
-
-# Marker worker runtime
-marker-worker/.venv/
-marker-worker/.cache/
-marker-worker/__pycache__/
-marker-worker/.tools/
-marker-worker/.python-version
-marker-worker/local.env
-marker-worker/smoke.pdf
-marker-worker/uv.lock
 
 # Runtime artifacts
 papers/

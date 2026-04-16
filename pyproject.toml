@@ -100,7 +100,6 @@ exclude = [
     ".claude/",
     ".grados/",
     "hooks/",
-    "marker-worker/",
     "docs/",
     "node_modules/",
     "dist/",
