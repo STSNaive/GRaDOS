@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +19,41 @@ __all__ = [
     "hydrate_canonical_documents",
     "list_index_document_summaries",
     "list_paper_document_records",
+    "PaperDocument",
+    "PaperDocumentSummary",
+    "paper_document_from_record",
+    "paper_document_summary_from_record",
 ]
+
+
+@dataclass(frozen=True)
+class PaperDocumentSummary:
+    doi: str
+    safe_doi: str
+    title: str
+    source: str
+    fetch_outcome: str
+    authors: list[str]
+    year: str
+    journal: str
+    section_headings: list[str]
+    assets_manifest_path: str
+    word_count: int
+    char_count: int
+    doc_summary_source: str
+    cites: list[str]
+    embedding_provider: str
+    embedding_model: str
+    embedding_dim: int
+    embedding_prompt_mode: str
+    uri: str
+    content_hash: str = ""
+    indexed_at: str = ""
+
+
+@dataclass(frozen=True)
+class PaperDocument(PaperDocumentSummary):
+    content_markdown: str = ""
 
 
 def _deserialize_str_list(raw: Any) -> list[str]:
@@ -42,6 +76,17 @@ def _normalize_result_list(value: Any) -> list[Any]:
     if value and isinstance(value[0], list):
         return list(value[0])
     return list(value)
+
+
+def _document_like_to_record(value: Any) -> dict[str, Any]:
+    if not isinstance(value, type) and is_dataclass(value):
+        payload = asdict(value)
+        if isinstance(payload, dict):
+            return payload
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
 
 
 def document_record_from_metadata(metadata: dict[str, Any], document: str = "") -> dict[str, Any]:
@@ -68,6 +113,40 @@ def document_record_from_metadata(metadata: dict[str, Any], document: str = "") 
         "uri": f"grados://papers/{safe_doi}",
         "content_markdown": document,
     }
+
+
+def paper_document_summary_from_record(record: dict[str, Any]) -> PaperDocumentSummary:
+    return PaperDocumentSummary(
+        doi=str(record.get("doi", "")),
+        safe_doi=str(record.get("safe_doi", "")),
+        title=str(record.get("title", "")),
+        source=str(record.get("source", "")),
+        fetch_outcome=str(record.get("fetch_outcome", "")),
+        authors=[str(value) for value in record.get("authors", []) if str(value)],
+        year=str(record.get("year", "")),
+        journal=str(record.get("journal", "")),
+        section_headings=[str(value) for value in record.get("section_headings", []) if str(value)],
+        assets_manifest_path=str(record.get("assets_manifest_path", "")),
+        word_count=int(record.get("word_count", 0) or 0),
+        char_count=int(record.get("char_count", 0) or 0),
+        doc_summary_source=str(record.get("doc_summary_source", "")),
+        cites=[str(value) for value in record.get("cites", []) if str(value)],
+        embedding_provider=str(record.get("embedding_provider", "")),
+        embedding_model=str(record.get("embedding_model", "")),
+        embedding_dim=int(record.get("embedding_dim", 0) or 0),
+        embedding_prompt_mode=str(record.get("embedding_prompt_mode", "")),
+        uri=str(record.get("uri", "")),
+        content_hash=str(record.get("content_hash", "")),
+        indexed_at=str(record.get("indexed_at", "")),
+    )
+
+
+def paper_document_from_record(record: dict[str, Any]) -> PaperDocument:
+    summary = paper_document_summary_from_record(record)
+    return PaperDocument(
+        **asdict(summary),
+        content_markdown=str(record.get("content_markdown", "")),
+    )
 
 
 def get_paper_document_record(*, docs_collection: Any, safe_doi: str) -> dict[str, Any] | None:
@@ -116,7 +195,7 @@ def list_index_document_summaries(
     *,
     docs_collection: Any,
     chroma_dir: Path,
-    fallback_list_paper_documents: Callable[[Path], list[dict[str, Any]]],
+    fallback_list_paper_documents: Callable[[Path], list[Any]],
 ) -> list[dict[str, Any]]:
     total = docs_collection.count()
     if total <= 0:
@@ -125,7 +204,11 @@ def list_index_document_summaries(
     result = collection_get(collection=docs_collection, limit=total, include=["metadatas"])
     metadatas = _normalize_result_list(result.get("metadatas"))
     if not metadatas:
-        return [{**document, "content_markdown": ""} for document in fallback_list_paper_documents(chroma_dir)]
+        return [
+            {**record, "content_markdown": ""}
+            for document in fallback_list_paper_documents(chroma_dir)
+            if (record := _document_like_to_record(document))
+        ]
 
     summaries = [
         document_record_from_metadata(metadata or {})
@@ -140,7 +223,7 @@ def get_paper_documents_by_ids(
     docs_collection: Any,
     chroma_dir: Path,
     safe_dois: list[str],
-    fallback_list_paper_documents: Callable[[Path], list[dict[str, Any]]],
+    fallback_list_paper_documents: Callable[[Path], list[Any]],
 ) -> list[dict[str, Any]]:
     if not safe_dois:
         return []
@@ -153,9 +236,9 @@ def get_paper_documents_by_ids(
     if not raw_ids:
         allowed = set(safe_dois)
         return [
-            document
+            record
             for document in fallback_list_paper_documents(chroma_dir)
-            if document.get("safe_doi", "") in allowed
+            if (record := _document_like_to_record(document)).get("safe_doi", "") in allowed
         ]
 
     by_safe_doi: dict[str, dict[str, Any]] = {}

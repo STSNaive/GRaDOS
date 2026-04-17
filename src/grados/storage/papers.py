@@ -248,14 +248,11 @@ def load_paper_record(
     doi: str | None = None,
     safe_doi: str | None = None,
     uri: str | None = None,
-    chroma_dir: Path | None = None,
 ) -> PaperRecord | None:
     """Load the canonical markdown-backed paper record from `papers/*.md`."""
     safe_doi = _resolve_safe_doi(doi=doi, safe_doi=safe_doi, uri=uri)
     if not safe_doi:
         return None
-
-    _ = chroma_dir
     file_path = papers_dir / f"{safe_doi}.md"
     if not file_path.is_file():
         return None
@@ -298,7 +295,6 @@ def read_paper(
     max_paragraphs: int = 20,
     section_query: str | None = None,
     include_front_matter: bool = False,
-    chroma_dir: Path | None = None,
 ) -> PaperReadResult | None:
     """Read a saved paper with paragraph windowing."""
     if uri and uri.startswith("grados://papers/"):
@@ -309,7 +305,6 @@ def read_paper(
     if not safe_doi:
         return None
 
-    _ = chroma_dir
     file_path = papers_dir / f"{safe_doi}.md"
     if not file_path.is_file():
         return None
@@ -349,7 +344,6 @@ def get_paper_structure(
     doi: str | None = None,
     safe_doi: str | None = None,
     uri: str | None = None,
-    chroma_dir: Path | None = None,
 ) -> PaperStructureResult | None:
     """Return a compact, deterministic structure card for a saved paper."""
     record = load_paper_record(
@@ -357,7 +351,6 @@ def get_paper_structure(
         doi=doi,
         safe_doi=safe_doi,
         uri=uri,
-        chroma_dir=chroma_dir,
     )
     if not record:
         return None

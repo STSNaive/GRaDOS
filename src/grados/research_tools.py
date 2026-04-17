@@ -11,6 +11,7 @@ from typing import Any
 
 from grados.storage.chunking import extract_reference_dois, extract_sections, normalize_doi
 from grados.storage.papers import PaperRecord, list_saved_papers, load_paper_record
+from grados.storage.paths import resolve_papers_dir
 from grados.storage.vector import PaperSearchResult, search_papers
 
 __all__ = [
@@ -267,16 +268,8 @@ def _section_matches(section_name: str, section_filter: list[str] | None) -> boo
     return any(candidate in normalized or normalized in candidate for candidate in candidates)
 
 
-def _papers_dir_from_chroma_dir(chroma_dir: Path) -> Path:
-    if chroma_dir.name == "papers":
-        return chroma_dir
-    if chroma_dir.parent.name == "database":
-        return chroma_dir.parent.parent / "papers"
-    return chroma_dir.parent / "papers"
-
-
 def _resolve_documents(chroma_dir: Path, dois: list[str]) -> tuple[list[PaperRecord], list[str]]:
-    papers_dir = _papers_dir_from_chroma_dir(chroma_dir)
+    papers_dir = resolve_papers_dir(chroma_dir)
     resolved: list[PaperRecord] = []
     missing: list[str] = []
     for doi in dois:
@@ -289,7 +282,7 @@ def _resolve_documents(chroma_dir: Path, dois: list[str]) -> tuple[list[PaperRec
 
 
 def _load_local_citation_records(chroma_dir: Path) -> list[LocalCitationRecord]:
-    papers_dir = _papers_dir_from_chroma_dir(chroma_dir)
+    papers_dir = resolve_papers_dir(chroma_dir)
     records: list[LocalCitationRecord] = []
     for item in list_saved_papers(papers_dir):
         safe_doi = item.safe_doi.strip()
@@ -614,7 +607,7 @@ def build_evidence_grid(
 ) -> EvidenceGridResult:
     """Construct a compact evidence grid for a topic and subquestions."""
 
-    papers_dir = _papers_dir_from_chroma_dir(chroma_dir)
+    papers_dir = resolve_papers_dir(chroma_dir)
     resolved_subquestions = [question.strip() for question in (subquestions or []) if question.strip()] or [topic]
     scoped_dois = [value.strip() for value in (dois or []) if value.strip()]
     grids: list[EvidenceGridBlock] = []
@@ -824,6 +817,10 @@ def _strip_citations(text: str) -> str:
     return re.sub(r"\s+", " ", stripped).strip()
 
 
+def _audit_query_cache_key(query: str) -> str:
+    return re.sub(r"\s+", " ", query).strip().lower()
+
+
 def _citation_matches_result(marker: AuditCitationMarker, result: PaperSearchResult) -> bool:
     if marker.style != "author_year":
         return True
@@ -847,25 +844,29 @@ def audit_draft_support(
 ) -> DraftAuditResult:
     """Audit draft claims against the local evidence store."""
 
-    papers_dir = _papers_dir_from_chroma_dir(chroma_dir)
+    papers_dir = resolve_papers_dir(chroma_dir)
     claims = _split_claims(draft_text)
     audited_claims: list[AuditedClaim] = []
     status_counts: Counter[str] = Counter()
+    evidence_cache: dict[str, list[PaperSearchResult]] = {}
 
     for index, claim in enumerate(claims, 1):
         markers = _extract_citation_markers(claim, citation_style)
         search_query = _strip_citations(claim)
-        evidence = (
-            search_papers(
-                chroma_dir,
-                search_query,
-                limit=3,
-                papers_dir=papers_dir,
-                use_reranking=True,
-            )
-            if search_query
-            else []
-        )
+        evidence: list[PaperSearchResult] = []
+        if search_query:
+            cache_key = _audit_query_cache_key(search_query)
+            cached = evidence_cache.get(cache_key)
+            if cached is None:
+                cached = search_papers(
+                    chroma_dir,
+                    search_query,
+                    limit=3,
+                    papers_dir=papers_dir,
+                    use_reranking=True,
+                )
+                evidence_cache[cache_key] = cached
+            evidence = cached
         top_score = evidence[0].score if evidence else 0.0
         status = "unsupported"
         if top_score >= 1.1:

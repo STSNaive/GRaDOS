@@ -269,7 +269,8 @@ def chunk_text(
             paragraph_start = body_start + paragraph_offsets[0]
             paragraph_count = paragraph_offsets[-1] - paragraph_offsets[0] + 1
             if start == 0 and has_heading:
-                paragraph_start = int(heading_index)
+                assert isinstance(heading_index, int)
+                paragraph_start = heading_index
                 paragraph_count += 1
             chunks.append(
                 {

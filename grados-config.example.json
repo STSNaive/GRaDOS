@@ -45,7 +45,7 @@
         "sciHub": {
             "autoUpdateMirror": true,
             "mirrorUrlFile": "./scihub-mirrors.txt",
-            "fallbackMirror": "https://sci-hub.se"
+            "fallback_mirror": "https://sci-hub.se"
         },
         "headlessBrowser": {
             "browser": "chrome",

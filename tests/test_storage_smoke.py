@@ -310,7 +310,6 @@ def test_read_and_list_require_markdown_mirror_source_of_truth(
         safe_doi="10_1234_demo",
         max_paragraphs=2,
         include_front_matter=True,
-        chroma_dir=chroma_dir,
     )
 
     assert frontmatter_result is None
@@ -320,7 +319,6 @@ def test_read_and_list_require_markdown_mirror_source_of_truth(
         safe_doi="10_1234_demo",
         section_query="methods",
         max_paragraphs=2,
-        chroma_dir=chroma_dir,
     )
 
     assert result is None

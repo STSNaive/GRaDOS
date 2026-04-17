@@ -37,13 +37,18 @@ from grados.storage.embedding import (
 )
 from grados.storage.frontmatter import parse_authors_metadata, read_frontmatter_metadata
 from grados.storage.hydration import (
+    PaperDocument,
+    PaperDocumentSummary,
     canonical_excerpt,
     get_paper_document_record,
     get_paper_documents_by_ids,
     hydrate_canonical_documents,
     list_index_document_summaries,
     list_paper_document_records,
+    paper_document_from_record,
+    paper_document_summary_from_record,
 )
+from grados.storage.paths import resolve_papers_dir
 from grados.storage.retrieval import (
     ChunkWindowCandidate,
     PaperSearchResult,
@@ -142,16 +147,6 @@ def _doc_metadata(
         "embedding_dim": embedding_dim,
         "embedding_prompt_mode": embedding_prompt_mode,
     }
-
-
-def _resolve_papers_dir(chroma_dir: Path, papers_dir: Path | None = None) -> Path | None:
-    if papers_dir is not None:
-        return papers_dir
-    if not isinstance(chroma_dir, Path):
-        return None
-    if chroma_dir.name == "chroma" and chroma_dir.parent.name == "database":
-        return chroma_dir.parent.parent / "papers"
-    return None
 
 
 def _chunk_metadata(
@@ -301,18 +296,24 @@ def index_paper(
     return len(chunks)
 
 
-def get_paper_document(chroma_dir: Path, safe_doi: str) -> dict[str, Any] | None:
+def get_paper_document(chroma_dir: Path, safe_doi: str) -> PaperDocument | None:
     """Load the canonical stored paper document by safe_doi."""
     client = _get_client(chroma_dir)
     docs_collection = _get_docs_collection(client)
-    return get_paper_document_record(docs_collection=docs_collection, safe_doi=safe_doi)
+    record = get_paper_document_record(docs_collection=docs_collection, safe_doi=safe_doi)
+    if record is None:
+        return None
+    return paper_document_from_record(record)
 
 
-def list_paper_documents(chroma_dir: Path) -> list[dict[str, Any]]:
+def list_paper_documents(chroma_dir: Path) -> list[PaperDocumentSummary]:
     """List canonical paper documents currently stored in ChromaDB."""
     client = _get_client(chroma_dir)
     docs_collection = _get_docs_collection(client)
-    return list_paper_document_records(docs_collection=docs_collection)
+    return [
+        paper_document_summary_from_record(record)
+        for record in list_paper_document_records(docs_collection=docs_collection)
+    ]
 
 
 def search_papers(
@@ -374,7 +375,7 @@ def search_papers(
             reverse=True,
         )
     ]
-    papers_path = _resolve_papers_dir(chroma_dir, papers_dir)
+    papers_path = papers_dir or resolve_papers_dir(chroma_dir)
     documents = _hydrate_canonical_documents(
         get_paper_documents_by_ids(
             docs_collection=docs_collection,

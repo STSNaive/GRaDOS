@@ -200,6 +200,37 @@ def test_fetch_scihub_surfaces_warning_when_pdf_link_missing() -> None:
     assert result.warnings == ["Sci-Hub lookup failed: no PDF link found"]
 
 
+def test_fetch_scihub_ignores_legacy_fallback_mirror_key() -> None:
+    from grados.extract.fetch import _fetch_scihub
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.status_code = 200
+            self.text = "<html><body>no pdf here</body></html>"
+            self.headers: dict[str, str] = {}
+            self.content = self.text.encode("utf-8")
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.last_url = ""
+
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            self.last_url = url
+            return FakeResponse()
+
+    client = FakeClient()
+    result = asyncio.run(
+        _fetch_scihub(
+            "10.1234/demo",
+            client,  # type: ignore[arg-type]
+            {"fallbackMirror": "https://legacy.example"},
+        )
+    )
+
+    assert result.outcome == "failed"
+    assert client.last_url == "https://sci-hub.se/10.1234/demo"
+
+
 def test_elsevier_xml_is_parsed_deterministically_into_markdown() -> None:
     xml_payload = """<?xml version="1.0" encoding="UTF-8"?>
 <full-text-retrieval-response xmlns="http://www.elsevier.com/xml/svapi/article/dtd"

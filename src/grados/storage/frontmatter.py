@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import frontmatter as frontmatter_lib
+import frontmatter as frontmatter_lib  # type: ignore[import-untyped]
 
 __all__ = [
     "build_front_matter",
@@ -57,7 +57,7 @@ def build_front_matter(
             metadata[key] = value
 
     post = frontmatter_lib.Post("", **metadata)
-    return frontmatter_lib.dumps(post).rstrip()
+    return str(frontmatter_lib.dumps(post)).rstrip()
 
 
 def _normalize_metadata(metadata: Mapping[str, Any]) -> dict[str, str]:

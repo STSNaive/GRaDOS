@@ -23,16 +23,31 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed the browser main polling loop from a fixed `asyncio.sleep(1)` to an exponential backoff between idle ticks (`0.5s → 1s → 2s`, configurable via `extract.headlessBrowser.poll{Min,Max}Seconds`), reducing CPU and event-loop churn on slow publisher pages without hurting first-tick responsiveness.
 - Changed hardcoded `timeout=30` values in search, fetch, and publisher HTTP calls to call-time runtime getters (`current_search_timeout()`, `current_fetch_timeout()`, `current_pdf_timeout()`), so user-provided timeouts in `~/GRaDOS/config.json` take effect without touching code.
 - Changed browser-assisted ScienceDirect fallback navigation so failed manual/candidate/redirect hops are surfaced in outer `warnings[]` instead of being silently swallowed; generic browser best-effort fallbacks are now annotated in code and covered by regression tests.
-- Changed package versioning from dual static declarations (`pyproject.toml` + `__init__.py`) to `hatch-vcs` dynamic versioning derived from git tags; no manual version bump is needed before releasing.
-- Changed `__init__.py` to read version at runtime via `importlib.metadata.version()` instead of a hardcoded string.
-- Changed `publish.yml` to remove the tag-vs-pyproject version verification step (now redundant).
-- Added `scripts/release.py` to bump plugin JSON versions, commit, tag, and optionally push in a single command.
+- Changed local Chroma `collection_get()` / `query_collection()` helpers to enforce a 10s timeout guard; stalled local index calls now return degraded warnings instead of hanging indefinitely.
+- Changed `audit_draft_support` to de-duplicate repeated stripped queries within one audit run, so repeated claims reuse the same local search results instead of re-querying Chroma each time.
+- Changed storage retrieval internals so `storage/vector.py` is now a thinner facade over dedicated `retrieval`, `hydration`, `chroma_client`, and shared `paths` helpers; `get_paper_document()` / `list_paper_documents()` now return typed `PaperDocument` / `PaperDocumentSummary` results instead of another loose dict boundary.
+- Changed canonical saved-paper helpers so `load_paper_record()` / `read_paper()` / `get_paper_structure()` no longer carry an unused `chroma_dir` parameter, and `papers_dir` resolution is centralized in `storage/paths.py::resolve_papers_dir()`.
 
 ### Fixed
 - Fixed `_HeaderAwareWait` so `Retry-After: 0` is honored as an explicit immediate retry instead of being treated as a missing header and falling back to exponential backoff.
 
 ### Removed
+- Removed the legacy standalone `marker-worker/` directory and `markerWorkerDirectory` example-config knob; Marker parsing is now only driven by the Python runtime path configured for the in-process parser worker.
+- Removed the temporary `fallbackMirror` compatibility shim from `extract/fetch.py`; raw `sci_hub_config` callers must now pass `fallback_mirror`.
 - Removed the legacy `grados migrate-config` TypeScript-to-Python migration command and its old-install documentation; the supported carry-forward path is now `grados import-pdfs` plus normal runtime setup.
+
+### Tests
+- Added regression coverage for browser fallback warnings, local Chroma timeout guards, repeated-query deduplication in `audit_draft_support`, typed paper-document accessors, shared `papers_dir` resolution, and the dropped raw `fallbackMirror` Sci-Hub fetch shim.
+
+## [0.6.9] - 2026-04-16
+
+### Added
+- Added `scripts/release.py` to bump plugin manifest versions, create the release commit/tag sequence, and optionally push in one command.
+
+### Changed
+- Changed package versioning from dual static declarations (`pyproject.toml` + `__init__.py`) to `hatch-vcs` dynamic versioning derived from git tags, so normal releases no longer require a manual Python package version bump.
+- Changed `src/grados/__init__.py` to read the installed package version via `importlib.metadata.version()` instead of a hardcoded string.
+- Changed `publish.yml` to drop the redundant tag-vs-pyproject version verification step after switching to git-tag-derived package versions.
 
 ## [0.6.8] - 2026-04-16
 

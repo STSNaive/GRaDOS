@@ -108,7 +108,6 @@ def paper_overview_resource(safe_doi: str) -> str:
     structure = get_paper_structure(
         papers_dir=paths.papers,
         safe_doi=safe_doi,
-        chroma_dir=paths.database_chroma,
     )
     if not structure:
         return f"# Paper Not Found\n\nCould not resolve grados://papers/{safe_doi}"
@@ -326,7 +325,6 @@ async def read_saved_paper(
         max_paragraphs=max_paragraphs,
         section_query=section_query,
         include_front_matter=include_front_matter,
-        chroma_dir=paths.database_chroma,
     )
 
     if not result:
@@ -370,7 +368,6 @@ async def get_saved_paper_structure(
         doi=doi,
         safe_doi=safe_doi,
         uri=uri,
-        chroma_dir=paths.database_chroma,
     )
     if not structure:
         return {

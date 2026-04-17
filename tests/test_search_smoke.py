@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +21,9 @@ from grados.search.academic import (
 from grados.search.resumable import ContinuationData, decode_token, encode_token, run_resumable_search
 from grados.storage.chroma_client import collection_get, delete_paper_chunks, query_collection
 from grados.storage.embedding import clear_embedding_backend_cache, load_embedding_backend
+from grados.storage.hydration import PaperDocument, PaperDocumentSummary
 from grados.storage.papers import save_paper_markdown
+from grados.storage.paths import resolve_papers_dir
 from grados.storage.vector import PaperSearchResult, _chunk_text, get_index_stats, index_paper, search_papers
 
 
@@ -866,6 +869,127 @@ def test_collection_get_surfaces_degraded_filter_when_projection_is_unsupported(
     assert result["degraded_filter"] is True
     assert result["warnings"] == ["Chroma get() does not support include projection; retried without include."]
     assert result["ids"] == ["10_1234_demo"]
+
+
+def test_query_collection_returns_timeout_warning(monkeypatch) -> None:
+    import grados.storage.chroma_client as chroma_client
+
+    class FakeCollection:
+        def query(self, **kwargs):  # noqa: ANN003
+            time.sleep(0.05)
+            return {"documents": [["demo chunk"]], "metadatas": [[{"safe_doi": "10_1234_demo"}]]}
+
+    monkeypatch.setattr(chroma_client, "current_chroma_call_timeout_seconds", lambda: 0.01)
+
+    result = query_collection(
+        collection=FakeCollection(),
+        query_embedding=[0.1, 0.2],
+        n_results=3,
+    )
+
+    assert result["degraded_filter"] is True
+    assert result["warnings"] == ["Chroma query() timed out after 0.01s."]
+
+
+def test_collection_get_returns_timeout_warning(monkeypatch) -> None:
+    import grados.storage.chroma_client as chroma_client
+
+    class FakeCollection:
+        def get(self, **kwargs):  # noqa: ANN003
+            time.sleep(0.05)
+            return {"ids": ["10_1234_demo"]}
+
+    monkeypatch.setattr(chroma_client, "current_chroma_call_timeout_seconds", lambda: 0.01)
+
+    result = collection_get(
+        collection=FakeCollection(),
+        ids=["10_1234_demo"],
+    )
+
+    assert result["degraded_filter"] is True
+    assert result["warnings"] == ["Chroma get() timed out after 0.01s."]
+
+
+def test_get_paper_document_and_list_paper_documents_return_dataclasses(monkeypatch, tmp_path: Path) -> None:
+    import grados.storage.vector as vector
+
+    monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: object())
+    monkeypatch.setattr(
+        vector,
+        "get_paper_document_record",
+        lambda docs_collection, safe_doi: {
+            "doi": "10.1234/demo",
+            "safe_doi": safe_doi,
+            "title": "Demo Paper",
+            "source": "Crossref",
+            "fetch_outcome": "native_full_text",
+            "authors": ["Alice Smith"],
+            "year": "2025",
+            "journal": "Composite Structures",
+            "section_headings": ["Abstract"],
+            "assets_manifest_path": "",
+            "word_count": 42,
+            "char_count": 256,
+            "doc_summary_source": "abstract",
+            "cites": ["10.2000/ref"],
+            "embedding_provider": "harrier",
+            "embedding_model": "demo",
+            "embedding_dim": 768,
+            "embedding_prompt_mode": "query_document",
+            "uri": f"grados://papers/{safe_doi}",
+            "content_hash": "hash",
+            "indexed_at": "2026-04-17T00:00:00+00:00",
+            "content_markdown": "# Demo",
+        },
+    )
+    monkeypatch.setattr(
+        vector,
+        "list_paper_document_records",
+        lambda docs_collection: [
+            {
+                "doi": "10.1234/demo",
+                "safe_doi": "10_1234_demo",
+                "title": "Demo Paper",
+                "source": "Crossref",
+                "fetch_outcome": "native_full_text",
+                "authors": ["Alice Smith"],
+                "year": "2025",
+                "journal": "Composite Structures",
+                "section_headings": ["Abstract"],
+                "assets_manifest_path": "",
+                "word_count": 42,
+                "char_count": 256,
+                "doc_summary_source": "abstract",
+                "cites": ["10.2000/ref"],
+                "embedding_provider": "harrier",
+                "embedding_model": "demo",
+                "embedding_dim": 768,
+                "embedding_prompt_mode": "query_document",
+                "uri": "grados://papers/10_1234_demo",
+                "content_hash": "hash",
+                "indexed_at": "2026-04-17T00:00:00+00:00",
+                "content_markdown": "# Demo",
+            }
+        ],
+    )
+
+    document = vector.get_paper_document(tmp_path / "chroma", "10_1234_demo")
+    documents = vector.list_paper_documents(tmp_path / "chroma")
+
+    assert isinstance(document, PaperDocument)
+    assert document is not None
+    assert document.content_markdown == "# Demo"
+    assert isinstance(documents[0], PaperDocumentSummary)
+    assert documents[0].safe_doi == "10_1234_demo"
+
+
+def test_resolve_papers_dir_handles_standard_and_fallback_layouts(tmp_path: Path) -> None:
+    standard = tmp_path / "database" / "chroma"
+    fallback = tmp_path / "custom" / "chroma"
+
+    assert resolve_papers_dir(standard) == tmp_path / "papers"
+    assert resolve_papers_dir(fallback) == tmp_path / "custom" / "papers"
 
 
 def test_delete_paper_chunks_logs_failures(caplog) -> None:

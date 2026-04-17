@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any
 
 __all__ = [
     "collection_get",
+    "current_chroma_call_timeout_seconds",
     "delete_paper_chunks",
     "filter_query_result",
     "get_chunks_collection",
@@ -18,7 +21,29 @@ __all__ = [
 
 _DOCS_COLLECTION_NAME = "papers_docs"
 _CHUNKS_COLLECTION_NAME = "papers_chunks"
+_CHROMA_CALL_TIMEOUT_SECONDS = 10.0
+_CHROMA_CALL_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="grados-chroma")
 logger = logging.getLogger(__name__)
+
+
+def current_chroma_call_timeout_seconds() -> float:
+    return _CHROMA_CALL_TIMEOUT_SECONDS
+
+
+def _run_with_timeout(label: str, func: Any) -> Any:
+    timeout_seconds = current_chroma_call_timeout_seconds()
+    future = _CHROMA_CALL_EXECUTOR.submit(func)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(f"Chroma {label} timed out after {timeout_seconds:.2f}s.") from exc
+
+
+def _as_result_dict(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        return dict(result)
+    return {}
 
 
 def get_client(chroma_dir: Path) -> Any:
@@ -62,12 +87,21 @@ def collection_get(
 
     warnings: list[str] = []
     try:
-        return collection.get(**params)
+        return _as_result_dict(_run_with_timeout("get()", lambda: collection.get(**params)))
+    except TimeoutError as exc:
+        warnings.append(str(exc))
+        logger.warning(warnings[-1])
+        return {"degraded_filter": True, "warnings": warnings}
     except TypeError:
         warnings.append("Chroma get() does not support include projection; retried without include.")
         logger.warning(warnings[-1])
         params.pop("include", None)
-        result = collection.get(**params)
+        try:
+            result = _as_result_dict(_run_with_timeout("get()", lambda: collection.get(**params)))
+        except TimeoutError as exc:
+            warnings.append(str(exc))
+            logger.warning(warnings[-1])
+            return {"degraded_filter": True, "warnings": warnings}
         return {
             **result,
             "degraded_filter": True,
@@ -78,12 +112,16 @@ def collection_get(
         logger.warning(warnings[-1])
         params.pop("include", None)
         try:
-            result = collection.get(**params)
+            result = _as_result_dict(_run_with_timeout("get()", lambda: collection.get(**params)))
             return {
                 **result,
                 "degraded_filter": True,
                 "warnings": warnings,
             }
+        except TimeoutError as timeout_exc:
+            warnings.append(str(timeout_exc))
+            logger.warning(warnings[-1])
+            return {"degraded_filter": True, "warnings": warnings}
         except Exception:
             logger.exception("Chroma get() failed after fallback retry")
             return {"degraded_filter": True, "warnings": warnings}
@@ -108,7 +146,11 @@ def query_collection(
 
     warnings: list[str] = []
     try:
-        return collection.query(**params)
+        return _as_result_dict(_run_with_timeout("query()", lambda: collection.query(**params)))
+    except TimeoutError as exc:
+        warnings.append(str(exc))
+        logger.warning(warnings[-1])
+        return {"degraded_filter": True, "warnings": warnings}
     except TypeError:
         if "where_document" in params:
             warnings.append("Chroma query() does not support where_document; retried without document filter.")
@@ -116,20 +158,29 @@ def query_collection(
             params.pop("where_document", None)
         try:
             return {
-                **collection.query(**params),
+                **_as_result_dict(_run_with_timeout("query()", lambda: collection.query(**params))),
                 "degraded_filter": bool(warnings),
                 "warnings": warnings,
             }
+        except TimeoutError as exc:
+            warnings.append(str(exc))
+            logger.warning(warnings[-1])
+            return {"degraded_filter": True, "warnings": warnings}
         except TypeError:
             if "where" in params:
                 warnings.append("Chroma query() does not support where filter; retried without metadata filter.")
                 logger.warning(warnings[-1])
                 params.pop("where", None)
-            return {
-                **collection.query(**params),
-                "degraded_filter": bool(warnings),
-                "warnings": warnings,
-            }
+            try:
+                return {
+                    **_as_result_dict(_run_with_timeout("query()", lambda: collection.query(**params))),
+                    "degraded_filter": bool(warnings),
+                    "warnings": warnings,
+                }
+            except TimeoutError as exc:
+                warnings.append(str(exc))
+                logger.warning(warnings[-1])
+                return {"degraded_filter": True, "warnings": warnings}
     except Exception as exc:
         warnings.append(f"Chroma query() failed with filters: {exc.__class__.__name__}: {exc}")
         logger.warning(warnings[-1])
@@ -137,10 +188,14 @@ def query_collection(
         params.pop("where", None)
         try:
             return {
-                **collection.query(**params),
+                **_as_result_dict(_run_with_timeout("query()", lambda: collection.query(**params))),
                 "degraded_filter": True,
                 "warnings": warnings,
             }
+        except TimeoutError as timeout_exc:
+            warnings.append(str(timeout_exc))
+            logger.warning(warnings[-1])
+            return {"degraded_filter": True, "warnings": warnings}
         except Exception:
             logger.exception("Chroma query() failed after fallback retry")
             return {"degraded_filter": True, "warnings": warnings}

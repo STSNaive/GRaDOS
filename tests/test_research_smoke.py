@@ -190,3 +190,41 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
     assert supported.claims[0].status == "supported"
     assert misattributed.claims[0].status == "misattributed"
     assert numeric.claims[0].status == "weak"
+
+
+def test_audit_draft_support_deduplicates_repeated_queries(monkeypatch, tmp_path: Path) -> None:
+    import grados.research_tools as research_tools
+
+    calls: list[str] = []
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, limit, kwargs)
+        calls.append(query)
+        return [
+            PaperSearchResult(
+                doi="10.1234/demo",
+                safe_doi="10_1234_demo",
+                title="Composite Damping Study",
+                authors=["Smith", "Lee"],
+                year="2025",
+                journal="Composite Structures",
+                section_name="Results",
+                snippet="Composite damping improved vibration attenuation by 18%.",
+                score=1.35,
+            )
+        ]
+
+    monkeypatch.setattr(research_tools, "search_papers", fake_search_papers)
+
+    repeated_claim = "Composite damping improves vibration attenuation by 18% [Smith et al., 2025]."
+    draft_text = "\n\n".join(repeated_claim for _ in range(20))
+
+    result = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text=draft_text,
+        strictness="strict",
+    )
+
+    assert result.claims_checked == 20
+    assert all(claim.status == "supported" for claim in result.claims)
+    assert calls == ["Composite damping improves vibration attenuation by 18% ."]

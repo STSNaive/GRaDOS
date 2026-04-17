@@ -411,7 +411,7 @@ async def _fetch_scihub(
     client: httpx.AsyncClient,
     config: dict[str, Any],
 ) -> FetchResult:
-    mirror = config.get("fallback_mirror") or config.get("fallbackMirror") or "https://sci-hub.se"
+    mirror = config.get("fallback_mirror") or "https://sci-hub.se"
     warnings: list[str] = []
 
     try:
