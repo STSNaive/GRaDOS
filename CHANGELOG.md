@@ -6,11 +6,32 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+- Added `tenacity` (>=9.1) as a runtime dependency and a `grados._retry` module providing a unified async HTTP retry decorator (3 attempts, exponential 1→8s backoff with jitter, retries on 429/5xx/connect/read-timeout/protocol errors); see ADR-008.
+- Added `PDF_DOWNLOAD_TIMEOUT` helper (connect=15s, read=60s) applied to all PDF downloads in the OA, Sci-Hub, and Springer fetch paths so slow, large-file transfers no longer time out mid-stream at 30s.
+- Added configurable timeout / retry knobs under nested `search`, `extract`, `extract.headlessBrowser`, and top-level `retryPolicy` config sections (`grados-config.example.json`); new processes pick up edits without code changes. See `RetryPolicyConfig` plus `SearchConfig.connect_timeout`, `SearchConfig.read_timeout`, `ExtractConfig.fetch_connect_timeout`, `ExtractConfig.fetch_read_timeout`, and `HeadlessBrowserConfig.deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`.
+- Added `grados._retry.install_runtime_defaults()` plus live getters (`current_search_timeout`, `current_fetch_timeout`, `current_pdf_timeout`, `current_browser_networkidle_timeout_ms`, `current_browser_deadline_seconds`, `current_browser_poll_bounds`); retry / timeout values are now resolved at call time instead of being frozen at decorator construction, so config changes take effect on process restart without code edits.
+- Added a header-aware wait strategy that honors `Retry-After` and `X-RateLimit-Reset` response headers (capped at 60s) before falling back to exponential backoff with jitter; toggle via `retryPolicy.respectRetryAfter`.
+- Added per-source async rate limiters (`grados._retry.throttle_source`) wired into PubMed (≥334ms between calls without an API key, ≥100ms with a key) and Web of Science (≥500ms between calls) so concurrent search calls no longer exceed upstream rate limits.
+- Added optional `PUBMED_API_KEY` config threading for PubMed E-utilities requests so the keyed 100ms pacing path is reachable when a user explicitly configures it.
+- Added `tests/test_timeout_retry.py` with regression coverage for retry sequences (503/503/200, `ConnectError` → success), `Retry-After` honoring, rate-limiter spacing, browser poll backoff sequence (0.5 → 1 → 2 cap), and runtime-policy config propagation.
+
 ### Changed
+- Changed all academic search calls (Crossref, PubMed ESearch/ESummary/EFetch, Web of Science, Elsevier Scopus, Springer Meta) to go through the unified retry decorator so transient 429/5xx responses and network errors no longer fail the whole page fetch.
+- Changed Elsevier TDM full-text + metadata fallback calls and Springer OA JATS / HTML / PDF fallback calls to use the retry decorator, improving reliability against upstream transient errors.
+- Changed browser automation `wait_for_load_state("networkidle")` to use an explicit 15s ceiling (now configurable via `extract.headlessBrowser.networkidleTimeout`) so SPA-style background polling can no longer silently consume the browser deadline before falling through to the main capture loop (see ADR-008).
+- Changed the browser main polling loop from a fixed `asyncio.sleep(1)` to an exponential backoff between idle ticks (`0.5s → 1s → 2s`, configurable via `extract.headlessBrowser.poll{Min,Max}Seconds`), reducing CPU and event-loop churn on slow publisher pages without hurting first-tick responsiveness.
+- Changed hardcoded `timeout=30` values in search, fetch, and publisher HTTP calls to call-time runtime getters (`current_search_timeout()`, `current_fetch_timeout()`, `current_pdf_timeout()`), so user-provided timeouts in `~/GRaDOS/config.json` take effect without touching code.
 - Changed package versioning from dual static declarations (`pyproject.toml` + `__init__.py`) to `hatch-vcs` dynamic versioning derived from git tags; no manual version bump is needed before releasing.
 - Changed `__init__.py` to read version at runtime via `importlib.metadata.version()` instead of a hardcoded string.
 - Changed `publish.yml` to remove the tag-vs-pyproject version verification step (now redundant).
 - Added `scripts/release.py` to bump plugin JSON versions, commit, tag, and optionally push in a single command.
+
+### Fixed
+- Fixed `_HeaderAwareWait` so `Retry-After: 0` is honored as an explicit immediate retry instead of being treated as a missing header and falling back to exponential backoff.
+
+### Removed
+- Removed the legacy `grados migrate-config` TypeScript-to-Python migration command and its old-install documentation; the supported carry-forward path is now `grados import-pdfs` plus normal runtime setup.
 
 ## [0.6.8] - 2026-04-16
 

@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from grados import __version__
+from grados._retry import install_runtime_defaults
 from grados.config import GRaDOSPaths, generate_default_config, load_config
 from grados.integrations import inspect_clients, install_clients, remove_clients
 
@@ -192,6 +193,7 @@ def _setup_models(paths: GRaDOSPaths) -> None:
     from grados.storage.embedding import inspect_embedding_runtime, load_embedding_backend
 
     config = load_config(paths)
+    install_runtime_defaults(config)
     runtime = inspect_embedding_runtime(paths, config.indexing)
     console.print("  预热 Docling 模型...", end=" ")
     try:
@@ -328,78 +330,6 @@ def client_remove(clients: tuple[str, ...]) -> None:
     console.print()
 
 
-# ── grados migrate-config ────────────────────────────────────────────────────
-
-
-@main.command("migrate-config")
-@click.option(
-    "--from",
-    "source",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Path to legacy grados-config.json or its directory.",
-)
-@click.option("--dry-run", is_flag=True, help="Preview the migration without writing files.")
-@click.option("--force", is_flag=True, help="Overwrite config and merge into non-empty destination directories.")
-def migrate_config(source: Path | None, dry_run: bool, force: bool) -> None:
-    """Migrate a legacy TypeScript GRaDOS install into the Python layout."""
-    from grados.setup.migration import find_legacy_config, migrate_legacy_install
-
-    target_paths = GRaDOSPaths()
-    source_config = find_legacy_config(source, target_paths)
-    if source_config is None:
-        raise click.ClickException(
-            "未找到旧版 grados-config.json。请使用 --from 指定旧配置文件或其所在目录。"
-        )
-
-    console.print()
-    console.print(f"[bold]GRaDOS Migrate-Config[/bold]  v{__version__}")
-    console.print(f"旧配置文件: [cyan]{source_config}[/cyan]")
-    console.print(f"目标数据根: [cyan]{target_paths.root}[/cyan]")
-    console.print()
-
-    try:
-        result = migrate_legacy_install(
-            source_config,
-            target_paths,
-            force=force,
-            dry_run=dry_run,
-        )
-    except FileExistsError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    table = Table(show_header=True, box=None, padding=(0, 2))
-    table.add_column("项目", style="bold")
-    table.add_column("来源")
-    table.add_column("目标")
-    table.add_column("状态")
-
-    for action in result.actions:
-        detail = f" ({action.detail})" if action.detail else ""
-        table.add_row(
-            action.label,
-            str(action.source),
-            str(action.destination),
-            f"{action.status}{detail}",
-        )
-
-    console.print(table)
-
-    if result.warnings:
-        console.print()
-        console.print("[bold]说明[/bold]")
-        for warning in result.warnings:
-            console.print(f"  - {warning}")
-
-    console.print()
-    if dry_run:
-        console.print("[yellow]Dry-run 完成[/yellow]，未写入任何文件。")
-    else:
-        console.print(f"[green bold]迁移完成[/green bold]，新配置已写入 {result.target_config}")
-        console.print("  运行 [cyan]grados status[/cyan] 检查当前安装状态")
-    console.print()
-
-
 # ── grados import-pdfs ───────────────────────────────────────────────────────
 
 
@@ -494,6 +424,7 @@ def status() -> None:
 
     paths = GRaDOSPaths()
     config = load_config(paths)
+    install_runtime_defaults(config)
     runtime = inspect_embedding_runtime(paths, config.indexing)
     stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
 
@@ -650,6 +581,7 @@ def update_db() -> None:
 
     paths = GRaDOSPaths()
     config = load_config(paths)
+    install_runtime_defaults(config)
     runtime = inspect_embedding_runtime(paths, config.indexing)
 
     console.print()
@@ -704,6 +636,7 @@ def reindex() -> None:
 
     paths = GRaDOSPaths()
     config = load_config(paths)
+    install_runtime_defaults(config)
     runtime = inspect_embedding_runtime(paths, config.indexing)
 
     console.print()

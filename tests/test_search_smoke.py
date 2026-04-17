@@ -10,7 +10,13 @@ from types import SimpleNamespace
 import pytest
 
 from grados.config import GRaDOSPaths, IndexingConfig, SearchConfig
-from grados.search.academic import CrossrefState, PaperMetadata, PubMedState, SearchPageResult
+from grados.search.academic import (
+    CrossrefState,
+    PaperMetadata,
+    PubMedState,
+    SearchPageResult,
+    build_search_adapters,
+)
 from grados.search.resumable import ContinuationData, decode_token, encode_token, run_resumable_search
 from grados.storage.chroma_client import collection_get, delete_paper_chunks, query_collection
 from grados.storage.embedding import clear_embedding_backend_cache, load_embedding_backend
@@ -126,6 +132,26 @@ def test_run_resumable_search_handles_dedup_and_continuation(monkeypatch) -> Non
     assert [paper.doi for paper in second.results] == ["10.1000/c"]
     assert second.continuation_applied is True
     assert second.next_continuation_token is None
+
+
+def test_build_search_adapters_threads_pubmed_api_key(monkeypatch) -> None:
+    observed: dict[str, str] = {}
+
+    async def fake_search_pubmed(query, limit, state, api_key, client):
+        observed["api_key"] = api_key
+        return SearchPageResult([], exhausted=True), state
+
+    monkeypatch.setattr("grados.search.academic.search_pubmed", fake_search_pubmed)
+
+    adapters = build_search_adapters(
+        api_keys={"PUBMED_API_KEY": "pubmed-demo-key"},
+        etiquette_email="research@example.edu",
+        limit=5,
+    )
+    state = adapters["PubMed"]["init"]()
+    asyncio.run(adapters["PubMed"]["fetch"]("query", 5, state, object()))
+
+    assert observed["api_key"] == "pubmed-demo-key"
 
 
 def test_search_papers_applies_metadata_filters_and_hybrid_reranking(monkeypatch) -> None:

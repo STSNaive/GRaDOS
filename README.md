@@ -20,8 +20,6 @@ The Python MCP server for academic paper search, full-text extraction, visible l
 
 GRaDOS gives AI agents (Claude, Codex, Cursor, and similar clients) a single stdio MCP server that can search academic databases, fetch papers through paywalls, parse PDFs into canonical Markdown, and revisit saved papers for citation-grounded writing.
 
-Phase A now ships with a stronger but safer local retrieval stack by default: `microsoft/harrier-oss-v1-270m`, abstract-first document embeddings, section-aware chunking, and docs → chunks two-stage retrieval. `microsoft/harrier-oss-v1-0.6b` is still supported, but it is now an opt-in choice for roomier machines.
-
 ## Architecture 🧭
 
 GRaDOS is designed to sit inside an agent research workflow:
@@ -246,6 +244,15 @@ This fallback assumes the `grados` MCP server is already registered in your clie
 
 ## Configuration ⚙️
 
+Keep [grados-config.example.json](./grados-config.example.json) as the commented reference; edits take effect on the next CLI run or MCP server restart.
+
+### Timeout / Retry Knobs
+
+- `search`: `connectTimeout`, `readTimeout`
+- `extract`: `fetchConnectTimeout`, `fetchReadTimeout`
+- `extract.headlessBrowser`: `deadlineSeconds`, `networkidleTimeout`, `pollMinSeconds`, `pollMaxSeconds`
+- `retryPolicy`: `maxAttempts`, `maxWait`, `respectRetryAfter`
+
 ### Commands 🧰
 
 | Command | Purpose |
@@ -263,7 +270,6 @@ This fallback assumes the `grados` MCP server is already registered in your clie
 | `grados paths` | Show the resolved GRaDOS filesystem layout |
 | `grados update-db` | Incrementally refresh the ChromaDB index from `papers/` when the active indexing config is unchanged |
 | `grados reindex` | Rebuild the semantic index from scratch after embedding-model or chunking changes |
-| `grados migrate-config --from /path/to/legacy` | Migrate data from an older GRaDOS install |
 | `grados version` | Show package versions |
 
 If you change `indexing.model_id`, `indexing.max_length`, or the section-aware chunking settings in `config.json`, use `grados reindex` instead of `grados update-db`.
@@ -310,13 +316,14 @@ Root selection priority:
 | Key | Source | Required |
 | --- | --- | --- |
 | `ELSEVIER_API_KEY` | Elsevier Developer Portal | No |
+| `PUBMED_API_KEY` | NCBI E-utilities API key | No |
 | `WOS_API_KEY` | Clarivate Developer Portal | No |
 | `SPRINGER_meta_API_KEY` | Springer Nature Metadata API | No |
 | `SPRINGER_OA_API_KEY` | Springer Nature Open Access API | No |
 | `LLAMAPARSE_API_KEY` | LlamaCloud | No |
 | `ZOTERO_API_KEY` | Zotero Settings -> Keys | No |
 
-Crossref and PubMed require no API keys. GRaDOS will use whichever services are configured and skip the rest. At minimum, the default remote search flow still works with the free sources, and the local paper workflow works without any third-party key.
+Crossref works without an API key. PubMed also works without one, but `PUBMED_API_KEY` is available as an optional pacing upgrade for E-utilities. GRaDOS will use whichever services are configured and skip the rest; the default remote search flow still works with the free sources, and the local paper workflow works without any third-party key.
 
 ### Runtime Order 🌊
 
@@ -354,35 +361,14 @@ PDF parsing priority:
 }
 ```
 
-### Migrating From Older Installs ♻️
+### Importing Existing PDF Libraries ♻️
 
-If you already have an older GRaDOS data directory, use `grados migrate-config` to carry papers, downloads, browser assets, models, and compatible settings into the current layout.
-
-Recommended migration flow:
+If you already have a local PDF library, use `grados import-pdfs` to parse and copy those files into the canonical `papers/` + `downloads/` layout:
 
 ```bash
-uv tool install grados
-grados migrate-config --from /path/to/legacy
+grados import-pdfs --from /path/to/papers --recursive
 grados status
 ```
-
-What `grados migrate-config` carries forward:
-
-- Saved Markdown papers into `papers/`
-- Archived PDFs into `downloads/`
-- Managed browser assets into `browser/`
-- Model caches into `models/`
-- Compatible search, extraction, Zotero, and API-key settings into the new `config.json`
-
-Path mapping:
-
-| Older layout | Current layout |
-| --- | --- |
-| `grados-config.json` | `config.json` |
-| `markdown/` | `papers/` |
-| `downloads/` | `downloads/` |
-| `.grados/browser/` | `browser/` |
-| `models/` | `models/` |
 
 ## Development 🛠️
 

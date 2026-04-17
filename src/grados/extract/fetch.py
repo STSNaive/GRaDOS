@@ -10,6 +10,7 @@ from typing import Any, Protocol
 import httpx
 from bs4 import BeautifulSoup
 
+from grados._retry import current_fetch_timeout, current_pdf_timeout, http_retry
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 from grados.publisher.common import (
     PublisherMetadata,
@@ -331,6 +332,32 @@ async def _fetch_tdm(
 # ── OA (Unpaywall) ──────────────────────────────────────────────────────────
 
 
+@http_retry()
+async def _unpaywall_lookup(
+    client: httpx.AsyncClient,
+    doi: str,
+    etiquette_email: str,
+) -> httpx.Response:
+    resp = await client.get(
+        f"https://api.unpaywall.org/v2/{doi}",
+        params={"email": etiquette_email},
+        timeout=current_fetch_timeout(),
+    )
+    # Non-2xx that is retryable (429/5xx) raises via raise_for_status; 404 stays
+    # as a caller-decided outcome.
+    if resp.status_code >= 500 or resp.status_code == 429:
+        resp.raise_for_status()
+    return resp
+
+
+@http_retry()
+async def _download_pdf(client: httpx.AsyncClient, url: str) -> httpx.Response:
+    resp = await client.get(url, timeout=current_pdf_timeout(), follow_redirects=True)
+    if resp.status_code >= 500 or resp.status_code == 429:
+        resp.raise_for_status()
+    return resp
+
+
 async def _fetch_oa(
     doi: str,
     etiquette_email: str,
@@ -338,11 +365,7 @@ async def _fetch_oa(
 ) -> FetchResult:
     warnings: list[str] = []
     try:
-        resp = await client.get(
-            f"https://api.unpaywall.org/v2/{doi}",
-            params={"email": etiquette_email},
-            timeout=30,
-        )
+        resp = await _unpaywall_lookup(client, doi, etiquette_email)
         if resp.status_code != 200:
             return FetchResult(outcome="failed", warnings=[f"OA lookup failed: HTTP {resp.status_code}"])
 
@@ -355,7 +378,7 @@ async def _fetch_oa(
             if not pdf_url:
                 continue
             try:
-                pdf_resp = await client.get(pdf_url, timeout=30)
+                pdf_resp = await _download_pdf(client, pdf_url)
                 ct = pdf_resp.headers.get("content-type", "")
                 check = classify_pdf_content(pdf_resp.content, ct)
                 if check["is_pdf"]:
@@ -371,6 +394,18 @@ async def _fetch_oa(
 # ── Sci-Hub ──────────────────────────────────────────────────────────────────
 
 
+@http_retry()
+async def _scihub_landing(client: httpx.AsyncClient, mirror: str, doi: str) -> httpx.Response:
+    resp = await client.get(
+        f"{mirror}/{doi}",
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0"},
+        timeout=current_fetch_timeout(),
+    )
+    if resp.status_code >= 500 or resp.status_code == 429:
+        resp.raise_for_status()
+    return resp
+
+
 async def _fetch_scihub(
     doi: str,
     client: httpx.AsyncClient,
@@ -380,11 +415,7 @@ async def _fetch_scihub(
     warnings: list[str] = []
 
     try:
-        resp = await client.get(
-            f"{mirror}/{doi}",
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0"},
-            timeout=30,
-        )
+        resp = await _scihub_landing(client, mirror, doi)
         if resp.status_code != 200:
             return FetchResult(outcome="failed", warnings=[f"Sci-Hub lookup failed: HTTP {resp.status_code}"])
 
@@ -396,7 +427,7 @@ async def _fetch_scihub(
         if not pdf_url:
             return FetchResult(outcome="failed", warnings=["Sci-Hub lookup failed: no PDF link found"])
 
-        pdf_resp = await client.get(pdf_url, timeout=30)
+        pdf_resp = await _download_pdf(client, pdf_url)
         ct = pdf_resp.headers.get("content-type", "")
         check = classify_pdf_content(pdf_resp.content, ct)
         if check["is_pdf"]:

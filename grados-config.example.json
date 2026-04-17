@@ -15,7 +15,11 @@
             "WebOfScience": true,
             "Crossref": true,
             "PubMed": true
-        }
+        },
+        "connectTimeout": 10,
+        "_comment_connectTimeout": "TCP connect timeout in seconds for academic search APIs (Crossref, PubMed, WoS, Elsevier, Springer).",
+        "readTimeout": 30,
+        "_comment_readTimeout": "Response read timeout in seconds for academic search APIs."
     },
     "extract": {
         "downloadDirectory": "./downloads",
@@ -67,7 +71,15 @@
             "keepInteractiveWindowOpen": true,
             "_comment_keepInteractiveWindowOpen": "If true, do not close the visible browser window after a successful publisher fetch. GRaDOS will reuse it on later runs while the session stays alive.",
             "closePdfPageAfterCapture": true,
-            "_comment_closePdfPageAfterCapture": "If true, close the spawned PDF tab/page after a real PDF is captured, while keeping the reusable browser window alive."
+            "_comment_closePdfPageAfterCapture": "If true, close the spawned PDF tab/page after a real PDF is captured, while keeping the reusable browser window alive.",
+            "deadlineSeconds": 120,
+            "_comment_deadlineSeconds": "Maximum wall-clock seconds for the browser main polling loop per DOI.",
+            "networkidleTimeout": 15,
+            "_comment_networkidleTimeout": "Ceiling in seconds for wait_for_load_state('networkidle'). Publisher SPAs with background polling can keep the network busy indefinitely; this timeout lets the main polling loop run instead. See ADR-008.",
+            "pollMinSeconds": 0.5,
+            "_comment_pollMinSeconds": "Starting sleep between main-loop iterations. Backs off up to pollMaxSeconds on consecutive idle ticks.",
+            "pollMaxSeconds": 2.0,
+            "_comment_pollMaxSeconds": "Upper bound for the main-loop sleep after exponential backoff."
         },
         "parsing": {
             "markerTimeout": 120000,
@@ -81,7 +93,11 @@
         },
         "qa": {
             "minCharacters": 1500
-        }
+        },
+        "fetchConnectTimeout": 15,
+        "_comment_fetchConnectTimeout": "TCP connect timeout in seconds for OA / TDM / Sci-Hub HTTP calls.",
+        "fetchReadTimeout": 60,
+        "_comment_fetchReadTimeout": "Response read timeout in seconds for PDF and landing-page downloads. Keep generous: large PDFs and intermediate redirects can stream slowly."
     },
     "_comment_indexing": "Semantic indexing defaults for the built-in ChromaDB retrieval pipeline. Changing model or chunking settings requires `grados reindex`.",
     "indexing": {
@@ -136,11 +152,21 @@
     },
     "apiKeys": {
         "ELSEVIER_API_KEY": "",
+        "PUBMED_API_KEY": "",
         "WOS_API_KEY": "",
         "SPRINGER_meta_API_KEY": "",
         "SPRINGER_OA_API_KEY": "",
         "LLAMAPARSE_API_KEY": "",
         "ZOTERO_API_KEY": ""
+    },
+    "_comment_retryPolicy": "Unified retry knobs for external HTTP calls (ADR-008). Retries cover 429, 5xx, and transient network errors with exponential backoff + jitter.",
+    "retryPolicy": {
+        "maxAttempts": 3,
+        "_comment_maxAttempts": "Total attempts including the first call. 1 disables retries.",
+        "maxWait": 8,
+        "_comment_maxWait": "Upper bound in seconds on a single backoff wait between attempts.",
+        "respectRetryAfter": true,
+        "_comment_respectRetryAfter": "Honor Retry-After / X-RateLimit-Reset response headers when true."
     },
     "_comment_academicEtiquetteEmail": "Email used for academic APIs (Crossref, Unpaywall) to identify requests and get into their polite pools. CHANGE THIS to your real institutional email.",
     "academicEtiquetteEmail": "your-email@university.edu"

@@ -174,3 +174,41 @@
 - Python 包版本唯一真源为 git tag，plugin 版本由 release 脚本同步，不可能产生不一致。
 - 发布操作步骤减少一半，消除了人为遗漏 bump 的风险。
 - `_version.py` 是构建产物，已加入 `.gitignore`。
+
+---
+
+## ADR-008：外部调用统一 timeout / retry / 节流策略
+
+- 状态：Accepted
+- 日期：2026-04-17
+
+### 背景
+- `search`、`extract.fetch`、`publisher`、`browser` 各层对外部 API / 浏览器的调用，长期使用硬编码 30s timeout，无重试、无指数退避，也不区分各学术数据库上游的速率约束。
+- `browser/generic.py` 的 `wait_for_load_state("networkidle")` 调用未传 timeout，实际依赖 try/except 兜底；遇到 SPA 背景轮询时主线程可能在浏览器侧长时间阻塞，消耗 2 分钟 deadline 的有效工作时间。
+- PubMed / WoS 等数据库有明确的 req/s 上限（PubMed 3 rps 无 key / 10 rps 有 key，WoS 2 rps），无节流时批量查询易触发 429。
+- 瞬时 5xx / 429 / 网络抖动在当前实现下直接失败，没有合理重试窗口。
+
+### 决策
+- 引入 `tenacity`（Apache-2.0，Py3.10+，活跃维护）作为统一重试层，不自写装饰器。
+- 重试模板：`stop_after_attempt(max_attempts)` + `wait_exponential(multiplier=1, min=1, max=max_wait)` + `wait_random(0, 1)` 抖动；默认 3 次、max_wait=8s。仅对 429、5xx、`httpx.ConnectError`、`httpx.ReadTimeout`、`httpx.WriteError`、`httpx.PoolTimeout`、`httpx.RemoteProtocolError` 重试；存在 `Retry-After` 或 `X-RateLimit-Reset` 时优先遵守，响应头给出的 wait 值在 60s 上限内直接采用。
+- 超时按阶段差异化（全部可经 config 热替换，新进程启动后立即生效）：
+  - search 层 HTTP：connect 10s / read 30s
+  - fetch / publisher HTTP（OA / TDM / Sci-Hub 非 PDF）：connect 15s / read 60s
+  - PDF 下载：connect 15s / read 60s
+  - browser `goto`：30s（保持）
+  - browser `networkidle`：15s，失败 try/except 降级进入主轮询循环，不挂死
+  - browser 总 deadline：120s
+  - browser 主轮询：`0.5s → 1s → 2s` 指数退避
+  - Marker：沿用 `config.extract.parsing.marker_timeout`
+- 按数据库分档速率节流：PubMed 无 key ≥334ms / 有 key ≥100ms；WoS ≥500ms；Crossref 继续走 polite pool；Elsevier / Unpaywall / Springer 依赖响应头动态退避，无需前置节流。节流器为进程内 `asyncio.Lock` + 单调最小间隔，跨并发任务共享。
+- 运行时 policy：`grados._retry` 模块级 `_CURRENT` 由 `install_runtime_defaults(config)` 在 MCP 工具入口 / CLI 启动时从 `~/GRaDOS/config.json` 注入；装饰器与 timeout getter 在每次调用时读取 `_CURRENT`，不做 import-time 冻结。
+- 配置面：新增 `retryPolicy`（顶层）、`search.connectTimeout` / `readTimeout`、`extract.fetchConnectTimeout` / `fetchReadTimeout`、`extract.headlessBrowser.deadlineSeconds` / `networkidleTimeout` / `pollMinSeconds` / `pollMaxSeconds`；所有新字段有保守默认值，缺失字段走 Pydantic default，不破坏旧 config。
+- 所有 retry / timeout / throttle 事件必须产生可观测 warning / debug（对齐 ADR-004）。
+
+### 结果与影响
+- 新增运行时依赖 `tenacity`；`uv tool install grados` 与 `uv sync` 自动拉取。
+- 瞬时 5xx / 429 / `ConnectError` / `ReadTimeout` 不再立即失败；最坏路径总延时最多增加 `sum(wait_exponential) ≈ 7s / 调用`，或 `Retry-After` 指定值（最多 60s）。
+- 用户可在 `~/GRaDOS/config.json` 直接调 timeout / retry knobs；MCP 工具重启（或下次 tool 调用）即生效，不需要改代码、不需要重装。
+- `browser/generic.py` 的 15s `networkidle` 上限替代隐式默认，消除"networkidle 无超时"的潜在挂死风险；主轮询 `asyncio.sleep(1)` 改为 `0.5s → 1s → 2s` 指数退避，降低长页面空转 CPU 与事件循环负载。
+- PubMed / WoS 的最小间隔节流由进程内 `_AsyncMinIntervalLimiter` 保障；Elsevier / Unpaywall 依赖响应头退避已通过 `_HeaderAwareWait` 实现。
+- 未来新增 publisher 时，只需套用统一 retry 装饰器 + runtime getter，不重复手写超时 / 节流逻辑。

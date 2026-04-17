@@ -10,6 +10,13 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
+from grados._retry import (
+    WOS_MIN_INTERVAL,
+    current_search_timeout,
+    http_retry,
+    pubmed_min_interval,
+    throttle_source,
+)
 from grados.publisher.common import looks_like_doi
 
 # ── Shared types ─────────────────────────────────────────────────────────────
@@ -55,6 +62,22 @@ class CrossrefState:
     cursor_issued_at: str = ""
 
 
+@http_retry()
+async def _crossref_request(
+    client: httpx.AsyncClient,
+    params: dict[str, Any],
+    etiquette_email: str,
+) -> dict[str, Any]:
+    resp = await client.get(
+        "https://api.crossref.org/works",
+        params=params,
+        headers={"User-Agent": f"GRaDOS/1.0 (mailto:{etiquette_email}) Python/httpx"},
+        timeout=current_search_timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 async def search_crossref(
     query: str,
     limit: int,
@@ -63,21 +86,16 @@ async def search_crossref(
     client: httpx.AsyncClient,
 ) -> tuple[SearchPageResult, CrossrefState]:
     try:
-        resp = await client.get(
-            "https://api.crossref.org/works",
-            params={
+        data = await _crossref_request(
+            client,
+            {
                 "query": query,
                 "rows": state.rows,
                 "cursor": state.cursor,
                 "select": "DOI,title,abstract,publisher,author,published-print,URL",
             },
-            headers={
-                "User-Agent": f"GRaDOS/1.0 (mailto:{etiquette_email}) Python/httpx",
-            },
-            timeout=30,
+            etiquette_email,
         )
-        resp.raise_for_status()
-        data = resp.json()
     except Exception as e:
         return (
             SearchPageResult([], exhausted=True, warnings=[f"Crossref search failed: {e}"]),
@@ -120,27 +138,53 @@ class PubMedState:
     total_count: int | None = None
 
 
+@http_retry()
+async def _pubmed_get_json(client: httpx.AsyncClient, url: str, params: dict[str, Any]) -> dict[str, Any]:
+    # Throttle to upstream NCBI E-utils limit (3 req/s without key). The
+    # limiter is shared across all PubMed calls in the same process, so
+    # concurrent ESearch / ESummary / EFetch calls still respect pacing.
+    has_api_key = bool(params.get("api_key"))
+    await throttle_source("pubmed", pubmed_min_interval(has_api_key))
+    resp = await client.get(url, params=params, timeout=current_search_timeout())
+    resp.raise_for_status()
+    return resp.json()
+
+
+@http_retry()
+async def _pubmed_get_text(client: httpx.AsyncClient, url: str, params: dict[str, Any]) -> str:
+    has_api_key = bool(params.get("api_key"))
+    await throttle_source("pubmed", pubmed_min_interval(has_api_key))
+    resp = await client.get(url, params=params, timeout=current_search_timeout())
+    resp.raise_for_status()
+    return resp.text
+
+
+def _pubmed_params(base: dict[str, Any], api_key: str) -> dict[str, Any]:
+    if api_key:
+        return {**base, "api_key": api_key}
+    return base
+
+
 async def search_pubmed(
     query: str,
     limit: int,
     state: PubMedState,
+    api_key: str,
     client: httpx.AsyncClient,
 ) -> tuple[SearchPageResult, PubMedState]:
     try:
         # Step 1: ESearch
-        esearch_resp = await client.get(
+        esearch = await _pubmed_get_json(
+            client,
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
-            params={
+            _pubmed_params({
                 "db": "pubmed",
                 "term": query,
                 "retmode": "json",
                 "retstart": state.retstart,
                 "retmax": state.page_size,
-            },
-            timeout=30,
+            }, api_key),
         )
-        esearch_resp.raise_for_status()
-        esearch = esearch_resp.json()
         result = esearch.get("esearchresult", {})
         pmids = result.get("idlist", [])
         total = int(result.get("count", 0))
@@ -150,24 +194,26 @@ async def search_pubmed(
             return SearchPageResult([], exhausted=True), new_state
 
         # Step 2: ESummary
-        esummary_resp = await client.get(
+        esummary_payload = await _pubmed_get_json(
+            client,
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
-            params={"db": "pubmed", "id": ",".join(pmids), "retmode": "json"},
-            timeout=30,
+            _pubmed_params({"db": "pubmed", "id": ",".join(pmids), "retmode": "json"}, api_key),
         )
-        esummary_resp.raise_for_status()
-        summaries = esummary_resp.json().get("result", {})
+        summaries = esummary_payload.get("result", {})
 
-        # Step 3: EFetch for abstracts (best-effort)
+        # Step 3: EFetch for abstracts (best-effort; failures here must not kill
+        # the whole page — we still have summaries/titles from ESummary).
         abstracts: dict[str, str] = {}
         try:
-            efetch_resp = await client.get(
+            efetch_text = await _pubmed_get_text(
+                client,
                 "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
-                params={"db": "pubmed", "id": ",".join(pmids), "rettype": "xml", "retmode": "xml"},
-                timeout=30,
+                _pubmed_params(
+                    {"db": "pubmed", "id": ",".join(pmids), "rettype": "xml", "retmode": "xml"},
+                    api_key,
+                ),
             )
-            efetch_resp.raise_for_status()
-            soup = BeautifulSoup(efetch_resp.text, "lxml-xml")
+            soup = BeautifulSoup(efetch_text, "lxml-xml")
             for article in soup.find_all("PubmedArticle"):
                 pmid_tag = article.find("PMID")
                 abstract_tag = article.find("Abstract")
@@ -220,6 +266,24 @@ class WoSState:
     page_size: int = 15
 
 
+@http_retry()
+async def _wos_request(
+    client: httpx.AsyncClient,
+    params: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    # Throttle to WoS starter API limit (2 req/s).
+    await throttle_source("wos", WOS_MIN_INTERVAL)
+    resp = await client.get(
+        "https://api.clarivate.com/apis/wos-starter/v1/documents",
+        params=params,
+        headers={"X-ApiKey": api_key},
+        timeout=current_search_timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 async def search_wos(
     query: str,
     limit: int,
@@ -232,14 +296,11 @@ async def search_wos(
 
     try:
         q = f"DO=({query})" if looks_like_doi(query) else f"TS=({query})"
-        resp = await client.get(
-            "https://api.clarivate.com/apis/wos-starter/v1/documents",
-            params={"q": q, "page": state.page, "limit": state.page_size},
-            headers={"X-ApiKey": api_key},
-            timeout=30,
+        data = await _wos_request(
+            client,
+            {"q": q, "page": state.page, "limit": state.page_size},
+            api_key,
         )
-        resp.raise_for_status()
-        data = resp.json()
     except Exception as e:
         return (
             SearchPageResult([], exhausted=True, warnings=[f"WoS search failed: {e}"]),
@@ -280,6 +341,22 @@ class ElsevierState:
     page_size: int = 15
 
 
+@http_retry()
+async def _elsevier_search_request(
+    client: httpx.AsyncClient,
+    params: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    resp = await client.get(
+        "https://api.elsevier.com/content/search/scopus",
+        params=params,
+        headers={"X-ELS-APIKey": api_key, "Accept": "application/json"},
+        timeout=current_search_timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 async def search_elsevier(
     query: str,
     limit: int,
@@ -291,19 +368,16 @@ async def search_elsevier(
         return SearchPageResult([], exhausted=True, warnings=["Elsevier API key not configured"]), state
 
     try:
-        resp = await client.get(
-            "https://api.elsevier.com/content/search/scopus",
-            params={
+        data = await _elsevier_search_request(
+            client,
+            {
                 "query": query,
                 "count": state.page_size,
                 "start": state.start,
                 "view": "COMPLETE",
             },
-            headers={"X-ELS-APIKey": api_key, "Accept": "application/json"},
-            timeout=30,
+            api_key,
         )
-        resp.raise_for_status()
-        data = resp.json()
     except Exception as e:
         return (
             SearchPageResult([], exhausted=True, warnings=[f"Elsevier search failed: {e}"]),
@@ -338,6 +412,20 @@ async def search_elsevier(
 # ── Springer ─────────────────────────────────────────────────────────────────
 
 
+@http_retry()
+async def _springer_search_request(
+    client: httpx.AsyncClient,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    resp = await client.get(
+        "https://api.springernature.com/meta/v2/json",
+        params=params,
+        timeout=current_search_timeout(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 @dataclass
 class SpringerState:
     fetched: bool = False
@@ -359,13 +447,10 @@ async def search_springer(
 
     try:
         q = f"doi:{query.strip()}" if looks_like_doi(query) else f'keyword:"{query.replace(chr(34), "")}"'
-        resp = await client.get(
-            "https://api.springernature.com/meta/v2/json",
-            params={"q": q, "p": state.page_size, "api_key": api_key},
-            timeout=30,
+        data = await _springer_search_request(
+            client,
+            {"q": q, "p": state.page_size, "api_key": api_key},
         )
-        resp.raise_for_status()
-        data = resp.json()
     except Exception as e:
         return (
             SearchPageResult([], exhausted=True, warnings=[f"Springer search failed: {e}"]),
@@ -420,7 +505,7 @@ def build_search_adapters(
         },
         "PubMed": {
             "init": lambda: PubMedState(page_size=_clamp_page_size(limit, 100)),
-            "fetch": lambda q, lim, st, cl: search_pubmed(q, lim, st, cl),
+            "fetch": lambda q, lim, st, cl: search_pubmed(q, lim, st, api_keys.get("PUBMED_API_KEY", ""), cl),
             "max_page_size": 100,
         },
         "WebOfScience": {

@@ -10,6 +10,8 @@ from xml.etree import ElementTree as ET
 import httpx
 from bs4 import BeautifulSoup
 
+from grados._retry import current_fetch_timeout, http_retry
+
 
 @dataclass
 class ElsevierMetadataSignal:
@@ -88,6 +90,39 @@ def extract_metadata_signal(payload: Any, fallback_doi: str) -> ElsevierMetadata
         return None
 
 
+@http_retry()
+async def _elsevier_article_xml(
+    client: httpx.AsyncClient,
+    base: str,
+    api_key: str,
+) -> httpx.Response:
+    resp = await client.get(
+        base,
+        params={"view": "FULL"},
+        headers={"X-ELS-APIKey": api_key, "Accept": "application/xml"},
+        timeout=current_fetch_timeout(),
+    )
+    if resp.status_code >= 500 or resp.status_code == 429:
+        resp.raise_for_status()
+    return resp
+
+
+@http_retry()
+async def _elsevier_article_json(
+    client: httpx.AsyncClient,
+    base: str,
+    api_key: str,
+) -> httpx.Response:
+    resp = await client.get(
+        base,
+        headers={"X-ELS-APIKey": api_key, "Accept": "application/json"},
+        timeout=current_fetch_timeout(),
+    )
+    if resp.status_code >= 500 or resp.status_code == 429:
+        resp.raise_for_status()
+    return resp
+
+
 async def fetch_elsevier_article(
     doi: str,
     api_key: str,
@@ -101,12 +136,7 @@ async def fetch_elsevier_article(
 
     # 1. FULL XML
     try:
-        resp = await client.get(
-            base,
-            params={"view": "FULL"},
-            headers={"X-ELS-APIKey": api_key, "Accept": "application/xml"},
-            timeout=30,
-        )
+        resp = await _elsevier_article_xml(client, base, api_key)
         if resp.status_code == 200 and resp.text:
             text, metadata = _extract_elsevier_markdown_from_xml(resp.text, fallback_doi=doi)
             if text and len(text) > 1000:
@@ -122,11 +152,7 @@ async def fetch_elsevier_article(
 
     # 2. Metadata only
     try:
-        resp = await client.get(
-            base,
-            headers={"X-ELS-APIKey": api_key, "Accept": "application/json"},
-            timeout=30,
-        )
+        resp = await _elsevier_article_json(client, base, api_key)
         if resp.status_code == 200:
             metadata = extract_metadata_signal(resp.json(), doi)
             return ElsevierFetchResult(

@@ -1083,6 +1083,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rich" },
     { name = "sentence-transformers" },
+    { name = "tenacity" },
 ]
 
 [package.optional-dependencies]
@@ -1120,6 +1121,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
     { name = "sentence-transformers", specifier = ">=3.0" },
+    { name = "tenacity", specifier = ">=9.1" },
 ]
 provides-extras = ["docling", "full", "marker"]
 

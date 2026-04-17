@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
+from grados._retry import install_runtime_defaults
 from grados.config import GRaDOSConfig, GRaDOSPaths, load_config
 from grados.storage.papers import PaperListEntry, PaperStructureResult
 
 
 def get_paths_and_config() -> tuple[GRaDOSPaths, GRaDOSConfig]:
+    """Load GRaDOS config + install runtime retry/timeout defaults.
+
+    We install the retry / timeout policy from the freshly-loaded config on
+    every tool call. That guarantees "new-process semantics": when the user
+    edits ~/GRaDOS/config.json and the MCP server restarts (or simply
+    re-enters a tool), the updated timeouts and retry knobs take effect
+    without reimporting any module. See ADR-008 / TODO P1-T5.2.
+
+    This is intentionally cheap: validated Pydantic reads + a single module-
+    level assignment in grados._retry.
+    """
     paths = GRaDOSPaths()
     config = load_config(paths)
+    install_runtime_defaults(config)
     return paths, config
 
 

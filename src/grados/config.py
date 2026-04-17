@@ -145,6 +145,16 @@ class SearchConfig(BaseModel):
         "Crossref": True,
         "PubMed": True,
     })
+    connect_timeout: float = Field(
+        default=10.0,
+        ge=1.0,
+        description="TCP connect timeout (seconds) for search API calls.",
+    )
+    read_timeout: float = Field(
+        default=30.0,
+        ge=1.0,
+        description="Response read timeout (seconds) for search API calls.",
+    )
 
 
 class FetchStrategyConfig(BaseModel):
@@ -172,6 +182,34 @@ class HeadlessBrowserConfig(BaseModel):
     reuse_interactive_window: bool = True
     keep_interactive_window_open: bool = True
     close_pdf_page_after_capture: bool = True
+    deadline_seconds: float = Field(
+        default=120.0,
+        ge=10.0,
+        description="Maximum wall-clock seconds for the main browser polling loop (per DOI).",
+    )
+    networkidle_timeout: float = Field(
+        default=15.0,
+        ge=1.0,
+        description=(
+            "Ceiling (seconds) for wait_for_load_state('networkidle'). SPA "
+            "background polling can keep the network busy indefinitely; this "
+            "timeout hands control back to the main polling loop instead of "
+            "silently eating the deadline."
+        ),
+    )
+    poll_min_seconds: float = Field(
+        default=0.5,
+        ge=0.1,
+        description=(
+            "Starting sleep between main-loop iterations. Backs off up to "
+            "poll_max_seconds on consecutive idle ticks."
+        ),
+    )
+    poll_max_seconds: float = Field(
+        default=2.0,
+        ge=0.1,
+        description="Upper bound for the main-loop sleep after backoff. Must be >= poll_min_seconds.",
+    )
 
 
 class ParsingConfig(BaseModel):
@@ -203,6 +241,20 @@ class ExtractConfig(BaseModel):
     headless_browser: HeadlessBrowserConfig = Field(default_factory=HeadlessBrowserConfig)
     parsing: ParsingConfig = Field(default_factory=ParsingConfig)
     qa: QAConfig = Field(default_factory=QAConfig)
+    fetch_connect_timeout: float = Field(
+        default=15.0,
+        ge=1.0,
+        description="TCP connect timeout (seconds) for OA / TDM / Sci-Hub landing calls.",
+    )
+    fetch_read_timeout: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Response read timeout (seconds) for PDF / landing-page "
+            "downloads. Keep generous: large PDFs and publisher intermediate "
+            "redirects can stream slowly."
+        ),
+    )
 
 
 class IndexingConfig(BaseModel):
@@ -229,11 +281,39 @@ class ZoteroConfig(BaseModel):
 
 class ApiKeysConfig(BaseModel):
     ELSEVIER_API_KEY: str = ""
+    PUBMED_API_KEY: str = ""
     WOS_API_KEY: str = ""
     SPRINGER_meta_API_KEY: str = ""
     SPRINGER_OA_API_KEY: str = ""
     LLAMAPARSE_API_KEY: str = ""
     ZOTERO_API_KEY: str = ""
+
+
+class RetryPolicyConfig(BaseModel):
+    """Retry knobs for external HTTP calls (ADR-008).
+
+    Retries are triggered by transient failures: 429, 5xx, httpx.ConnectError,
+    httpx.ReadTimeout, httpx.WriteError, httpx.PoolTimeout,
+    httpx.RemoteProtocolError. Non-retryable errors propagate immediately.
+    """
+
+    max_attempts: int = Field(
+        default=3,
+        ge=1,
+        description="Total attempts including the first call. 1 disables retries.",
+    )
+    max_wait: float = Field(
+        default=8.0,
+        ge=0.0,
+        description="Upper bound (seconds) on a single backoff wait between attempts.",
+    )
+    respect_retry_after: bool = Field(
+        default=True,
+        description=(
+            "When true, honor Retry-After / X-RateLimit-Reset response "
+            "headers if the upstream requests a specific backoff."
+        ),
+    )
 
 
 class GRaDOSConfig(BaseModel):
@@ -245,6 +325,7 @@ class GRaDOSConfig(BaseModel):
     indexing: IndexingConfig = Field(default_factory=IndexingConfig)
     zotero: ZoteroConfig = Field(default_factory=ZoteroConfig)
     api_keys: ApiKeysConfig = Field(default_factory=ApiKeysConfig)
+    retry_policy: RetryPolicyConfig = Field(default_factory=RetryPolicyConfig)
     academic_etiquette_email: str = "your-email@university.edu"
 
 
@@ -310,5 +391,44 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     )
     data["indexing"]["_comment_cache_dir"] = (
         "Optional model cache override. Leave empty to use GRaDOS_HOME/models/embedding."
+    )
+
+    # Timeout / retry surface (ADR-008)
+    data["search"]["_comment_connect_timeout"] = (
+        "TCP connect timeout in seconds for academic search APIs (Crossref, PubMed, WoS, Elsevier, Springer)."
+    )
+    data["search"]["_comment_read_timeout"] = (
+        "Response read timeout in seconds for academic search APIs."
+    )
+    data["extract"]["_comment_fetch_connect_timeout"] = (
+        "TCP connect timeout in seconds for OA / TDM / Sci-Hub HTTP calls."
+    )
+    data["extract"]["_comment_fetch_read_timeout"] = (
+        "Response read timeout in seconds for PDF and landing-page downloads. "
+        "Keep generous: large PDFs and intermediate redirects can stream slowly."
+    )
+    data["extract"]["headless_browser"]["_comment_deadline_seconds"] = (
+        "Maximum wall-clock seconds for the browser main polling loop per DOI."
+    )
+    data["extract"]["headless_browser"]["_comment_networkidle_timeout"] = (
+        "Ceiling in seconds for wait_for_load_state('networkidle'). See ADR-008."
+    )
+    data["extract"]["headless_browser"]["_comment_poll_min_seconds"] = (
+        "Starting sleep between browser main-loop iterations."
+    )
+    data["extract"]["headless_browser"]["_comment_poll_max_seconds"] = (
+        "Upper bound for the browser main-loop sleep after exponential backoff."
+    )
+    data["_comment_retry_policy"] = (
+        "Unified retry knobs for external HTTP calls (ADR-008). Retries cover 429, 5xx, network errors."
+    )
+    data["retry_policy"]["_comment_max_attempts"] = (
+        "Total attempts including the first call. 1 disables retries."
+    )
+    data["retry_policy"]["_comment_max_wait"] = (
+        "Upper bound in seconds on a single backoff wait between attempts."
+    )
+    data["retry_policy"]["_comment_respect_retry_after"] = (
+        "Honor Retry-After / X-RateLimit-Reset response headers when true."
     )
     return data

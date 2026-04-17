@@ -20,8 +20,6 @@ GRaDOS 是一个面向学术检索、全文提取、本地论文存储与 Chroma
 
 GRaDOS 为 Claude、Codex、Cursor 等 AI agent 提供单一 stdio MCP 服务，用来检索学术数据库、跨付费墙抓取论文、把 PDF 解析为 canonical Markdown，并在写作时回读已保存论文做引用核验。
 
-阶段 A 默认启用了更强但更稳的本地检索栈：`microsoft/harrier-oss-v1-270m`、abstract-first 文档级 embedding、section-aware chunking，以及 docs → chunks 的两阶段检索。`microsoft/harrier-oss-v1-0.6b` 仍然支持，但现在改为资源更充足机器上的显式选择。
-
 ## 架构概览 🧭
 
 GRaDOS 设计给 agent 科研工作流直接调用：
@@ -246,6 +244,15 @@ cp -R skills/grados "<skills-root>/"
 
 ## 配置 ⚙️
 
+注释齐全的参考配置以 [grados-config.example.json](./grados-config.example.json) 为准；修改后会在下一次 CLI 运行或 MCP 服务重启时生效。
+
+### 超时与重试
+
+- `search`: `connectTimeout`, `readTimeout`
+- `extract`: `fetchConnectTimeout`, `fetchReadTimeout`
+- `extract.headlessBrowser`: `deadlineSeconds`, `networkidleTimeout`, `pollMinSeconds`, `pollMaxSeconds`
+- `retryPolicy`: `maxAttempts`, `maxWait`, `respectRetryAfter`
+
 ### 命令 🧰
 
 | 命令 | 作用 |
@@ -263,7 +270,6 @@ cp -R skills/grados "<skills-root>/"
 | `grados paths` | 查看当前解析到的 GRaDOS 文件布局 |
 | `grados update-db` | 在当前 indexing 配置不变时，增量刷新 `papers/` 对应的 ChromaDB 索引 |
 | `grados reindex` | 在 embedding 模型或分块配置变化后，从头重建语义索引 |
-| `grados migrate-config --from /path/to/legacy` | 从旧版 GRaDOS 安装迁移数据 |
 | `grados version` | 查看包版本信息 |
 
 如果你修改了 `config.json` 里的 `indexing.model_id`、`indexing.max_length` 或 section-aware chunking 参数，请使用 `grados reindex`，不要只跑 `grados update-db`。
@@ -310,13 +316,14 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 | Key | 来源 | 必需 |
 | --- | --- | --- |
 | `ELSEVIER_API_KEY` | Elsevier Developer Portal | 否 |
+| `PUBMED_API_KEY` | NCBI E-utilities API key | 否 |
 | `WOS_API_KEY` | Clarivate Developer Portal | 否 |
 | `SPRINGER_meta_API_KEY` | Springer Nature Metadata API | 否 |
 | `SPRINGER_OA_API_KEY` | Springer Nature Open Access API | 否 |
 | `LLAMAPARSE_API_KEY` | LlamaCloud | 否 |
 | `ZOTERO_API_KEY` | Zotero Settings -> Keys | 否 |
 
-Crossref 和 PubMed 不需要 API Key。GRaDOS 会使用你已配置的服务，未配置的会自动跳过。即使没有第三方 Key，本地论文工作流也能使用，远程检索也仍可依赖免费来源运行。
+Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `PUBMED_API_KEY` 可作为 E-utilities 节流上限的可选增强。GRaDOS 会使用你已配置的服务，未配置的会自动跳过；即使没有第三方 Key，本地论文工作流也能使用，远程检索也仍可依赖免费来源运行。
 
 ### 运行顺序 🌊
 
@@ -354,35 +361,14 @@ PDF 解析优先级：
 }
 ```
 
-### 从旧安装迁移 ♻️
+### 导入现有 PDF 库 ♻️
 
-如果你已经有较旧的 GRaDOS 数据目录，可以用 `grados migrate-config` 把论文、下载归档、浏览器资产、模型缓存和兼容配置迁入当前布局。
-
-推荐迁移流程：
+如果你已经有本地 PDF 库，直接用 `grados import-pdfs` 把文件解析并复制进 canonical `papers/` + `downloads/` 布局：
 
 ```bash
-uv tool install grados
-grados migrate-config --from /path/to/legacy
+grados import-pdfs --from /path/to/papers --recursive
 grados status
 ```
-
-`grados migrate-config` 会带过来的内容：
-
-- 已保存 Markdown 论文到 `papers/`
-- PDF 归档到 `downloads/`
-- 托管浏览器资产到 `browser/`
-- 模型缓存到 `models/`
-- 兼容的搜索、提取、Zotero 和 API Key 设置到新的 `config.json`
-
-路径映射：
-
-| 旧布局 | 当前布局 |
-| --- | --- |
-| `grados-config.json` | `config.json` |
-| `markdown/` | `papers/` |
-| `downloads/` | `downloads/` |
-| `.grados/browser/` | `browser/` |
-| `models/` | `models/` |
 
 ## 开发 🛠️
 

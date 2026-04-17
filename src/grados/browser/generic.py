@@ -10,6 +10,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from grados._retry import (
+    current_browser_deadline_seconds,
+    current_browser_networkidle_timeout_ms,
+    current_browser_poll_bounds,
+)
 from grados.browser.manager import (
     BrowserSession,
     close_secondary_pages,
@@ -28,6 +33,20 @@ from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 from grados.publisher.common import classify_pdf_content, detect_bot_challenge
 
 _BROWSER_LABELS = {"managed": "GRaDOS Chrome", "configured": "Chrome", "system": "Chrome"}
+
+
+def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) -> float:
+    """Compute the next main-loop sleep interval.
+
+    Starts at `poll_min`, doubles each tick until it reaches `poll_max`, then
+    stays at `poll_max`. If `poll_max < poll_min`, returns `poll_min` (caller
+    guarantees bounds are sane via config validation).
+    """
+    if poll_max < poll_min:
+        return poll_min
+    if current < poll_min:
+        return poll_min
+    return min(poll_max, current * 2)
 
 
 @dataclass(frozen=True)
@@ -244,14 +263,32 @@ async def fetch_with_browser(
             await root_page.goto(f"https://doi.org/{doi}", wait_until="domcontentloaded", timeout=30000)
         except Exception:
             pass
+        # Explicit ceiling for networkidle (default 15s): SPA background
+        # polling (analytics, live updates) can keep the network from ever
+        # settling. Falling through on timeout hands control to the main
+        # polling loop instead of silently eating the deadline inside
+        # wait_for_load_state. See ADR-008. Config: extract.headlessBrowser.
+        # networkidleTimeout.
+        networkidle_ms = current_browser_networkidle_timeout_ms()
         try:
-            await root_page.wait_for_load_state("networkidle")
+            await root_page.wait_for_load_state("networkidle", timeout=networkidle_ms)
         except Exception:
-            pass
+            # Common enough on SPA-heavy publisher sites that an INFO-level log
+            # would be noisy; DEBUG records the event for operators tailing logs.
+            import logging as _logging  # local import: avoids top-level churn
 
-        # ── Main polling loop (2-minute deadline) ──────────────────────────
+            _logging.getLogger(__name__).debug(
+                "networkidle ceiling (%dms) hit for DOI %s; continuing to main polling loop",
+                networkidle_ms,
+                doi,
+            )
 
-        deadline = time.monotonic() + 120
+        # ── Main polling loop (deadline from config) ───────────────────────
+
+        deadline_seconds = current_browser_deadline_seconds()
+        deadline = time.monotonic() + deadline_seconds
+        poll_min, poll_max = current_browser_poll_bounds()
+        current_sleep = poll_min
         page_strategies = build_browser_page_strategies()
         challenge_prompt_shown = False
 
@@ -295,7 +332,12 @@ async def fetch_with_browser(
             if challenge_seen and not challenge_prompt_shown:
                 challenge_prompt_shown = True
 
-            await asyncio.sleep(1)
+            # Exponential backoff between idle polls: poll_min → 2× → poll_max.
+            # Keeps CPU and event-loop cost low on slow publisher pages while
+            # still reacting quickly to state changes on the first few ticks.
+            # See ADR-008. Config: extract.headlessBrowser.poll{Min,Max}Seconds.
+            await asyncio.sleep(current_sleep)
+            current_sleep = next_browser_poll_delay(current_sleep, poll_min, poll_max)
 
         # ── Cleanup & result ───────────────────────────────────────────────
 
