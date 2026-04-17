@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from grados.storage.chunking import extract_reference_dois, split_paragraphs
 from grados.storage.frontmatter import read_frontmatter_metadata
 from grados.storage.papers import (
     PaperListEntry,
@@ -149,6 +150,29 @@ def test_list_saved_papers_reads_complete_frontmatter_header(tmp_path: Path, mon
             safe_doi="10_7777_long_header",
         )
     ]
+
+
+def test_chunking_helpers_strip_frontmatter_and_normalize_reference_dois() -> None:
+    markdown = (
+        "---\n"
+        'title: "Demo"\n'
+        "doi: 10.5555/demo\n"
+        "---\n\n"
+        "# Demo\n\n"
+        "## References\n\n"
+        "10.1000/Foo).\n\n"
+        "10.1000/foo\n\n"
+        "10.1000/bar;"
+    )
+
+    assert split_paragraphs(markdown, include_front_matter=False) == [
+        "# Demo",
+        "## References",
+        "10.1000/Foo).",
+        "10.1000/foo",
+        "10.1000/bar;",
+    ]
+    assert extract_reference_dois(markdown) == ["10.1000/foo", "10.1000/bar"]
 
 
 def test_save_paper_markdown_surfaces_index_failure_without_blocking_mirror(

@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from grados.publisher.common import safe_doi_filename
+from grados.storage.chunking import split_paragraphs, strip_frontmatter
 from grados.storage.frontmatter import (
     build_front_matter,
     parse_authors_metadata,
     read_frontmatter_metadata,
     read_frontmatter_metadata_from_file,
-    strip_front_matter,
 )
 
 # ── Save / Read ──────────────────────────────────────────────────────────────
@@ -262,8 +262,8 @@ def load_paper_record(
 
     raw_content = file_path.read_text(encoding="utf-8")
     metadata = read_frontmatter_metadata(raw_content)
-    content = strip_front_matter(raw_content)
-    paragraphs = _split_paragraphs(content, include_front_matter=False)
+    content = strip_frontmatter(raw_content)
+    paragraphs = split_paragraphs(raw_content, include_front_matter=False)
     headings = [
         re.sub(r"^#{1,6}\s+", "", paragraph).strip()
         for paragraph in paragraphs
@@ -315,7 +315,7 @@ def read_paper(
         return None
 
     content = file_path.read_text(encoding="utf-8")
-    paragraphs = _split_paragraphs(content, include_front_matter)
+    paragraphs = split_paragraphs(content, include_front_matter=include_front_matter)
     headings = [
         re.sub(r"^#{1,6}\s+", "", p).strip()
         for p in paragraphs
@@ -364,7 +364,7 @@ def get_paper_structure(
 
     safe_doi = record.safe_doi
     content = record.content_markdown
-    paragraphs = _split_paragraphs(content, include_front_matter=False)
+    paragraphs = split_paragraphs(content, include_front_matter=False)
     headings = list(record.section_headings)
     if not headings:
         headings = [
@@ -391,19 +391,6 @@ def get_paper_structure(
         section_outline=_build_section_outline(paragraphs),
         assets_summary=_load_assets_summary(papers_dir, record),
     )
-
-
-def _split_paragraphs(text: str, include_front_matter: bool) -> list[str]:
-    """Split text into paragraphs, optionally stripping YAML front-matter."""
-    if not include_front_matter:
-        text = strip_front_matter(text)
-    parts = re.split(r"\n{2,}", text.strip())
-    return [p.strip() for p in parts if p.strip()]
-
-
-def _strip_front_matter(text: str) -> str:
-    """Remove YAML front-matter from paper content."""
-    return strip_front_matter(text)
 
 
 def _find_section_start(paragraphs: list[str], query: str) -> int:

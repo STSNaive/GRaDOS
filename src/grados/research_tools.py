@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from grados.storage.chunking import extract_sections
+from grados.storage.chunking import extract_reference_dois, extract_sections, normalize_doi
 from grados.storage.papers import PaperRecord, list_saved_papers, load_paper_record
 from grados.storage.vector import PaperSearchResult, search_papers
 
@@ -44,7 +44,6 @@ _REFERENCE_SECTION_NAMES = {
     "literature cited",
     "参考文献",
 }
-_DOI_PATTERN = re.compile(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -252,10 +251,6 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip().lower())
 
 
-def _normalize_doi(value: str) -> str:
-    return re.sub(r"[)\].,;:]+$", "", value.strip().lower())
-
-
 def _estimate_tokens(text: str) -> int:
     return max(1, math.ceil(len(text) / 4))
 
@@ -293,30 +288,6 @@ def _resolve_documents(chroma_dir: Path, dois: list[str]) -> tuple[list[PaperRec
     return resolved, missing
 
 
-def _extract_reference_dois(markdown: str) -> list[str]:
-    sections = extract_sections(markdown)
-    reference_sections = [
-        section
-        for section in sections
-        if _normalize_text(str(section["name"])) in _REFERENCE_SECTION_NAMES
-    ]
-    search_space = (
-        "\n\n".join(str(section["text"]) for section in reference_sections)
-        if reference_sections
-        else markdown
-    )
-
-    seen: set[str] = set()
-    citations: list[str] = []
-    for match in _DOI_PATTERN.findall(search_space):
-        normalized = _normalize_doi(match)
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        citations.append(normalized)
-    return citations
-
-
 def _load_local_citation_records(chroma_dir: Path) -> list[LocalCitationRecord]:
     papers_dir = _papers_dir_from_chroma_dir(chroma_dir)
     records: list[LocalCitationRecord] = []
@@ -327,7 +298,7 @@ def _load_local_citation_records(chroma_dir: Path) -> list[LocalCitationRecord]:
         record = load_paper_record(papers_dir, safe_doi=safe_doi)
         if not record or not record.doi.strip():
             continue
-        records.append(LocalCitationRecord(paper=record, cites=_extract_reference_dois(record.content_markdown)))
+        records.append(LocalCitationRecord(paper=record, cites=extract_reference_dois(record.content_markdown)))
     return records
 
 
@@ -489,12 +460,12 @@ def get_citation_graph(
         return CitationGraphResult(mode=mode, targets=[], message="No saved papers found.")
 
     doc_by_doi = {
-        _normalize_doi(record.paper.doi): record
+        normalize_doi(record.paper.doi): record
         for record in documents
         if record.paper.doi.strip()
     }
     outgoing = {
-        key: [_normalize_doi(value) for value in record.cites]
+        key: [normalize_doi(value) for value in record.cites]
         for key, record in doc_by_doi.items()
     }
     incoming: dict[str, list[str]] = defaultdict(list)
@@ -502,7 +473,7 @@ def get_citation_graph(
         for target in cited:
             incoming[target].append(src)
 
-    requested = [_normalize_doi(value) for value in ([doi] + (dois or [])) if value and value.strip()]
+    requested = [normalize_doi(value) for value in ([doi] + (dois or [])) if value and value.strip()]
     requested = list(dict.fromkeys(requested))
     resolved_targets = [value for value in requested if value in doc_by_doi]
 

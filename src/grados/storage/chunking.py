@@ -54,7 +54,10 @@ def strip_frontmatter(text: str) -> str:
     return strip_markdown_front_matter(text)
 
 
-def split_paragraphs(text: str) -> list[str]:
+def split_paragraphs(text: str, *, include_front_matter: bool = True) -> list[str]:
+    """Split markdown into paragraphs, optionally stripping YAML frontmatter first."""
+    if not include_front_matter:
+        text = strip_frontmatter(text)
     return [part.strip() for part in re.split(r"\n{2,}", text.strip()) if part.strip()]
 
 

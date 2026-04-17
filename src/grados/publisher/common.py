@@ -99,11 +99,11 @@ def detect_bot_challenge(title: str, html: str, url: str = "") -> bool:
     return any(m in combined for m in challenge_markers)
 
 
-_DOI_PATTERN = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
+DOI_STRICT_PATTERN = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
 
 
 def looks_like_doi(value: str) -> bool:
-    return bool(_DOI_PATTERN.match(value.strip()))
+    return bool(DOI_STRICT_PATTERN.match(value.strip()))
 
 
 def normalize_doi(doi: str) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -33,6 +34,7 @@ from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 from grados.publisher.common import classify_pdf_content, detect_bot_challenge
 
 _BROWSER_LABELS = {"managed": "GRaDOS Chrome", "configured": "Chrome", "system": "Chrome"}
+logger = logging.getLogger(__name__)
 
 
 def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) -> float:
@@ -66,6 +68,7 @@ class BrowserPageStrategyContext:
     track_page: Callable[[Any], None]
     pdf_captured: Callable[[], bool]
     inspect_challenge: Callable[[Any], Awaitable[bool]]
+    report_warning: Callable[[str], None]
 
 
 class BrowserPageStrategy(Protocol):
@@ -91,6 +94,7 @@ async def _run_sciencedirect_page_strategy(context: BrowserPageStrategyContext) 
         context.action_state,
         context.attempted_urls,
         context.track_page,
+        context.report_warning,
     )
     if context.pdf_captured():
         return
@@ -102,11 +106,17 @@ async def _run_sciencedirect_page_strategy(context: BrowserPageStrategyContext) 
         context.track_page,
         context.pdf_captured,
         context.inspect_challenge,
+        context.report_warning,
     )
 
 
 async def _run_generic_page_strategy(context: BrowserPageStrategyContext) -> None:
-    await _try_generic_pdf_click(context.page, context.action_state, context.pdf_captured)
+    await _try_generic_pdf_click(
+        context.page,
+        context.action_state,
+        context.pdf_captured,
+        context.report_warning,
+    )
 
 
 BROWSER_PAGE_STRATEGY_REGISTRY: dict[str, BrowserPageStrategy] = {
@@ -164,6 +174,7 @@ async def fetch_with_browser(
             try:
                 await root_page.bring_to_front()
             except Exception:
+                # Window focus is only cosmetic; capture can continue without it.
                 pass
 
         # ── Shared mutable state ───────────────────────────────────────────
@@ -172,12 +183,18 @@ async def fetch_with_browser(
         action_states: dict[int, dict[str, Any]] = {}
         final_url = ""
         challenge_seen = False
+        nonfatal_warnings: list[str] = []
 
         # Wrap the captured PDF in a mutable container so closures can update it.
         _buf: list[bytes | None] = [None]
 
         def pdf_captured() -> bool:
             return _buf[0] is not None
+
+        def report_warning(message: str) -> None:
+            normalized = re.sub(r"\s+", " ", message).strip()
+            if normalized and normalized not in nonfatal_warnings:
+                nonfatal_warnings.append(normalized)
 
         def try_capture(data: bytes, content_type: str = "", source_url: str = "") -> bool:
             check = classify_pdf_content(data, content_type)
@@ -227,6 +244,8 @@ async def fetch_with_browser(
                 body = await response.body()
                 try_capture(body, ct, url)
             except Exception:
+                # Response hooks are opportunistic sniffers and must not stop the
+                # main polling loop if the browser rejects body access.
                 pass
 
         async def _on_download(download: Any) -> None:
@@ -241,6 +260,8 @@ async def fetch_with_browser(
                     body = Path(dl_path).read_bytes()
                     try_capture(body, "application/pdf", download.url)
             except Exception:
+                # Download persistence is best-effort; a broken temp file should
+                # not abort other capture paths.
                 pass
 
         def _on_new_page(page: Any) -> None:
@@ -261,8 +282,8 @@ async def fetch_with_browser(
 
         try:
             await root_page.goto(f"https://doi.org/{doi}", wait_until="domcontentloaded", timeout=30000)
-        except Exception:
-            pass
+        except Exception as exc:
+            report_warning(f"Browser goto failed for DOI {doi}: {exc.__class__.__name__}: {exc}")
         # Explicit ceiling for networkidle (default 15s): SPA background
         # polling (analytics, live updates) can keep the network from ever
         # settling. Falling through on timeout hands control to the main
@@ -275,9 +296,7 @@ async def fetch_with_browser(
         except Exception:
             # Common enough on SPA-heavy publisher sites that an INFO-level log
             # would be noisy; DEBUG records the event for operators tailing logs.
-            import logging as _logging  # local import: avoids top-level churn
-
-            _logging.getLogger(__name__).debug(
+            logger.debug(
                 "networkidle ceiling (%dms) hit for DOI %s; continuing to main polling loop",
                 networkidle_ms,
                 doi,
@@ -305,7 +324,14 @@ async def fetch_with_browser(
                     continue
 
                 # Try backfill from page URL
-                await _try_backfill_from_url(page, context, attempted_urls, try_capture, pdf_captured)
+                await _try_backfill_from_url(
+                    page,
+                    context,
+                    attempted_urls,
+                    try_capture,
+                    pdf_captured,
+                    report_warning,
+                )
                 if pdf_captured():
                     break
 
@@ -318,6 +344,7 @@ async def fetch_with_browser(
                     track_page=_track_page,
                     pdf_captured=pdf_captured,
                     inspect_challenge=inspect_challenge,
+                    report_warning=report_warning,
                 )
                 for strategy in page_strategies:
                     await strategy.run(strategy_context)
@@ -327,7 +354,14 @@ async def fetch_with_browser(
                     break
 
                 # Second backfill attempt
-                await _try_backfill_from_url(page, context, attempted_urls, try_capture, pdf_captured)
+                await _try_backfill_from_url(
+                    page,
+                    context,
+                    attempted_urls,
+                    try_capture,
+                    pdf_captured,
+                    report_warning,
+                )
 
             if challenge_seen and not challenge_prompt_shown:
                 challenge_prompt_shown = True
@@ -347,10 +381,13 @@ async def fetch_with_browser(
                 page.remove_listener("response", _on_response)
                 page.remove_listener("download", _on_download)
             except Exception:
+                # Listener cleanup runs after capture is over; keep teardown
+                # best-effort so one bad page does not hide the final outcome.
                 pass
         try:
             context.remove_listener("page", _on_new_page)
         except Exception:
+            # Same rationale as page listener cleanup above.
             pass
 
         if pdf_captured():
@@ -362,13 +399,14 @@ async def fetch_with_browser(
                 try:
                     await root_page.bring_to_front()
                 except Exception:
+                    # Restoring focus is best-effort for the retained window.
                     pass
 
             return BrowserFetchResult(
                 pdf_buffer=_buf[0],
                 source=f"Headless Browser ({browser_label})",
                 outcome="pdf_obtained",
-                warnings=[],
+                warnings=nonfatal_warnings,
             )
 
         # No PDF captured
@@ -380,7 +418,7 @@ async def fetch_with_browser(
             pdf_buffer=None,
             source=f"Headless Browser ({browser_label})",
             outcome=outcome,
-            warnings=[f"Browser automation: {outcome}"],
+            warnings=nonfatal_warnings + [f"Browser automation: {outcome}"],
         )
 
     except Exception as e:
@@ -388,6 +426,7 @@ async def fetch_with_browser(
             try:
                 await session.cleanup()
             except Exception:
+                # Teardown failure should not replace the original browser error.
                 pass
         return BrowserFetchResult(
             pdf_buffer=None,
@@ -406,6 +445,7 @@ async def _try_backfill_from_url(
     attempted_urls: set[str],
     try_capture: Any,
     pdf_captured: Any,
+    report_warning: Callable[[str], None],
 ) -> None:
     """If the page URL looks like a direct PDF link, fetch it via context.request."""
     if pdf_captured() or page.is_closed():
@@ -423,14 +463,17 @@ async def _try_backfill_from_url(
         ct = str(headers.get("content-type", ""))
         body = await response.body()
         try_capture(body, ct, url)
-    except Exception:
-        pass
+    except Exception as exc:
+        report_warning(
+            f"Direct PDF backfill failed for {url}: {exc.__class__.__name__}: {exc}"
+        )
 
 
 async def _try_generic_pdf_click(
     page: Any,
     action_state: dict[str, Any],
     pdf_captured: Any,
+    report_warning: Callable[[str], None],
 ) -> None:
     """Click generic PDF links on non-ScienceDirect pages."""
     if pdf_captured() or page.is_closed():
@@ -448,6 +491,10 @@ async def _try_generic_pdf_click(
             try:
                 await page.wait_for_load_state("domcontentloaded")
             except Exception:
+                # After a click we already changed page state; waiting for load is
+                # opportunistic and should not suppress other browser paths.
                 pass
-    except Exception:
-        pass
+    except Exception as exc:
+        report_warning(
+            f"Generic PDF click failed on {page.url}: {exc.__class__.__name__}: {exc}"
+        )

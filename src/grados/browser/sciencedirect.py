@@ -68,6 +68,7 @@ async def try_view_pdf_click(
     action_state: dict[str, Any],
     attempted_urls: set[str],
     track_page_fn: Callable[..., Any],
+    report_warning_fn: Callable[[str], None],
 ) -> None:
     """Click the 'View PDF' link on a ScienceDirect landing page.
 
@@ -127,8 +128,11 @@ async def try_view_pdf_click(
         track_page_fn(new_page)
         try:
             await new_page.goto(absolute_href, wait_until="domcontentloaded", timeout=20000)
-        except Exception:
-            pass
+        except Exception as exc:
+            report_warning_fn(
+                f"ScienceDirect manual PDF fallback failed for {absolute_href}: "
+                f"{exc.__class__.__name__}: {exc}"
+            )
 
 
 async def follow_candidates(
@@ -139,6 +143,7 @@ async def follow_candidates(
     track_page_fn: Callable[..., Any],
     pdf_captured_fn: Callable[[], bool],
     inspect_challenge_fn: Callable[..., Any],
+    report_warning_fn: Callable[[str], None],
 ) -> None:
     """Extract PDF candidate URLs from a ScienceDirect landing page and follow them.
 
@@ -179,8 +184,12 @@ async def follow_candidates(
         track_page_fn(new_page)
         try:
             await new_page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        except Exception:
-            pass
+        except Exception as exc:
+            report_warning_fn(
+                f"ScienceDirect candidate navigation failed for {url}: "
+                f"{exc.__class__.__name__}: {exc}"
+            )
+            continue
 
         if pdf_captured_fn():
             return
@@ -209,8 +218,12 @@ async def follow_candidates(
             track_page_fn(redirect_page)
             try:
                 await redirect_page.goto(redirect_url, wait_until="domcontentloaded", timeout=20000)
-            except Exception:
-                pass
+            except Exception as exc:
+                report_warning_fn(
+                    f"ScienceDirect redirect navigation failed for {redirect_url}: "
+                    f"{exc.__class__.__name__}: {exc}"
+                )
+                continue
 
             if pdf_captured_fn():
                 return
