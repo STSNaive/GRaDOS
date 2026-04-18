@@ -25,6 +25,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed browser-assisted ScienceDirect fallback navigation so failed manual/candidate/redirect hops are surfaced in outer `warnings[]` instead of being silently swallowed; generic browser best-effort fallbacks are now annotated in code and covered by regression tests.
 - Changed local Chroma `collection_get()` / `query_collection()` helpers to enforce a 10s timeout guard; stalled local index calls now return degraded warnings instead of hanging indefinitely.
 - Changed `audit_draft_support` to de-duplicate repeated stripped queries within one audit run, so repeated claims reuse the same local search results instead of re-querying Chroma each time.
+- Changed local citation-graph loading to use a process-local `papers/*.md` file-signature cache (`name + size + mtime_ns`), so repeat `get_citation_graph()` calls reuse canonical records while any saved-paper edit invalidates immediately.
+- Changed storage helper boundaries so retrieval-only logic now lives in `storage/retrieval.py`, while `research_tools.py` and `papers.py` reuse shared DOI / paragraph helpers from `storage.chunking` instead of each maintaining a parallel implementation.
 - Changed storage retrieval internals so `storage/vector.py` is now a thinner facade over dedicated `retrieval`, `hydration`, `chroma_client`, and shared `paths` helpers; `get_paper_document()` / `list_paper_documents()` now return typed `PaperDocument` / `PaperDocumentSummary` results instead of another loose dict boundary.
 - Changed canonical saved-paper helpers so `load_paper_record()` / `read_paper()` / `get_paper_structure()` no longer carry an unused `chroma_dir` parameter, and `papers_dir` resolution is centralized in `storage/paths.py::resolve_papers_dir()`.
 
@@ -37,7 +39,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Removed the legacy `grados migrate-config` TypeScript-to-Python migration command and its old-install documentation; the supported carry-forward path is now `grados import-pdfs` plus normal runtime setup.
 
 ### Tests
-- Added regression coverage for browser fallback warnings, local Chroma timeout guards, repeated-query deduplication in `audit_draft_support`, typed paper-document accessors, shared `papers_dir` resolution, and the dropped raw `fallbackMirror` Sci-Hub fetch shim.
+- Added regression coverage for browser fallback warnings, local Chroma timeout guards, repeated-query deduplication and citation-graph cache invalidation in `research_tools`, typed paper-document accessors, shared `papers_dir` resolution, narrow storage helper boundaries (DOI extraction / frontmatter stripping / paragraph splitting), and the dropped raw `fallbackMirror` Sci-Hub fetch shim.
 
 ## [0.6.9] - 2026-04-16
 

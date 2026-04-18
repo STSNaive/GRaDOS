@@ -45,12 +45,19 @@ _REFERENCE_SECTION_NAMES = {
     "literature cited",
     "参考文献",
 }
+_LOCAL_CITATION_RECORDS_CACHE: dict[str, _LocalCitationCacheEntry] = {}
 
 
 @dataclass(frozen=True)
 class LocalCitationRecord:
     paper: PaperRecord
     cites: list[str]
+
+
+@dataclass(frozen=True)
+class _LocalCitationCacheEntry:
+    signature: tuple[tuple[str, int, int], ...]
+    records: tuple[LocalCitationRecord, ...]
 
 
 @dataclass(frozen=True)
@@ -281,8 +288,28 @@ def _resolve_documents(chroma_dir: Path, dois: list[str]) -> tuple[list[PaperRec
     return resolved, missing
 
 
+def _citation_records_signature(papers_dir: Path) -> tuple[tuple[str, int, int], ...]:
+    if not papers_dir.is_dir():
+        return ()
+
+    signature: list[tuple[str, int, int]] = []
+    for path in sorted(papers_dir.glob("*.md")):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        signature.append((path.name, stat.st_size, stat.st_mtime_ns))
+    return tuple(signature)
+
+
 def _load_local_citation_records(chroma_dir: Path) -> list[LocalCitationRecord]:
     papers_dir = resolve_papers_dir(chroma_dir)
+    cache_bucket = str(papers_dir.resolve())
+    signature = _citation_records_signature(papers_dir)
+    cached = _LOCAL_CITATION_RECORDS_CACHE.get(cache_bucket)
+    if cached is not None and cached.signature == signature:
+        return list(cached.records)
+
     records: list[LocalCitationRecord] = []
     for item in list_saved_papers(papers_dir):
         safe_doi = item.safe_doi.strip()
@@ -292,6 +319,10 @@ def _load_local_citation_records(chroma_dir: Path) -> list[LocalCitationRecord]:
         if not record or not record.doi.strip():
             continue
         records.append(LocalCitationRecord(paper=record, cites=extract_reference_dois(record.content_markdown)))
+    _LOCAL_CITATION_RECORDS_CACHE[cache_bucket] = _LocalCitationCacheEntry(
+        signature=signature,
+        records=tuple(records),
+    )
     return records
 
 
