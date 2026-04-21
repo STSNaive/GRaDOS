@@ -11,7 +11,13 @@ from grados.config import GRaDOSPaths, load_config
 from grados.extract.parse import parse_pdf_with_diagnostics
 from grados.extract.qa import is_valid_paper_content
 from grados.publisher.common import normalize_doi, safe_doi_filename
-from grados.storage.papers import list_saved_papers, save_paper_markdown, save_pdf
+from grados.storage.papers import list_saved_papers
+from grados.workflows.library import (
+    build_library_document_artifact,
+    maybe_save_library_pdf,
+    persist_reviewed_library_document,
+    review_library_document,
+)
 
 _DOI_SEARCH_PATTERN = re.compile(r"10\.\d{4,9}/[-._;()/:A-Za-z0-9]+", re.IGNORECASE)
 
@@ -89,16 +95,18 @@ async def import_local_pdf_library(
             continue
         seen_hashes.add(pdf_hash)
 
-        parse_result = await parse_pdf_with_diagnostics(
-            pdf_bytes,
-            filename=pdf_file.name,
-            parse_order=config.extract.parsing.order,
-            parse_enabled=config.extract.parsing.enabled,
-            marker_timeout=config.extract.parsing.marker_timeout,
+        artifact = await build_library_document_artifact(
+            lambda: parse_pdf_with_diagnostics(
+                pdf_bytes,
+                filename=pdf_file.name,
+                parse_order=config.extract.parsing.order,
+                parse_enabled=config.extract.parsing.enabled,
+                marker_timeout=config.extract.parsing.marker_timeout,
+            )
         )
-        parser_warnings = list(parse_result.warnings)
-        parser_debug = list(parse_result.debug)
-        if not parse_result.markdown:
+        parser_warnings = list(artifact.warnings)
+        parser_debug = list(artifact.debug)
+        if not artifact.markdown:
             result.failed += 1
             result.warnings.extend(f"{pdf_file.name}: {warning}" for warning in parser_warnings)
             result.items.append(
@@ -111,7 +119,7 @@ async def import_local_pdf_library(
                 )
             )
             continue
-        parsed = parse_result.markdown
+        parsed = artifact.markdown
 
         doi = _infer_doi(parsed, pdf_file) or f"local-pdf/{pdf_hash[:16]}"
         safe_doi = safe_doi_filename(doi)
@@ -129,28 +137,34 @@ async def import_local_pdf_library(
             continue
 
         title = _infer_title(parsed, pdf_file)
-        qa_ok = is_valid_paper_content(parsed, config.extract.qa.min_characters, title or None)
-        item_warnings: list[str] = []
-        item_debug: list[str] = parser_debug.copy()
+        review = review_library_document(
+            artifact,
+            qa_validator=is_valid_paper_content,
+            qa_min_characters=config.extract.qa.min_characters,
+            qa_expected_title=title or None,
+            qa_warning_message="QA validation failed — imported anyway.",
+        )
+        item_warnings = list(review.warnings)
+        item_debug = list(review.debug)
         detail_tokens: list[str] = []
         if parser_warnings:
             result.warnings.extend(f"{pdf_file.name}: {warning}" for warning in parser_warnings)
-            item_warnings.extend(parser_warnings)
             detail_tokens.append("parser_warning")
-        if not qa_ok:
+        if review.qa_warning_added:
             warning = f"{pdf_file.name}: QA validation failed, imported with warning."
             result.warnings.append(warning)
-            item_warnings.append("QA validation failed — imported anyway.")
             detail_tokens.append("qa_warning")
 
-        copied_pdf_path = ""
-        if copy_to_library:
-            copied_pdf_path = str(save_pdf(doi, pdf_bytes, paths.downloads))
-
-        summary = save_paper_markdown(
+        copied_pdf_path = maybe_save_library_pdf(
             doi=doi,
-            markdown=parsed,
-            papers_dir=paths.papers,
+            pdf_bytes=pdf_bytes,
+            paths=paths,
+            copy_to_library=copy_to_library,
+        )
+        persisted = persist_reviewed_library_document(
+            review,
+            paths=paths,
+            doi=doi,
             title=title,
             source="Local PDF Library",
             fetch_outcome="local_import",
@@ -158,18 +172,16 @@ async def import_local_pdf_library(
                 "original_pdf_path": str(pdf_file),
                 "source_pdf_hash": pdf_hash,
             },
-            chroma_dir=paths.database_chroma,
+            copied_pdf_path=copied_pdf_path,
+            index_warning_message="Search index refresh failed — paper saved to papers/ only. Error: {index_error}",
         )
-        existing_safe_dois.add(summary.safe_doi)
-        if summary.index_status == "failed":
+        existing_safe_dois.add(persisted.summary.safe_doi)
+        if persisted.index_warning_added:
             warning = (
                 f"{pdf_file.name}: search index refresh failed after canonical mirror save. "
-                f"Error: {summary.index_error}"
+                f"Error: {persisted.summary.index_error}"
             )
             result.warnings.append(warning)
-            item_warnings.append(
-                f"Search index refresh failed — paper saved to papers/ only. Error: {summary.index_error}"
-            )
             detail_tokens.append("index_warning")
 
         result.imported += 1
@@ -178,10 +190,10 @@ async def import_local_pdf_library(
                 source_path=str(pdf_file),
                 status="imported_with_warnings" if item_warnings else "imported",
                 doi=doi,
-                safe_doi=summary.safe_doi,
+                safe_doi=persisted.summary.safe_doi,
                 title=title,
                 detail=",".join(detail_tokens),
-                copied_pdf_path=copied_pdf_path,
+                copied_pdf_path=persisted.copied_pdf_path,
                 warnings=item_warnings,
                 debug=item_debug,
             )

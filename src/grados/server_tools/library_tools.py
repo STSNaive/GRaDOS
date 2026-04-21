@@ -16,6 +16,13 @@ from grados.server_tools.shared import (
     get_paths_and_config,
     missing_paper_selector_message,
 )
+from grados.workflows.library import (
+    build_library_document_artifact,
+    maybe_save_library_pdf,
+    merge_library_diagnostics,
+    persist_reviewed_library_document,
+    review_library_document,
+)
 
 __all__ = [
     "extract_paper_full_text",
@@ -135,7 +142,6 @@ async def extract_paper_full_text(
     from grados.extract.fetch import fetch_paper
     from grados.extract.parse import normalize_document_text_with_diagnostics, parse_pdf_with_diagnostics
     from grados.extract.qa import is_valid_paper_content
-    from grados.storage.papers import save_asset_manifest, save_paper_markdown, save_pdf
 
     paths, config = get_paths_and_config()
     api_keys = {k: v for k, v in config.api_keys.model_dump().items() if v}
@@ -169,45 +175,44 @@ async def extract_paper_full_text(
     if fetch_result.outcome not in ("native_full_text", "pdf_obtained"):
         return f"Failed to fetch paper: {doi}\nWarnings: " + "; ".join(fetch_result.warnings or [])
 
-    warnings = list(fetch_result.warnings)
-    parser_debug: list[str] = []
-    parser_used = ""
-
     if fetch_result.outcome == "native_full_text":
-        normalized = await normalize_document_text_with_diagnostics(
-            fetch_result.text,
-            content_format=fetch_result.text_format or "text",
-            filename=f"{doi}.txt",
+        artifact = await build_library_document_artifact(
+            lambda: normalize_document_text_with_diagnostics(
+                fetch_result.text,
+                content_format=fetch_result.text_format or "text",
+                filename=f"{doi}.txt",
+            )
         )
-        markdown = normalized.markdown
-        warnings.extend(normalized.warnings)
-        parser_debug.extend(normalized.debug)
-        parser_used = normalized.parser_used
-        if not markdown:
+        if not artifact.markdown:
             return f"Failed to normalize native full text for {doi}"
+        copied_pdf_path = ""
     else:
-        pdf_path = save_pdf(doi, fetch_result.pdf_buffer, paths.downloads)
-        parsed = await parse_pdf_with_diagnostics(
-            fetch_result.pdf_buffer,
-            filename=pdf_path.name,
-            parse_order=config.extract.parsing.order,
-            parse_enabled=config.extract.parsing.enabled,
-            marker_timeout=config.extract.parsing.marker_timeout,
+        copied_pdf_path = maybe_save_library_pdf(
+            doi=doi,
+            pdf_bytes=fetch_result.pdf_buffer,
+            paths=paths,
+            copy_to_library=True,
         )
-        warnings.extend(parsed.warnings)
-        parser_debug.extend(parsed.debug)
-        parser_used = parsed.parser_used
-        if not parsed.markdown:
+        artifact = await build_library_document_artifact(
+            lambda: parse_pdf_with_diagnostics(
+                fetch_result.pdf_buffer,
+                filename=Path(copied_pdf_path).name,
+                parse_order=config.extract.parsing.order,
+                parse_enabled=config.extract.parsing.enabled,
+                marker_timeout=config.extract.parsing.marker_timeout,
+            )
+        )
+        if not artifact.markdown:
+            warnings, parser_debug = merge_library_diagnostics(
+                artifact,
+                base_warnings=fetch_result.warnings,
+            )
             warning_block = "\n".join(f"- {warning}" for warning in warnings) if warnings else "- Unknown parse failure"
             debug_block = "\n".join(f"- {entry}" for entry in parser_debug)
             result = f"Failed to parse PDF for {doi}\n\nWarnings:\n{warning_block}"
             if debug_block:
                 result += f"\n\nParser debug:\n{debug_block}"
             return result
-        markdown = parsed.markdown
-
-    if not is_valid_paper_content(markdown, config.extract.qa.min_characters, expected_title):
-        warnings.append("QA validation failed — saved content may be incomplete.")
 
     title = ""
     authors: list[str] = []
@@ -227,56 +232,55 @@ async def extract_paper_full_text(
     if expected_title and not title:
         title = expected_title
 
-    if fetch_result.asset_hints:
-        manifest_path = save_asset_manifest(
-            doi,
-            paths.papers,
-            source=fetch_result.source,
-            asset_hints=fetch_result.asset_hints,
-        )
-        if manifest_path:
-            extra_frontmatter["assets_manifest_path"] = manifest_path
-
-    summary = save_paper_markdown(
+    review = review_library_document(
+        artifact,
+        qa_validator=is_valid_paper_content,
+        qa_min_characters=config.extract.qa.min_characters,
+        qa_expected_title=expected_title,
+        qa_warning_message="QA validation failed — saved content may be incomplete.",
+        base_warnings=list(fetch_result.warnings),
+    )
+    persisted = persist_reviewed_library_document(
+        review,
+        paths=paths,
         doi=doi,
-        markdown=markdown,
-        papers_dir=paths.papers,
         title=title,
         source=fetch_result.source,
         publisher=publisher or publisher_name,
         fetch_outcome=fetch_result.outcome,
         extra_frontmatter=extra_frontmatter or None,
-        chroma_dir=paths.database_chroma,
         authors=authors,
         year=year,
         journal=journal,
+        asset_hints=fetch_result.asset_hints,
+        copied_pdf_path=copied_pdf_path,
+        index_warning_message=(
+            "Search index refresh failed — canonical markdown was saved to papers/ only. "
+            "Error: {index_error}"
+        ),
     )
 
-    partial_success = False
-    if summary.index_status == "failed":
-        partial_success = True
-        warnings.append(
-            "Search index refresh failed — canonical markdown was saved to papers/ only. "
-            f"Error: {summary.index_error}"
-        )
-
-    result = "## Paper Extracted with Partial Success\n\n" if partial_success else "## Paper Extracted Successfully\n\n"
+    result = (
+        "## Paper Extracted with Partial Success\n\n"
+        if persisted.index_warning_added
+        else "## Paper Extracted Successfully\n\n"
+    )
     result += f"- **DOI:** {doi}\n"
-    result += f"- **URI:** {summary.uri}\n"
-    result += f"- **File:** {summary.file_path}\n"
-    result += f"- **Words:** {summary.word_count:,}\n"
-    result += f"- **Characters:** {summary.char_count:,}\n"
+    result += f"- **URI:** {persisted.summary.uri}\n"
+    result += f"- **File:** {persisted.summary.file_path}\n"
+    result += f"- **Words:** {persisted.summary.word_count:,}\n"
+    result += f"- **Characters:** {persisted.summary.char_count:,}\n"
     result += f"- **Source:** {fetch_result.source}\n"
     result += f"- **Outcome:** {fetch_result.outcome}\n"
-    result += f"- **Index Status:** {summary.index_status}\n"
-    if parser_used:
-        result += f"- **Parser Used:** {parser_used}\n"
-    if summary.section_headings:
-        result += "\n### Sections\n" + "\n".join(f"- {heading}" for heading in summary.section_headings)
-    if warnings:
-        result += "\n\n### Warnings\n" + "\n".join(f"- {warning}" for warning in warnings)
-    if parser_debug:
-        result += "\n\n### Parser Debug\n" + "\n".join(f"- {entry}" for entry in parser_debug)
+    result += f"- **Index Status:** {persisted.summary.index_status}\n"
+    if persisted.artifact.parser_used:
+        result += f"- **Parser Used:** {persisted.artifact.parser_used}\n"
+    if persisted.summary.section_headings:
+        result += "\n### Sections\n" + "\n".join(f"- {heading}" for heading in persisted.summary.section_headings)
+    if persisted.warnings:
+        result += "\n\n### Warnings\n" + "\n".join(f"- {warning}" for warning in persisted.warnings)
+    if persisted.debug:
+        result += "\n\n### Parser Debug\n" + "\n".join(f"- {entry}" for entry in persisted.debug)
 
     return result
 
@@ -448,7 +452,6 @@ async def parse_pdf_file(
     """Parse a local PDF file into markdown."""
     from grados.extract.parse import parse_pdf_with_diagnostics
     from grados.extract.qa import is_valid_paper_content
-    from grados.storage.papers import save_paper_markdown
 
     path = Path(file_path).expanduser().resolve()
     if not path.is_file():
@@ -459,19 +462,17 @@ async def parse_pdf_file(
         return f"Not a valid PDF file: {file_path}"
 
     paths, config = get_paths_and_config()
-    parsed = await parse_pdf_with_diagnostics(
-        pdf_buffer,
-        filename=path.name,
-        parse_order=config.extract.parsing.order,
-        parse_enabled=config.extract.parsing.enabled,
-        marker_timeout=config.extract.parsing.marker_timeout,
+    artifact = await build_library_document_artifact(
+        lambda: parse_pdf_with_diagnostics(
+            pdf_buffer,
+            filename=path.name,
+            parse_order=config.extract.parsing.order,
+            parse_enabled=config.extract.parsing.enabled,
+            marker_timeout=config.extract.parsing.marker_timeout,
+        )
     )
-
-    warnings = list(parsed.warnings)
-    parser_debug = list(parsed.debug)
-    parser_used = parsed.parser_used
-
-    if not parsed.markdown:
+    if not artifact.markdown:
+        warnings, parser_debug = merge_library_diagnostics(artifact)
         result = f"All parsers failed for: {file_path}"
         if warnings:
             result += "\n\nWarnings:\n" + "\n".join(f"- {warning}" for warning in warnings)
@@ -479,43 +480,52 @@ async def parse_pdf_file(
             result += "\n\nParser debug:\n" + "\n".join(f"- {entry}" for entry in parser_debug)
         return result
 
-    markdown = parsed.markdown
-    if not is_valid_paper_content(markdown, config.extract.qa.min_characters, expected_title):
-        warnings.append("QA validation failed — content may be incomplete.")
+    review = review_library_document(
+        artifact,
+        qa_validator=is_valid_paper_content,
+        qa_min_characters=config.extract.qa.min_characters,
+        qa_expected_title=expected_title,
+        qa_warning_message="QA validation failed — content may be incomplete.",
+    )
+    markdown = artifact.markdown
 
     if doi:
-        summary = save_paper_markdown(
+        persisted = persist_reviewed_library_document(
+            review,
+            paths=paths,
             doi=doi,
-            markdown=markdown,
-            papers_dir=paths.papers,
             title=expected_title or "",
             source="Local PDF",
             fetch_outcome="local_parse",
-            chroma_dir=paths.database_chroma,
-        )
-        partial_success = False
-        if summary.index_status == "failed":
-            partial_success = True
-            warnings.append(
+            index_warning_message=(
                 "Search index refresh failed — canonical markdown was saved to papers/ only. "
-                f"Error: {summary.index_error}"
-            )
-        result = "## PDF Parsed & Saved with Partial Success\n\n" if partial_success else "## PDF Parsed & Saved\n\n"
-        result += f"- **URI:** {summary.uri}\n"
-        result += f"- **File:** {summary.file_path}\n"
-        result += f"- **Words:** {summary.word_count:,}\n"
-        result += f"- **Index Status:** {summary.index_status}\n"
-        if parser_used:
-            result += f"- **Parser Used:** {parser_used}\n"
+                "Error: {index_error}"
+            ),
+        )
+        result = (
+            "## PDF Parsed & Saved with Partial Success\n\n"
+            if persisted.index_warning_added
+            else "## PDF Parsed & Saved\n\n"
+        )
+        result += f"- **URI:** {persisted.summary.uri}\n"
+        result += f"- **File:** {persisted.summary.file_path}\n"
+        result += f"- **Words:** {persisted.summary.word_count:,}\n"
+        result += f"- **Index Status:** {persisted.summary.index_status}\n"
+        if persisted.artifact.parser_used:
+            result += f"- **Parser Used:** {persisted.artifact.parser_used}\n"
+        warnings = persisted.warnings
+        parser_debug = persisted.debug
     else:
         result = "## PDF Parsed\n\n"
-        if parser_used:
-            result += f"- **Parser Used:** {parser_used}\n"
+        if review.artifact.parser_used:
+            result += f"- **Parser Used:** {review.artifact.parser_used}\n"
         result += f"- **Words:** {len(markdown.split()):,}\n"
         result += f"- **Characters:** {len(markdown):,}\n"
         result += f"\n---\n\n{markdown[:3000]}"
         if len(markdown) > 3000:
             result += f"\n\n... (truncated, {len(markdown):,} total chars)"
+        warnings = review.warnings
+        parser_debug = review.debug
 
     if warnings:
         result += "\n\n### Warnings\n" + "\n".join(f"- {warning}" for warning in warnings)

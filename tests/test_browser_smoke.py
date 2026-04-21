@@ -329,3 +329,114 @@ def test_fetch_with_browser_cleans_up_listeners_after_reused_session_error(
     assert root_page.listeners.get("download", []) == []
     assert session.context.listeners.get("page", []) == []
     assert session.cleaned is False
+
+
+def test_fetch_with_browser_returns_publisher_challenge_when_detected(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import grados.browser.generic as browser_generic
+
+    class FakePage:
+        def __init__(self, url: str) -> None:
+            self.url = url
+            self.listeners: dict[str, list[object]] = {}
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def bring_to_front(self) -> None:
+            return None
+
+        async def goto(self, url: str, **kwargs) -> None:  # noqa: ANN003
+            _ = kwargs
+            self.url = url
+
+        async def wait_for_load_state(self, state: str, timeout: int | None = None) -> None:
+            _ = (state, timeout)
+
+        async def title(self) -> str:
+            return "Just a moment..."
+
+        async def content(self) -> str:
+            return "<html><body>captcha challenge</body></html>"
+
+        def on(self, event: str, callback: object) -> None:
+            self.listeners.setdefault(event, []).append(callback)
+
+        def remove_listener(self, event: str, callback: object) -> None:
+            listeners = self.listeners.get(event, [])
+            if callback in listeners:
+                listeners.remove(callback)
+
+    class FakeRequest:
+        async def get(self, url: str, timeout: int | None = None):  # noqa: ANN201
+            _ = (url, timeout)
+            raise AssertionError("challenge pages should not trigger direct PDF backfill")
+
+    class FakeContext:
+        def __init__(self, root_page: FakePage) -> None:
+            self.pages = [root_page]
+            self.request = FakeRequest()
+            self.listeners: dict[str, list[object]] = {}
+
+        def on(self, event: str, callback: object) -> None:
+            self.listeners.setdefault(event, []).append(callback)
+
+        def remove_listener(self, event: str, callback: object) -> None:
+            listeners = self.listeners.get(event, [])
+            if callback in listeners:
+                listeners.remove(callback)
+
+    class FakeSession:
+        def __init__(self, root_page: FakePage) -> None:
+            self.root_page = root_page
+            self.context = FakeContext(root_page)
+            self.cleaned = False
+
+        async def cleanup(self) -> None:
+            self.cleaned = True
+
+    root_page = FakePage("https://publisher.example/article")
+    session = FakeSession(root_page)
+
+    async def fake_launch_browser_session(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return session
+
+    monkeypatch.setattr(
+        browser_generic,
+        "resolve_browser_executable",
+        lambda config, paths: type(
+            "Resolution",
+            (),
+            {
+                "source": "managed",
+                "browser": "Chrome",
+                "executable_path": "/tmp/chrome",
+                "profile_directory": "/tmp/profile",
+            },
+        )(),
+    )
+    monkeypatch.setattr(browser_generic, "launch_browser_session", fake_launch_browser_session)
+    monkeypatch.setattr(browser_generic, "current_browser_deadline_seconds", lambda: 0.01)
+    monkeypatch.setattr(browser_generic, "current_browser_poll_bounds", lambda: (0.0, 0.0))
+    monkeypatch.setattr(browser_generic, "current_browser_networkidle_timeout_ms", lambda: 1)
+
+    result = asyncio.run(
+        browser_generic.fetch_with_browser(
+            "10.1234/demo",
+            HeadlessBrowserConfig(
+                reuse_interactive_window=False,
+                keep_interactive_window_open=False,
+            ),
+            GRaDOSPaths(tmp_path / "grados-home"),
+        )
+    )
+
+    assert result.outcome == "publisher_challenge"
+    assert result.warnings[-1] == "Browser automation: publisher_challenge"
+    assert root_page.listeners.get("response", []) == []
+    assert root_page.listeners.get("download", []) == []
+    assert session.context.listeners.get("page", []) == []
+    assert session.cleaned is True

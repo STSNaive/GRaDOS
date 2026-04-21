@@ -18,6 +18,7 @@ from grados.server import (
     import_local_pdf_library,
     manage_failure_cases,
     mcp,
+    parse_pdf_file,
     query_research_artifacts,
     read_saved_paper,
     save_research_artifact,
@@ -562,6 +563,76 @@ def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path
     assert record.source == "Elsevier TDM"
 
 
+def test_parse_pdf_file_returns_preview_and_qa_warning(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+    pdf_path = tmp_path / "preview.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%preview")
+
+    import grados.extract.parse as parse_module
+    import grados.extract.qa as qa_module
+
+    async def fake_parse_pdf(*args, **kwargs):
+        return parse_module.ParsePipelineResult(
+            markdown="# Preview Demo\n\n## Abstract\n\nToo short.",
+            parser_used="PyMuPDF",
+            warnings=["parser emitted partial text"],
+            debug=["fallback:pymupdf"],
+        )
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: False)
+
+    result = asyncio.run(parse_pdf_file(file_path=str(pdf_path), expected_title="Preview Demo"))
+
+    assert "## PDF Parsed" in result
+    assert "Parser Used:** PyMuPDF" in result
+    assert "QA validation failed — content may be incomplete." in result
+    assert "parser emitted partial text" in result
+    assert "fallback:pymupdf" in result
+
+
+def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+    pdf_path = tmp_path / "saved.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%saved")
+
+    import grados.extract.parse as parse_module
+    import grados.extract.qa as qa_module
+    import grados.storage.vector as vector
+
+    async def fake_parse_pdf(*args, **kwargs):
+        return parse_module.ParsePipelineResult(
+            markdown="# Saved Demo\n\n## Abstract\n\n" + ("Composite vibration content. " * 80),
+            parser_used="Docling",
+        )
+
+    def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("embedding backend unavailable")
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(vector, "index_paper", fake_index_paper)
+
+    result = asyncio.run(
+        parse_pdf_file(
+            file_path=str(pdf_path),
+            expected_title="Saved Demo",
+            doi="10.1234/local-parse",
+        )
+    )
+
+    assert "PDF Parsed & Saved with Partial Success" in result
+    assert "Index Status:** failed" in result
+    assert "saved to papers/ only" in result
+
+    record = load_paper_record(tmp_path / "grados-home" / "papers", doi="10.1234/local-parse")
+    assert record is not None
+    assert record.title == "Saved Demo"
+
+
 def test_stage_b_state_tools_round_trip(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
 
@@ -605,7 +676,8 @@ def test_stage_b_state_tools_round_trip(tmp_path: Path, monkeypatch) -> None:
 def test_stage_b_evidence_tools_are_wired_to_local_library(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
 
-    import grados.research_tools as research_tools
+    import grados.research.draft_audit as draft_audit
+    import grados.research.evidence_grid as evidence_grid
 
     papers_dir = tmp_path / "grados-home" / "papers"
     save_paper_markdown(
@@ -656,7 +728,8 @@ def test_stage_b_evidence_tools_are_wired_to_local_library(tmp_path: Path, monke
             ]
         return []
 
-    monkeypatch.setattr(research_tools, "search_papers", fake_search_papers)
+    monkeypatch.setattr(evidence_grid, "search_papers", fake_search_papers)
+    monkeypatch.setattr(draft_audit, "search_papers", fake_search_papers)
 
     graph = asyncio.run(get_citation_graph(mode="neighbors", doi="10.1000/a"))
     context = asyncio.run(get_papers_full_context(dois=["10.1000/a"], mode="full", max_total_tokens=500))

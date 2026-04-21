@@ -1,54 +1,44 @@
-"""Browser-based PDF fetch: main orchestration loop, generic publisher flow."""
+"""Browser-based PDF fetch: thin orchestration over shared runtime helpers."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import re
-import time
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Protocol
 
 from grados._retry import (
     current_browser_deadline_seconds,
     current_browser_networkidle_timeout_ms,
     current_browser_poll_bounds,
 )
+from grados.browser.fetch_runtime import (
+    BrowserFetchState,
+    BrowserListenerRegistry,
+    navigate_to_doi_target,
+    run_browser_polling_loop,
+)
+from grados.browser.fetch_runtime import (
+    next_browser_poll_delay as _next_browser_poll_delay,
+)
+from grados.browser.fetch_runtime import (
+    try_backfill_from_url as _try_backfill_from_url,
+)
 from grados.browser.manager import (
-    BrowserSession,
     close_secondary_pages,
     get_or_create_reusable_session,
     launch_browser_session,
     random_viewport,
     resolve_browser_executable,
 )
-from grados.browser.sciencedirect import (
-    follow_candidates as sd_follow_candidates,
+from grados.browser.session_runtime import (
+    acquire_browser_runtime,
+    finalize_browser_error,
+    finalize_browser_no_capture,
+    finalize_browser_success,
 )
-from grados.browser.sciencedirect import (
-    try_view_pdf_click as sd_try_view_pdf_click,
-)
+from grados.browser.strategies import BrowserPageStrategyContext, build_browser_page_strategies
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
-from grados.publisher.common import classify_pdf_content, detect_bot_challenge
 
-_BROWSER_LABELS = {"managed": "GRaDOS Chrome", "configured": "Chrome", "system": "Chrome"}
 logger = logging.getLogger(__name__)
-
-
-def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) -> float:
-    """Compute the next main-loop sleep interval.
-
-    Starts at `poll_min`, doubles each tick until it reaches `poll_max`, then
-    stays at `poll_max`. If `poll_max < poll_min`, returns `poll_min` (caller
-    guarantees bounds are sane via config validation).
-    """
-    if poll_max < poll_min:
-        return poll_min
-    if current < poll_min:
-        return poll_min
-    return min(poll_max, current * 2)
 
 
 @dataclass(frozen=True)
@@ -59,98 +49,9 @@ class BrowserFetchResult:
     warnings: list[str] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class BrowserPageStrategyContext:
-    page: Any
-    context: Any
-    action_state: dict[str, Any]
-    attempted_urls: set[str]
-    track_page: Callable[[Any], None]
-    pdf_captured: Callable[[], bool]
-    inspect_challenge: Callable[[Any], Awaitable[bool]]
-    report_warning: Callable[[str], None]
-
-
-class BrowserPageStrategy(Protocol):
-    name: str
-
-    async def run(self, context: BrowserPageStrategyContext) -> None:
-        ...
-
-
-@dataclass(frozen=True)
-class _FunctionBrowserPageStrategy:
-    name: str
-    runner: Callable[[BrowserPageStrategyContext], Awaitable[None]]
-
-    async def run(self, context: BrowserPageStrategyContext) -> None:
-        await self.runner(context)
-
-
-async def _run_sciencedirect_page_strategy(context: BrowserPageStrategyContext) -> None:
-    await sd_try_view_pdf_click(
-        context.page,
-        context.context,
-        context.action_state,
-        context.attempted_urls,
-        context.track_page,
-        context.report_warning,
-    )
-    if context.pdf_captured():
-        return
-    await sd_follow_candidates(
-        context.page,
-        context.context,
-        context.action_state,
-        context.attempted_urls,
-        context.track_page,
-        context.pdf_captured,
-        context.inspect_challenge,
-        context.report_warning,
-    )
-
-
-async def _run_generic_page_strategy(context: BrowserPageStrategyContext) -> None:
-    await _try_generic_pdf_click(
-        context.page,
-        context.action_state,
-        context.pdf_captured,
-        context.report_warning,
-    )
-
-
-BROWSER_PAGE_STRATEGY_REGISTRY: dict[str, BrowserPageStrategy] = {
-    "ScienceDirect": _FunctionBrowserPageStrategy("ScienceDirect", _run_sciencedirect_page_strategy),
-    "GenericPdfClick": _FunctionBrowserPageStrategy("GenericPdfClick", _run_generic_page_strategy),
-}
-
-
-def build_browser_page_strategies(order: list[str] | None = None) -> list[BrowserPageStrategy]:
-    resolved_order = order or ["ScienceDirect", "GenericPdfClick"]
-    return [BROWSER_PAGE_STRATEGY_REGISTRY[name] for name in resolved_order if name in BROWSER_PAGE_STRATEGY_REGISTRY]
-
-
-def _detach_registered_listeners(
-    *,
-    tracked_pages: set[Any],
-    context: Any,
-    on_response: Callable[[Any], Awaitable[None]],
-    on_download: Callable[[Any], Awaitable[None]],
-    on_new_page: Callable[[Any], None],
-) -> None:
-    for page in list(tracked_pages):
-        try:
-            page.remove_listener("response", on_response)
-            page.remove_listener("download", on_download)
-        except Exception:
-            # Listener cleanup runs after capture is over; keep teardown
-            # best-effort so one bad page does not hide the final outcome.
-            pass
-    try:
-        context.remove_listener("page", on_new_page)
-    except Exception:
-        # Same rationale as page listener cleanup above.
-        pass
+def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) -> float:
+    """Re-export poll-backoff helper for timeout tests and browser callers."""
+    return _next_browser_poll_delay(current, poll_min, poll_max)
 
 
 async def fetch_with_browser(
@@ -159,357 +60,84 @@ async def fetch_with_browser(
     paths: GRaDOSPaths,
 ) -> BrowserFetchResult:
     """Fetch a paper PDF using browser automation."""
-    resolution = resolve_browser_executable(config, paths)
-    if not resolution:
-        return BrowserFetchResult(
-            pdf_buffer=None,
-            source="Headless Browser",
-            outcome="no_browser",
-            warnings=["No compatible browser executable found. Run 'grados setup'."],
-        )
-
-    browser_label = _BROWSER_LABELS.get(resolution.source, resolution.browser)
-    retain = config.reuse_interactive_window and config.keep_interactive_window_open
-    viewport = random_viewport()
-    session: BrowserSession | None = None
-
+    runtime = None
+    listeners = None
     try:
-        # Launch or reuse browser
-        if retain:
-            session = await get_or_create_reusable_session(
-                executable_path=resolution.executable_path,
-                viewport=viewport,
-                user_data_dir=resolution.profile_directory,
-            )
-        else:
-            session = await launch_browser_session(
-                executable_path=resolution.executable_path,
-                viewport=viewport,
-                user_data_dir=resolution.profile_directory,
-                headless=False,
-            )
-
-        context = session.context
-        root_page = session.root_page
-
-        if retain:
-            await close_secondary_pages(context, root_page)
-            try:
-                await root_page.bring_to_front()
-            except Exception:
-                # Window focus is only cosmetic; capture can continue without it.
-                pass
-
-        # ── Shared mutable state ───────────────────────────────────────────
-        tracked_pages: set[Any] = set()
-        attempted_urls: set[str] = set()
-        action_states: dict[int, dict[str, Any]] = {}
-        final_url = ""
-        challenge_seen = False
-        nonfatal_warnings: list[str] = []
-
-        # Wrap the captured PDF in a mutable container so closures can update it.
-        _buf: list[bytes | None] = [None]
-
-        def pdf_captured() -> bool:
-            return _buf[0] is not None
-
-        def report_warning(message: str) -> None:
-            normalized = re.sub(r"\s+", " ", message).strip()
-            if normalized and normalized not in nonfatal_warnings:
-                nonfatal_warnings.append(normalized)
-
-        def try_capture(data: bytes, content_type: str = "", source_url: str = "") -> bool:
-            check = classify_pdf_content(data, content_type)
-            if check["is_pdf"]:
-                _buf[0] = data
-                return True
-            return False
-
-        async def inspect_challenge(page: Any) -> bool:
-            nonlocal challenge_seen, final_url
-            try:
-                title = await page.title()
-                html = await page.content()
-                url = page.url
-            except Exception:
-                return False
-            if detect_bot_challenge(title, html, url):
-                challenge_seen = True
-                final_url = url
-                return True
-            return False
-
-        def get_action_state(page: Any) -> dict[str, Any]:
-            pid = id(page)
-            if pid not in action_states:
-                action_states[pid] = {}
-            return action_states[pid]
-
-        # ── Event handlers ─────────────────────────────────────────────────
-
-        async def _on_response(response: Any) -> None:
-            if pdf_captured():
-                return
-            headers = response.headers
-            ct = str(headers.get("content-type", ""))
-            cd = str(headers.get("content-disposition", ""))
-            url = response.url
-            looks_pdf = (
-                "application/pdf" in ct
-                or "/pdfft" in url.lower()
-                or ".pdf" in url.lower()
-                or ".pdf" in cd.lower()
-            )
-            if not looks_pdf:
-                return
-            try:
-                body = await response.body()
-                try_capture(body, ct, url)
-            except Exception:
-                # Response hooks are opportunistic sniffers and must not stop the
-                # main polling loop if the browser rejects body access.
-                pass
-
-        async def _on_download(download: Any) -> None:
-            if pdf_captured():
-                return
-            try:
-                failure = await download.failure()
-                if failure:
-                    return
-                dl_path = await download.path()
-                if dl_path:
-                    body = Path(dl_path).read_bytes()
-                    try_capture(body, "application/pdf", download.url)
-            except Exception:
-                # Download persistence is best-effort; a broken temp file should
-                # not abort other capture paths.
-                pass
-
-        def _on_new_page(page: Any) -> None:
-            _track_page(page)
-
-        def _track_page(page: Any) -> None:
-            if page in tracked_pages:
-                return
-            tracked_pages.add(page)
-            page.on("response", _on_response)
-            page.on("download", _on_download)
-
-        # Register listeners
-        context.on("page", _on_new_page)
-        _track_page(root_page)
-
-        try:
-            # ── Navigate ───────────────────────────────────────────────────
-
-            try:
-                await root_page.goto(f"https://doi.org/{doi}", wait_until="domcontentloaded", timeout=30000)
-            except Exception as exc:
-                report_warning(f"Browser goto failed for DOI {doi}: {exc.__class__.__name__}: {exc}")
-            # Explicit ceiling for networkidle (default 15s): SPA background
-            # polling (analytics, live updates) can keep the network from ever
-            # settling. Falling through on timeout hands control to the main
-            # polling loop instead of silently eating the deadline inside
-            # wait_for_load_state. See ADR-008. Config: extract.headlessBrowser.
-            # networkidleTimeout.
-            networkidle_ms = current_browser_networkidle_timeout_ms()
-            try:
-                await root_page.wait_for_load_state("networkidle", timeout=networkidle_ms)
-            except Exception:
-                # Common enough on SPA-heavy publisher sites that an INFO-level log
-                # would be noisy; DEBUG records the event for operators tailing logs.
-                logger.debug(
-                    "networkidle ceiling (%dms) hit for DOI %s; continuing to main polling loop",
-                    networkidle_ms,
-                    doi,
-                )
-
-            # ── Main polling loop (deadline from config) ───────────────────
-
-            deadline_seconds = current_browser_deadline_seconds()
-            deadline = time.monotonic() + deadline_seconds
-            poll_min, poll_max = current_browser_poll_bounds()
-            current_sleep = poll_min
-            page_strategies = build_browser_page_strategies()
-            challenge_prompt_shown = False
-
-            while time.monotonic() < deadline and not pdf_captured():
-                challenge_active_this_tick = False
-
-                for page in list(tracked_pages):
-                    if pdf_captured() or page.is_closed():
-                        continue
-
-                    blocked = await inspect_challenge(page)
-                    challenge_active_this_tick = challenge_active_this_tick or blocked
-                    if blocked:
-                        continue
-
-                    # Try backfill from page URL
-                    await _try_backfill_from_url(
-                        page,
-                        context,
-                        attempted_urls,
-                        try_capture,
-                        pdf_captured,
-                        report_warning,
-                    )
-                    if pdf_captured():
-                        break
-
-                    state = get_action_state(page)
-                    strategy_context = BrowserPageStrategyContext(
-                        page=page,
-                        context=context,
-                        action_state=state,
-                        attempted_urls=attempted_urls,
-                        track_page=_track_page,
-                        pdf_captured=pdf_captured,
-                        inspect_challenge=inspect_challenge,
-                        report_warning=report_warning,
-                    )
-                    for strategy in page_strategies:
-                        await strategy.run(strategy_context)
-                        if pdf_captured():
-                            break
-                    if pdf_captured():
-                        break
-
-                    # Second backfill attempt
-                    await _try_backfill_from_url(
-                        page,
-                        context,
-                        attempted_urls,
-                        try_capture,
-                        pdf_captured,
-                        report_warning,
-                    )
-
-                if challenge_seen and not challenge_prompt_shown:
-                    challenge_prompt_shown = True
-
-                # Exponential backoff between idle polls: poll_min → 2× → poll_max.
-                # Keeps CPU and event-loop cost low on slow publisher pages while
-                # still reacting quickly to state changes on the first few ticks.
-                # See ADR-008. Config: extract.headlessBrowser.poll{Min,Max}Seconds.
-                await asyncio.sleep(current_sleep)
-                current_sleep = next_browser_poll_delay(current_sleep, poll_min, poll_max)
-
-            if pdf_captured():
-                if retain and config.close_pdf_page_after_capture:
-                    await close_secondary_pages(context, root_page)
-                if not retain:
-                    await session.cleanup()
-                else:
-                    try:
-                        await root_page.bring_to_front()
-                    except Exception:
-                        # Restoring focus is best-effort for the retained window.
-                        pass
-
-                return BrowserFetchResult(
-                    pdf_buffer=_buf[0],
-                    source=f"Headless Browser ({browser_label})",
-                    outcome="pdf_obtained",
-                    warnings=nonfatal_warnings,
-                )
-
-            # No PDF captured
-            if not retain:
-                await session.cleanup()
-
-            outcome = "publisher_challenge" if challenge_seen else "timed_out"
+        runtime = await acquire_browser_runtime(
+            config,
+            paths,
+            resolve_browser_executable=resolve_browser_executable,
+            random_viewport=random_viewport,
+            get_or_create_reusable_session=get_or_create_reusable_session,
+            launch_browser_session=launch_browser_session,
+            close_secondary_pages=close_secondary_pages,
+        )
+        if runtime is None:
             return BrowserFetchResult(
                 pdf_buffer=None,
-                source=f"Headless Browser ({browser_label})",
-                outcome=outcome,
-                warnings=nonfatal_warnings + [f"Browser automation: {outcome}"],
-            )
-        finally:
-            _detach_registered_listeners(
-                tracked_pages=tracked_pages,
-                context=context,
-                on_response=_on_response,
-                on_download=_on_download,
-                on_new_page=_on_new_page,
+                source="Headless Browser",
+                outcome="no_browser",
+                warnings=["No compatible browser executable found. Run 'grados setup'."],
             )
 
-    except Exception as e:
-        if session and not retain:
-            try:
-                await session.cleanup()
-            except Exception:
-                # Teardown failure should not replace the original browser error.
-                pass
+        state = BrowserFetchState()
+        listeners = BrowserListenerRegistry(runtime.context, state)
+        listeners.register(runtime.root_page)
+
+        await navigate_to_doi_target(
+            runtime.root_page,
+            doi=doi,
+            state=state,
+            networkidle_timeout_ms=current_browser_networkidle_timeout_ms(),
+            logger=logger,
+        )
+
+        poll_min, poll_max = current_browser_poll_bounds()
+        await run_browser_polling_loop(
+            context=runtime.context,
+            state=state,
+            listeners=listeners,
+            page_strategies=build_browser_page_strategies(),
+            deadline_seconds=current_browser_deadline_seconds(),
+            poll_min=poll_min,
+            poll_max=poll_max,
+            strategy_context_factory=BrowserPageStrategyContext,
+            backfill_from_url=_try_backfill_from_url,
+        )
+
+        if state.pdf_captured():
+            await finalize_browser_success(
+                runtime,
+                close_secondary_pages=close_secondary_pages,
+                close_pdf_page_after_capture=config.close_pdf_page_after_capture,
+            )
+            return BrowserFetchResult(
+                pdf_buffer=state.pdf_buffer,
+                source=f"Headless Browser ({runtime.browser_label})",
+                outcome="pdf_obtained",
+                warnings=state.warnings,
+            )
+
+        await finalize_browser_no_capture(runtime)
+        outcome = "publisher_challenge" if state.challenge_seen else "timed_out"
         return BrowserFetchResult(
             pdf_buffer=None,
-            source=f"Headless Browser ({browser_label})",
+            source=f"Headless Browser ({runtime.browser_label})",
+            outcome=outcome,
+            warnings=state.warnings + [f"Browser automation: {outcome}"],
+        )
+    except Exception as exc:
+        if runtime is not None:
+            await finalize_browser_error(runtime)
+        source = "Headless Browser"
+        if runtime is not None:
+            source = f"Headless Browser ({runtime.browser_label})"
+        return BrowserFetchResult(
+            pdf_buffer=None,
+            source=source,
             outcome="error",
-            warnings=[str(e)],
+            warnings=[str(exc)],
         )
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────
-
-
-async def _try_backfill_from_url(
-    page: Any,
-    context: Any,
-    attempted_urls: set[str],
-    try_capture: Any,
-    pdf_captured: Any,
-    report_warning: Callable[[str], None],
-) -> None:
-    """If the page URL looks like a direct PDF link, fetch it via context.request."""
-    if pdf_captured() or page.is_closed():
-        return
-    url = page.url
-    if not re.search(r"\.pdf(?:$|[?#])", url, re.IGNORECASE):
-        return
-    if url in attempted_urls:
-        return
-
-    attempted_urls.add(url)
-    try:
-        response = await context.request.get(url, timeout=20000)
-        headers = response.headers
-        ct = str(headers.get("content-type", ""))
-        body = await response.body()
-        try_capture(body, ct, url)
-    except Exception as exc:
-        report_warning(
-            f"Direct PDF backfill failed for {url}: {exc.__class__.__name__}: {exc}"
-        )
-
-
-async def _try_generic_pdf_click(
-    page: Any,
-    action_state: dict[str, Any],
-    pdf_captured: Any,
-    report_warning: Callable[[str], None],
-) -> None:
-    """Click generic PDF links on non-ScienceDirect pages."""
-    if pdf_captured() or page.is_closed():
-        return
-    if "sciencedirect.com" in page.url:
-        return
-    if action_state.get("generic_clicked"):
-        return
-
-    try:
-        link = await page.query_selector('a[href*="pdf"], a[title*="PDF"], a[class*="pdf"]')
-        if link:
-            action_state["generic_clicked"] = True
-            await link.click()
-            try:
-                await page.wait_for_load_state("domcontentloaded")
-            except Exception:
-                # After a click we already changed page state; waiting for load is
-                # opportunistic and should not suppress other browser paths.
-                pass
-    except Exception as exc:
-        report_warning(
-            f"Generic PDF click failed on {page.url}: {exc.__class__.__name__}: {exc}"
-        )
+    finally:
+        if listeners is not None:
+            listeners.detach()

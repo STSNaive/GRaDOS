@@ -212,3 +212,33 @@
 - `browser/generic.py` 的 15s `networkidle` 上限替代隐式默认，消除"networkidle 无超时"的潜在挂死风险；主轮询 `asyncio.sleep(1)` 改为 `0.5s → 1s → 2s` 指数退避，降低长页面空转 CPU 与事件循环负载。
 - PubMed / WoS 的最小间隔节流由进程内 `_AsyncMinIntervalLimiter` 保障；Elsevier / Unpaywall 依赖响应头退避已通过 `_HeaderAwareWait` 实现。
 - 未来新增 publisher 时，只需套用统一 retry 装饰器 + runtime getter，不重复手写超时 / 节流逻辑。
+
+---
+
+## ADR-009：跨入口多阶段流程采用 shared workflow / service core，CLI 与 MCP 保持薄 adapter
+
+- 状态：Accepted
+- 日期：2026-04-21
+
+### 背景
+- `extract_paper_full_text`、`parse_pdf_file`、`import_local_pdf_library` 在一段时间内分别维护 `parse -> QA -> save -> reindex -> receipt` 的局部变体，导致 warning 聚合、partial-success 语义与 idempotency 字段解释分散在多个入口。
+- `browser/generic.py` 与 `research_tools.py` 也在持续累积 orchestration、helper、typed result、入口兼容层等不同职责，单文件持续膨胀。
+- 这类流程一旦同时服务 MCP、CLI 或多个 server tool，若不先收敛 shared core，后续新增入口或调 contract 时会快速回到“多处复制、行为轻微漂移”的状态。
+
+### 决策
+- 只要一个能力满足以下任一条件，就优先抽成 shared workflow / service core，而不是继续堆在入口文件里：
+  - 被多个入口复用
+  - 包含多阶段编排状态
+  - 需要统一 partial-success / warning / idempotency / typed-result 语义
+- shared core 默认返回 dataclass / typed result / stable dict，不直接耦合 MCP markdown receipt、CLI stdout 文案或参数解析细节。
+- CLI、MCP 与 server tool 入口只负责：
+  - 参数适配
+  - 调用 shared core
+  - 对外 payload / receipt 渲染
+- `src/grados/workflows/` 用于承载跨领域、跨入口复用的流程型逻辑；领域内但职责已明显分化的模块，则拆到对应 package 下的子模块，而不是继续维持单文件 monolith。
+- 对 browser / research 这类已有 public facade 的模块，第一阶段允许保留 facade / re-export 作为稳定入口，但 facade 不再新增 heuristics 或真正的工作流逻辑。
+
+### 结果与影响
+- canonical save、listener cleanup、citation cache、full-context / compare / audit 等关键契约可以在单一实现点维护，入口层不再重复解释。
+- 测试边界可以更贴近真实职责：workflow 测试锁多阶段语义，adapter smoke test 锁对外 payload，避免所有护栏都堆在一个大文件对应的一组 smoke tests 上。
+- 后续若继续给已有能力增加 CLI twin、MCP twin 或新的领域入口，优先复用 shared core，而不是复制一份 orchestration。

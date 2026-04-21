@@ -29,6 +29,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed storage helper boundaries so retrieval-only logic now lives in `storage/retrieval.py`, while `research_tools.py` and `papers.py` reuse shared DOI / paragraph helpers from `storage.chunking` instead of each maintaining a parallel implementation.
 - Changed storage retrieval internals so `storage/vector.py` is now a thinner facade over dedicated `retrieval`, `hydration`, `chroma_client`, and shared `paths` helpers; `get_paper_document()` / `list_paper_documents()` now return typed `PaperDocument` / `PaperDocumentSummary` results instead of another loose dict boundary.
 - Changed canonical saved-paper helpers so `load_paper_record()` / `read_paper()` / `get_paper_structure()` no longer carry an unused `chroma_dir` parameter, and `papers_dir` resolution is centralized in `storage/paths.py::resolve_papers_dir()`.
+- Changed local-library ingest orchestration so `extract_paper_full_text`, `parse_pdf_file`, and `import_local_pdf_library` now share a typed workflow in `src/grados/workflows/library.py`; `server_tools/library_tools.py` and `importing.py` keep only entry adaptation, receipt rendering, and batch orchestration.
+- Changed browser orchestration layering so `src/grados/browser/generic.py` is now a thin facade over `session_runtime`, `fetch_runtime`, and `browser/strategies`; session lifecycle, listener cleanup, and page polling/backfill contracts are defined once without changing `BrowserFetchResult`.
+- Changed Stage B research helper layout so `src/grados/research_tools.py` is now a thin public facade over `src/grados/research/` (`models`, `common`, `full_context`, `citation_graph`, `evidence_grid`, `compare`, `draft_audit`), reducing cross-responsibility coupling while keeping MCP/server payloads stable.
 
 ### Fixed
 - Fixed `_HeaderAwareWait` so `Retry-After: 0` is honored as an explicit immediate retry instead of being treated as a missing header and falling back to exponential backoff.
@@ -44,6 +47,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Tests
 - Added regression coverage for browser fallback warnings, local Chroma timeout guards, repeated-query deduplication and citation-graph cache invalidation in `research_tools`, typed paper-document accessors, shared `papers_dir` resolution, narrow storage helper boundaries (DOI extraction / frontmatter stripping / paragraph splitting), and the dropped raw `fallbackMirror` Sci-Hub fetch shim.
+- Added workflow coverage for the shared library ingest pipeline plus `parse_pdf_file` smoke coverage for QA-warning and index-partial-success receipts.
+- Added browser regression coverage for retained-session teardown, listener cleanup, and challenge/timeout paths after splitting `browser/generic.py` into runtime/strategy layers.
+- Reorganized Stage B research smoke coverage into module-scoped suites for state persistence, citation graph, full-context reads, evidence-grid plus draft-audit, and compare flows; server smoke monkeypatches now target the new research submodules directly.
 
 ## [0.6.9] - 2026-04-16
 
