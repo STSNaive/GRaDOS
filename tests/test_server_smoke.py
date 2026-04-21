@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 from grados.publisher.common import PublisherMetadata
+from grados.search.academic import PaperMetadata
+from grados.search.resumable import ResumableSearchResult
 from grados.server import (
     audit_draft_support,
     build_evidence_grid,
@@ -18,6 +21,7 @@ from grados.server import (
     query_research_artifacts,
     read_saved_paper,
     save_research_artifact,
+    search_academic_papers,
     search_saved_papers,
 )
 from grados.storage.papers import PaperListEntry, load_paper_record, save_paper_markdown
@@ -129,6 +133,49 @@ def test_search_saved_papers_reports_empty_library(tmp_path: Path, monkeypatch) 
     result = asyncio.run(search_saved_papers("composite vibration"))
 
     assert "No saved papers found" in result
+
+
+def test_search_academic_papers_warns_when_continuation_token_is_not_applied(monkeypatch) -> None:
+    import grados.server_tools.search_tools as search_tools
+
+    async def fake_run_resumable_search(**kwargs):  # noqa: ANN003
+        assert kwargs["continuation_token"] == "stale-token"
+        return ResumableSearchResult(
+            query=kwargs["query"],
+            limit=kwargs["limit"],
+            results=[
+                PaperMetadata(
+                    title="Composite Damping Study",
+                    doi="10.1234/demo",
+                    source="Crossref",
+                )
+            ],
+            has_more=False,
+            exhausted_sources=["Crossref"],
+            next_continuation_token=None,
+            warnings=[],
+            continuation_applied=False,
+        )
+
+    monkeypatch.setattr(
+        search_tools,
+        "get_paths_and_config",
+        lambda: (
+            None,
+            SimpleNamespace(
+                search=SimpleNamespace(order=["Crossref"], enabled={"Crossref": True}),
+                academic_etiquette_email="research@example.edu",
+            ),
+        ),
+    )
+    monkeypatch.setattr(search_tools, "get_api_keys", lambda config: {})
+    monkeypatch.setattr("grados.search.resumable.run_resumable_search", fake_run_resumable_search)
+
+    result = asyncio.run(search_academic_papers("composite damping", continuation_token="stale-token"))
+
+    assert "continuation_token was not applied" in result
+    assert "Results restarted from page 1." in result
+    assert "Composite Damping Study" in result
 
 
 def test_search_saved_papers_rejects_invalid_year_range() -> None:

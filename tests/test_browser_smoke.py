@@ -214,3 +214,118 @@ def test_fetch_with_browser_surfaces_sciencedirect_manual_fallback_warning(
 
     assert result.outcome == "timed_out"
     assert any("ScienceDirect manual PDF fallback failed" in warning for warning in result.warnings)
+
+
+def test_fetch_with_browser_cleans_up_listeners_after_reused_session_error(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import grados.browser.generic as browser_generic
+
+    class FakePage:
+        def __init__(self, url: str) -> None:
+            self.url = url
+            self.listeners: dict[str, list[object]] = {}
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def bring_to_front(self) -> None:
+            return None
+
+        async def goto(self, url: str, **kwargs) -> None:  # noqa: ANN003
+            _ = kwargs
+            self.url = url
+
+        async def wait_for_load_state(self, state: str, timeout: int | None = None) -> None:
+            _ = (state, timeout)
+
+        async def title(self) -> str:
+            return "Article"
+
+        async def content(self) -> str:
+            return "<html><body>example article</body></html>"
+
+        def on(self, event: str, callback: object) -> None:
+            self.listeners.setdefault(event, []).append(callback)
+
+        def remove_listener(self, event: str, callback: object) -> None:
+            listeners = self.listeners.get(event, [])
+            if callback in listeners:
+                listeners.remove(callback)
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.listeners: dict[str, list[object]] = {}
+
+        def on(self, event: str, callback: object) -> None:
+            self.listeners.setdefault(event, []).append(callback)
+
+        def remove_listener(self, event: str, callback: object) -> None:
+            listeners = self.listeners.get(event, [])
+            if callback in listeners:
+                listeners.remove(callback)
+
+    class FakeSession:
+        def __init__(self, root_page: FakePage) -> None:
+            self.root_page = root_page
+            self.context = FakeContext()
+            self.cleaned = False
+
+        async def cleanup(self) -> None:
+            self.cleaned = True
+
+    class BoomStrategy:
+        name = "Boom"
+
+        async def run(self, context) -> None:  # noqa: ANN001
+            _ = context
+            raise RuntimeError("boom during polling")
+
+    root_page = FakePage("https://example.org/article")
+    session = FakeSession(root_page)
+
+    async def fake_get_or_create_reusable_session(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return session
+
+    async def fake_noop(*args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        _ = (args, kwargs)
+
+    monkeypatch.setattr(
+        browser_generic,
+        "resolve_browser_executable",
+        lambda config, paths: type(
+            "Resolution",
+            (),
+            {
+                "source": "managed",
+                "browser": "Chrome",
+                "executable_path": "/tmp/chrome",
+                "profile_directory": "/tmp/profile",
+            },
+        )(),
+    )
+    monkeypatch.setattr(browser_generic, "get_or_create_reusable_session", fake_get_or_create_reusable_session)
+    monkeypatch.setattr(browser_generic, "close_secondary_pages", fake_noop)
+    monkeypatch.setattr(browser_generic, "_try_backfill_from_url", fake_noop)
+    monkeypatch.setattr(browser_generic, "build_browser_page_strategies", lambda: [BoomStrategy()])
+    monkeypatch.setattr(browser_generic, "current_browser_networkidle_timeout_ms", lambda: 1)
+
+    result = asyncio.run(
+        browser_generic.fetch_with_browser(
+            "10.1234/demo",
+            HeadlessBrowserConfig(
+                reuse_interactive_window=True,
+                keep_interactive_window_open=True,
+            ),
+            GRaDOSPaths(tmp_path / "grados-home"),
+        )
+    )
+
+    assert result.outcome == "error"
+    assert result.warnings == ["boom during polling"]
+    assert root_page.listeners.get("response", []) == []
+    assert root_page.listeners.get("download", []) == []
+    assert session.context.listeners.get("page", []) == []
+    assert session.cleaned is False

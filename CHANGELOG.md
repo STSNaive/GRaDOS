@@ -32,6 +32,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 - Fixed `_HeaderAwareWait` so `Retry-After: 0` is honored as an explicit immediate retry instead of being treated as a missing header and falling back to exponential backoff.
+- Fixed retained browser-session error handling so `fetch_with_browser()` now detaches `response` / `download` / `page` listeners even when the polling loop raises, preventing listener leaks across reused visible sessions.
+- Fixed `audit_draft_support` to split Chinese claims on sentence-ending punctuation without requiring whitespace, parse Chinese author-year citations such as `（张三，2025）`, and strip those citations before evidence lookup.
+- Fixed `search_academic_papers` to warn when a provided `continuation_token` is stale, invalid, or tied to a different query instead of silently rendering a restarted first page.
+- Fixed `compare_papers(output_format=\"table\")` to escape pipe characters and normalize multiline cell content so paper titles and excerpts no longer break Markdown table structure.
 
 ### Removed
 - Removed the legacy standalone `marker-worker/` directory and `markerWorkerDirectory` example-config knob; Marker parsing is now only driven by the Python runtime path configured for the in-process parser worker.

@@ -130,6 +130,29 @@ def build_browser_page_strategies(order: list[str] | None = None) -> list[Browse
     return [BROWSER_PAGE_STRATEGY_REGISTRY[name] for name in resolved_order if name in BROWSER_PAGE_STRATEGY_REGISTRY]
 
 
+def _detach_registered_listeners(
+    *,
+    tracked_pages: set[Any],
+    context: Any,
+    on_response: Callable[[Any], Awaitable[None]],
+    on_download: Callable[[Any], Awaitable[None]],
+    on_new_page: Callable[[Any], None],
+) -> None:
+    for page in list(tracked_pages):
+        try:
+            page.remove_listener("response", on_response)
+            page.remove_listener("download", on_download)
+        except Exception:
+            # Listener cleanup runs after capture is over; keep teardown
+            # best-effort so one bad page does not hide the final outcome.
+            pass
+    try:
+        context.remove_listener("page", on_new_page)
+    except Exception:
+        # Same rationale as page listener cleanup above.
+        pass
+
+
 async def fetch_with_browser(
     doi: str,
     config: HeadlessBrowserConfig,
@@ -278,148 +301,140 @@ async def fetch_with_browser(
         context.on("page", _on_new_page)
         _track_page(root_page)
 
-        # ── Navigate ───────────────────────────────────────────────────────
-
         try:
-            await root_page.goto(f"https://doi.org/{doi}", wait_until="domcontentloaded", timeout=30000)
-        except Exception as exc:
-            report_warning(f"Browser goto failed for DOI {doi}: {exc.__class__.__name__}: {exc}")
-        # Explicit ceiling for networkidle (default 15s): SPA background
-        # polling (analytics, live updates) can keep the network from ever
-        # settling. Falling through on timeout hands control to the main
-        # polling loop instead of silently eating the deadline inside
-        # wait_for_load_state. See ADR-008. Config: extract.headlessBrowser.
-        # networkidleTimeout.
-        networkidle_ms = current_browser_networkidle_timeout_ms()
-        try:
-            await root_page.wait_for_load_state("networkidle", timeout=networkidle_ms)
-        except Exception:
-            # Common enough on SPA-heavy publisher sites that an INFO-level log
-            # would be noisy; DEBUG records the event for operators tailing logs.
-            logger.debug(
-                "networkidle ceiling (%dms) hit for DOI %s; continuing to main polling loop",
-                networkidle_ms,
-                doi,
-            )
+            # ── Navigate ───────────────────────────────────────────────────
 
-        # ── Main polling loop (deadline from config) ───────────────────────
-
-        deadline_seconds = current_browser_deadline_seconds()
-        deadline = time.monotonic() + deadline_seconds
-        poll_min, poll_max = current_browser_poll_bounds()
-        current_sleep = poll_min
-        page_strategies = build_browser_page_strategies()
-        challenge_prompt_shown = False
-
-        while time.monotonic() < deadline and not pdf_captured():
-            challenge_active_this_tick = False
-
-            for page in list(tracked_pages):
-                if pdf_captured() or page.is_closed():
-                    continue
-
-                blocked = await inspect_challenge(page)
-                challenge_active_this_tick = challenge_active_this_tick or blocked
-                if blocked:
-                    continue
-
-                # Try backfill from page URL
-                await _try_backfill_from_url(
-                    page,
-                    context,
-                    attempted_urls,
-                    try_capture,
-                    pdf_captured,
-                    report_warning,
+            try:
+                await root_page.goto(f"https://doi.org/{doi}", wait_until="domcontentloaded", timeout=30000)
+            except Exception as exc:
+                report_warning(f"Browser goto failed for DOI {doi}: {exc.__class__.__name__}: {exc}")
+            # Explicit ceiling for networkidle (default 15s): SPA background
+            # polling (analytics, live updates) can keep the network from ever
+            # settling. Falling through on timeout hands control to the main
+            # polling loop instead of silently eating the deadline inside
+            # wait_for_load_state. See ADR-008. Config: extract.headlessBrowser.
+            # networkidleTimeout.
+            networkidle_ms = current_browser_networkidle_timeout_ms()
+            try:
+                await root_page.wait_for_load_state("networkidle", timeout=networkidle_ms)
+            except Exception:
+                # Common enough on SPA-heavy publisher sites that an INFO-level log
+                # would be noisy; DEBUG records the event for operators tailing logs.
+                logger.debug(
+                    "networkidle ceiling (%dms) hit for DOI %s; continuing to main polling loop",
+                    networkidle_ms,
+                    doi,
                 )
-                if pdf_captured():
-                    break
 
-                state = get_action_state(page)
-                strategy_context = BrowserPageStrategyContext(
-                    page=page,
-                    context=context,
-                    action_state=state,
-                    attempted_urls=attempted_urls,
-                    track_page=_track_page,
-                    pdf_captured=pdf_captured,
-                    inspect_challenge=inspect_challenge,
-                    report_warning=report_warning,
-                )
-                for strategy in page_strategies:
-                    await strategy.run(strategy_context)
+            # ── Main polling loop (deadline from config) ───────────────────
+
+            deadline_seconds = current_browser_deadline_seconds()
+            deadline = time.monotonic() + deadline_seconds
+            poll_min, poll_max = current_browser_poll_bounds()
+            current_sleep = poll_min
+            page_strategies = build_browser_page_strategies()
+            challenge_prompt_shown = False
+
+            while time.monotonic() < deadline and not pdf_captured():
+                challenge_active_this_tick = False
+
+                for page in list(tracked_pages):
+                    if pdf_captured() or page.is_closed():
+                        continue
+
+                    blocked = await inspect_challenge(page)
+                    challenge_active_this_tick = challenge_active_this_tick or blocked
+                    if blocked:
+                        continue
+
+                    # Try backfill from page URL
+                    await _try_backfill_from_url(
+                        page,
+                        context,
+                        attempted_urls,
+                        try_capture,
+                        pdf_captured,
+                        report_warning,
+                    )
                     if pdf_captured():
                         break
-                if pdf_captured():
-                    break
 
-                # Second backfill attempt
-                await _try_backfill_from_url(
-                    page,
-                    context,
-                    attempted_urls,
-                    try_capture,
-                    pdf_captured,
-                    report_warning,
+                    state = get_action_state(page)
+                    strategy_context = BrowserPageStrategyContext(
+                        page=page,
+                        context=context,
+                        action_state=state,
+                        attempted_urls=attempted_urls,
+                        track_page=_track_page,
+                        pdf_captured=pdf_captured,
+                        inspect_challenge=inspect_challenge,
+                        report_warning=report_warning,
+                    )
+                    for strategy in page_strategies:
+                        await strategy.run(strategy_context)
+                        if pdf_captured():
+                            break
+                    if pdf_captured():
+                        break
+
+                    # Second backfill attempt
+                    await _try_backfill_from_url(
+                        page,
+                        context,
+                        attempted_urls,
+                        try_capture,
+                        pdf_captured,
+                        report_warning,
+                    )
+
+                if challenge_seen and not challenge_prompt_shown:
+                    challenge_prompt_shown = True
+
+                # Exponential backoff between idle polls: poll_min → 2× → poll_max.
+                # Keeps CPU and event-loop cost low on slow publisher pages while
+                # still reacting quickly to state changes on the first few ticks.
+                # See ADR-008. Config: extract.headlessBrowser.poll{Min,Max}Seconds.
+                await asyncio.sleep(current_sleep)
+                current_sleep = next_browser_poll_delay(current_sleep, poll_min, poll_max)
+
+            if pdf_captured():
+                if retain and config.close_pdf_page_after_capture:
+                    await close_secondary_pages(context, root_page)
+                if not retain:
+                    await session.cleanup()
+                else:
+                    try:
+                        await root_page.bring_to_front()
+                    except Exception:
+                        # Restoring focus is best-effort for the retained window.
+                        pass
+
+                return BrowserFetchResult(
+                    pdf_buffer=_buf[0],
+                    source=f"Headless Browser ({browser_label})",
+                    outcome="pdf_obtained",
+                    warnings=nonfatal_warnings,
                 )
 
-            if challenge_seen and not challenge_prompt_shown:
-                challenge_prompt_shown = True
-
-            # Exponential backoff between idle polls: poll_min → 2× → poll_max.
-            # Keeps CPU and event-loop cost low on slow publisher pages while
-            # still reacting quickly to state changes on the first few ticks.
-            # See ADR-008. Config: extract.headlessBrowser.poll{Min,Max}Seconds.
-            await asyncio.sleep(current_sleep)
-            current_sleep = next_browser_poll_delay(current_sleep, poll_min, poll_max)
-
-        # ── Cleanup & result ───────────────────────────────────────────────
-
-        # Remove event listeners
-        for page in tracked_pages:
-            try:
-                page.remove_listener("response", _on_response)
-                page.remove_listener("download", _on_download)
-            except Exception:
-                # Listener cleanup runs after capture is over; keep teardown
-                # best-effort so one bad page does not hide the final outcome.
-                pass
-        try:
-            context.remove_listener("page", _on_new_page)
-        except Exception:
-            # Same rationale as page listener cleanup above.
-            pass
-
-        if pdf_captured():
-            if retain and config.close_pdf_page_after_capture:
-                await close_secondary_pages(context, root_page)
+            # No PDF captured
             if not retain:
                 await session.cleanup()
-            else:
-                try:
-                    await root_page.bring_to_front()
-                except Exception:
-                    # Restoring focus is best-effort for the retained window.
-                    pass
 
+            outcome = "publisher_challenge" if challenge_seen else "timed_out"
             return BrowserFetchResult(
-                pdf_buffer=_buf[0],
+                pdf_buffer=None,
                 source=f"Headless Browser ({browser_label})",
-                outcome="pdf_obtained",
-                warnings=nonfatal_warnings,
+                outcome=outcome,
+                warnings=nonfatal_warnings + [f"Browser automation: {outcome}"],
             )
-
-        # No PDF captured
-        if not retain:
-            await session.cleanup()
-
-        outcome = "publisher_challenge" if challenge_seen else "timed_out"
-        return BrowserFetchResult(
-            pdf_buffer=None,
-            source=f"Headless Browser ({browser_label})",
-            outcome=outcome,
-            warnings=nonfatal_warnings + [f"Browser automation: {outcome}"],
-        )
+        finally:
+            _detach_registered_listeners(
+                tracked_pages=tracked_pages,
+                context=context,
+                on_response=_on_response,
+                on_download=_on_download,
+                on_new_page=_on_new_page,
+            )
 
     except Exception as e:
         if session and not retain:

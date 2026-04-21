@@ -41,6 +41,12 @@ async def search_academic_papers(
         api_keys=api_keys,
         etiquette_email=config.academic_etiquette_email,
     )
+    warnings = list(result.warnings)
+    if continuation_token and not result.continuation_applied:
+        warnings.append(
+            "Provided continuation_token was not applied; it was stale, invalid, or tied to a different query. "
+            "Results restarted from page 1."
+        )
 
     papers_md = []
     for i, paper in enumerate(result.results, 1):
@@ -65,8 +71,8 @@ async def search_academic_papers(
     header += "\n"
     if result.exhausted_sources:
         header += f"\nExhausted sources: {', '.join(result.exhausted_sources)}"
-    if result.warnings:
-        header += "\n\nWarnings:\n" + "\n".join(f"- {warning}" for warning in result.warnings)
+    if warnings:
+        header += "\n\nWarnings:\n" + "\n".join(f"- {warning}" for warning in warnings)
 
     body = "\n\n".join(papers_md)
     footer = ""

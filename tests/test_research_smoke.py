@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from grados.research_state import manage_failure_cases, query_research_artifacts, save_research_artifact
 from grados.research_tools import (
@@ -329,6 +330,70 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
     assert numeric.claims[0].status == "weak"
 
 
+def test_audit_draft_support_handles_chinese_claims_and_author_year_citations(monkeypatch, tmp_path: Path) -> None:
+    import grados.research_tools as research_tools
+
+    calls: list[str] = []
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, limit, kwargs)
+        calls.append(query)
+        if "振动衰减" in query:
+            return [
+                PaperSearchResult(
+                    doi="10.1234/demo-a",
+                    safe_doi="10_1234_demo_a",
+                    title="Composite Damping Study",
+                    authors=["张三"],
+                    year="2025",
+                    journal="Composite Structures",
+                    section_name="Results",
+                    snippet="复合阻尼将振动衰减提高了18%。",
+                    score=1.35,
+                )
+            ]
+        if "低资源场景" in query:
+            return [
+                PaperSearchResult(
+                    doi="10.5678/demo-b",
+                    safe_doi="10_5678_demo_b",
+                    title="Low-Resource Stability Study",
+                    authors=["李四"],
+                    year="2025",
+                    journal="Mechanical Systems",
+                    section_name="Discussion",
+                    snippet="该方法在低资源场景下仍然稳定。",
+                    score=1.2,
+                )
+            ]
+        return []
+
+    monkeypatch.setattr(research_tools, "search_papers", fake_search_papers)
+
+    result = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text=(
+            "复合阻尼将振动衰减提高了18%（张三，2025）。"
+            "另一项实验表明它在低资源场景下仍然稳定（李四，2025）。"
+        ),
+        strictness="strict",
+    )
+
+    assert result.claims_checked == 2
+    assert [claim.status for claim in result.claims] == ["supported", "supported"]
+    assert [claim.query_text for claim in result.claims] == [
+        "复合阻尼将振动衰减提高了18%。",
+        "另一项实验表明它在低资源场景下仍然稳定。",
+    ]
+    assert [claim.citation_marker_present for claim in result.claims] == [True, True]
+    assert result.claims[0].citations[0].author == "张三"
+    assert result.claims[1].citations[0].author == "李四"
+    assert calls == [
+        "复合阻尼将振动衰减提高了18%。",
+        "另一项实验表明它在低资源场景下仍然稳定。",
+    ]
+
+
 def test_audit_draft_support_deduplicates_repeated_queries(monkeypatch, tmp_path: Path) -> None:
     import grados.research_tools as research_tools
 
@@ -365,3 +430,47 @@ def test_audit_draft_support_deduplicates_repeated_queries(monkeypatch, tmp_path
     assert result.claims_checked == 20
     assert all(claim.status == "supported" for claim in result.claims)
     assert calls == ["Composite damping improves vibration attenuation by 18% ."]
+
+
+def test_compare_papers_escapes_markdown_table_cells(monkeypatch, tmp_path: Path) -> None:
+    import grados.research_tools as research_tools
+
+    monkeypatch.setattr(
+        research_tools,
+        "_resolve_documents",
+        lambda chroma_dir, dois: (
+            [
+                SimpleNamespace(
+                    doi="10.1234/demo",
+                    safe_doi="10_1234_demo",
+                    title="Paper | A",
+                    year="2025",
+                    journal="Composite Structures",
+                )
+            ],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        research_tools,
+        "_select_sections",
+        lambda record, focus="methods": [{"name": "Methods", "text": "Method paragraph"}],
+    )
+    monkeypatch.setattr(
+        research_tools,
+        "_excerpt_for_axis",
+        lambda text, axis, max_chars=260: "Line one |\nLine two",
+    )
+
+    comparison = compare_papers(
+        tmp_path / "chroma",
+        dois=["10.1234/demo"],
+        focus="methods",
+        comparison_axes=["method"],
+    )
+
+    assert comparison.rendered == (
+        "| Paper | method |\n"
+        "| --- | --- |\n"
+        "| Paper \\| A (2025) | Line one \\| <br> Line two |"
+    )

@@ -736,6 +736,15 @@ def _support_strength(score: float) -> str:
     return "low"
 
 
+def _escape_markdown_table_cell(value: str) -> str:
+    lines = [
+        re.sub(r"\s+", " ", line).strip()
+        for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ]
+    normalized = " <br> ".join(line for line in lines if line)
+    return normalized.replace("|", r"\|")
+
+
 def compare_papers(
     chroma_dir: Path,
     *,
@@ -779,12 +788,12 @@ def compare_papers(
 
     rendered = ""
     if output_format == "table" and paper_rows:
-        header = "| Paper | " + " | ".join(axes) + " |"
+        header = "| Paper | " + " | ".join(_escape_markdown_table_cell(axis) for axis in axes) + " |"
         divider = "| --- | " + " | ".join("---" for _ in axes) + " |"
         rows = []
         for paper in paper_rows:
-            label = f"{paper.title} ({paper.year})".strip()
-            cells = [paper.comparisons.get(axis, "") for axis in axes]
+            label = _escape_markdown_table_cell(f"{paper.title} ({paper.year})".strip())
+            cells = [_escape_markdown_table_cell(paper.comparisons.get(axis, "")) for axis in axes]
             rows.append("| " + " | ".join([label, *cells]) + " |")
         rendered = "\n".join([header, divider, *rows])
     elif output_format == "bullets" and paper_rows:
@@ -811,7 +820,7 @@ def _split_claims(draft_text: str) -> list[str]:
         block = block.strip()
         if not block or block.startswith("#"):
             continue
-        sentences = re.split(r"(?<=[。！？.!?])\s+", block)
+        sentences = re.split(r"(?<=[。！？])|(?<=[.!?])\s+", block)
         for sentence in sentences:
             candidate = sentence.strip()
             if len(candidate) >= 20:
@@ -819,32 +828,56 @@ def _split_claims(draft_text: str) -> list[str]:
     return claims
 
 
+def _normalize_citation_piece(piece: str) -> str:
+    normalized = piece.translate(
+        str.maketrans(
+            {
+                "（": "(",
+                "）": ")",
+                "，": ",",
+                "；": ";",
+                "【": "[",
+                "】": "]",
+            }
+        )
+    )
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def _extract_citation_markers(text: str, citation_style: str) -> list[AuditCitationMarker]:
     markers: list[AuditCitationMarker] = []
-    bracket_chunks = re.findall(r"\[([^\]]+)\]", text)
-    paren_chunks = re.findall(r"\(([^)]+)\)", text) if citation_style == "author_year" else []
+    bracket_chunks = re.findall(r"[\[【]([^\]】]+)[\]】]", text)
+    paren_chunks = re.findall(r"[\(（]([^\)）]+)[\)）]", text) if citation_style == "author_year" else []
     for chunk in bracket_chunks + paren_chunks:
+        normalized_chunk = _normalize_citation_piece(chunk)
         if citation_style == "numeric":
-            if re.search(r"\d", chunk):
-                markers.append(AuditCitationMarker(style="numeric", marker=chunk.strip()))
+            if re.search(r"\d", normalized_chunk):
+                markers.append(AuditCitationMarker(style="numeric", marker=normalized_chunk))
             continue
-        for piece in re.split(r";", chunk):
-            match = re.search(r"([A-Z][A-Za-z'`-]+).*?(\d{4})", piece)
+        for piece in re.split(r"[;；]", normalized_chunk):
+            normalized_piece = _normalize_citation_piece(piece)
+            if not normalized_piece:
+                continue
+            match = re.search(
+                r"([A-Z][A-Za-z'`-]+|[\u3400-\u9fff]{1,8}).*?(\d{4})",
+                normalized_piece,
+            )
             if match:
+                author = re.sub(r"(等|等人)$", "", match.group(1).lower())
                 markers.append(
                     AuditCitationMarker(
                         style="author_year",
-                        author=match.group(1).lower(),
+                        author=author,
                         year=match.group(2),
-                        marker=piece.strip(),
+                        marker=normalized_piece,
                     )
                 )
     return markers
 
 
 def _strip_citations(text: str) -> str:
-    stripped = re.sub(r"\[[^\]]+\]", "", text)
-    stripped = re.sub(r"\([^)]+\d{4}[^)]*\)", "", stripped)
+    stripped = re.sub(r"[\[【][^\]】]+[\]】]", "", text)
+    stripped = re.sub(r"[\(（][^\)）]+\d{4}[^\)）]*[\)）]", "", stripped)
     return re.sub(r"\s+", " ", stripped).strip()
 
 
