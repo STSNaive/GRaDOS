@@ -1,7 +1,7 @@
 {
   "name": "grados-plugins",
   "interface": {
-    "displayName": "GRaDOS Repository Plugins"
+    "displayName": "GRaDOS Plugins"
   },
   "plugins": [
     {

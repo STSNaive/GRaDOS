@@ -32,8 +32,12 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     assert claude_marketplace["plugins"][0]["source"] == "./"
 
     assert codex_marketplace["name"] == "grados-plugins"
+    assert codex_marketplace["interface"]["displayName"] == "GRaDOS Plugins"
     assert codex_marketplace["plugins"][0]["name"] == "grados"
+    assert codex_marketplace["plugins"][0]["source"]["source"] == "local"
     assert codex_marketplace["plugins"][0]["source"]["path"] == "./plugins/grados"
+    assert (repo_root / codex_marketplace["plugins"][0]["source"]["path"][2:] / ".codex-plugin" / "plugin.json").is_file()
+    assert (repo_root / codex_marketplace["plugins"][0]["source"]["path"][2:] / "plugin.mcp.json").is_file()
 
     assert codex_plugin_mcp == plugin_mcp
     assert plugin_mcp["mcpServers"]["grados"]["args"] == ["grados"]

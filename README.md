@@ -77,9 +77,9 @@ After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 - `README.md` / `README.zh-CN.md`: primary installation and usage guides
 - `.mcp.json`: repo-local MCP wiring example
 - `.claude-plugin/`: native Claude Code plugin manifests
-- `.agents/plugins/marketplace.json`: repo-scoped Codex marketplace entry
+- `.agents/plugins/marketplace.json`: repo-hosted Codex marketplace manifest
 - `plugin.mcp.json`: root plugin-scoped MCP config used by the Claude Code plugin
-- `plugins/grados/.codex-plugin/`: self-contained Codex plugin bundle for local marketplace installs
+- `plugins/grados/.codex-plugin/`: self-contained Codex plugin bundle used by the marketplace
 - `plugins/grados/plugin.mcp.json`: plugin-scoped MCP config copied into the Codex bundle
 - `skills/grados/SKILL.md`: structured research workflow built on top of the MCP tools
 - `grados-python-implementation-plan.md`: implementation plan and completion ledger
@@ -191,7 +191,7 @@ Use `uvx` when you want zero-install MCP launching. For long-lived local use, `u
 
 ### Native Plugin Install 🧩
 
-GRaDOS now ships native plugin metadata for both Claude Code and Codex. The Codex path follows the current official local marketplace layout: `.agents/plugins/marketplace.json` points at a self-contained bundle under `plugins/grados/`, which mirrors the canonical `skills/grados/` files and includes its own `plugin.mcp.json`.
+GRaDOS now ships native plugins for Codex and Claude Code.
 
 Claude Code:
 
@@ -201,23 +201,19 @@ Claude Code:
 /reload-plugins
 ```
 
-This uses the repo's `.claude-plugin/marketplace.json` and `.claude-plugin/plugin.json` directly. The plugin bundles the GRaDOS skill plus the `grados` MCP server.
-
 Codex:
 
-1. Clone and open this repository in Codex.
-2. Run `/plugins` to open the plugin directory.
-3. Choose the `GRaDOS Repository Plugins` marketplace from `.agents/plugins/marketplace.json`.
-4. Install the `GRaDOS` plugin from `plugins/grados/.codex-plugin/plugin.json`.
-5. Start a new thread and ask Codex to use `@grados`, or describe the research task directly.
+```text
+codex plugin marketplace add STSNaive/GRaDOS
+codex
+/plugins
+```
 
-This matches the current official Codex flow for custom repo plugins: repo marketplace + plugin directory. Codex does not currently document a public equivalent of Claude Code's `/plugin install owner/repo` workflow for arbitrary GitHub-hosted custom plugins.
+Then choose the `GRaDOS Plugins` marketplace, install the `GRaDOS` plugin, and start a new thread. You can call `@grados` explicitly or just describe the research task directly.
 
 ### Companion Skill 🤖
 
 GRaDOS still ships a repo-local skill in `skills/grados/`. The `grados client install ...` flow above is now the preferred path for local use. Plugin install remains the alternative when you specifically want the native plugin packaging.
-
-The Codex plugin bundle under `plugins/grados/skills/grados/` is a mirrored copy of the canonical `skills/grados/` directory so the local marketplace install remains self-contained.
 
 - `skills/grados/SKILL.md` contains the current `search -> structure -> deep read -> cite -> verify` workflow
 - `skills/grados/references/tools.md` documents the current 16 tools and 2 resources

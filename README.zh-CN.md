@@ -77,9 +77,9 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 - `README.md` / `README.zh-CN.md`：主要安装与使用说明
 - `.mcp.json`：仓库内 MCP 配置示例
 - `.claude-plugin/`：Claude Code 的原生 plugin manifest
-- `.agents/plugins/marketplace.json`：repo-scoped 的 Codex marketplace 条目
+- `.agents/plugins/marketplace.json`：repo-hosted 的 Codex marketplace manifest
 - `plugin.mcp.json`：Claude Code 插件使用的根目录插件专用 MCP 配置
-- `plugins/grados/.codex-plugin/`：给 Codex 本地 marketplace 用的自包含 plugin bundle
+- `plugins/grados/.codex-plugin/`：给 Codex marketplace 用的自包含 plugin bundle
 - `plugins/grados/plugin.mcp.json`：复制进 Codex plugin bundle 的插件专用 MCP 配置
 - `skills/grados/SKILL.md`：构建在 MCP 工具之上的结构化科研工作流
 - `grados-python-implementation-plan.md`：实施计划与完成度台账
@@ -191,7 +191,7 @@ args = ["grados"]
 
 ### 原生 Plugin 安装 🧩
 
-GRaDOS 现在同时附带 Claude Code 和 Codex 的原生 plugin 元数据。Codex 这边采用当前官方推荐的本地 marketplace 结构：`.agents/plugins/marketplace.json` 指向 `plugins/grados/` 这个自包含 bundle，里面镜像了 canonical `skills/grados/` 文件，并带有自己的 `plugin.mcp.json`。
+GRaDOS 现在同时支持 Codex 和 Claude Code 的原生 plugin。
 
 Claude Code：
 
@@ -201,23 +201,19 @@ Claude Code：
 /reload-plugins
 ```
 
-这里直接使用仓库中的 `.claude-plugin/marketplace.json` 和 `.claude-plugin/plugin.json`。安装后会同时带上 GRaDOS skill 和 `grados` MCP 服务。
-
 Codex：
 
-1. 先 clone 本仓库并在 Codex 中打开它。
-2. 运行 `/plugins` 打开插件目录。
-3. 选择来自 `.agents/plugins/marketplace.json` 的 `GRaDOS Repository Plugins` marketplace。
-4. 安装 `plugins/grados/.codex-plugin/plugin.json` 对应的 `GRaDOS` 插件。
-5. 新开一个线程后，直接用 `@grados`，或者直接描述科研任务。
+```text
+codex plugin marketplace add STSNaive/GRaDOS
+codex
+/plugins
+```
 
-这对应的是 Codex 当前官方支持的自定义插件路径：repo marketplace + 插件目录。到目前为止，Codex 官方还没有像 Claude Code 那样公开文档化的任意 GitHub marketplace `/plugin install ...` 工作流。
+然后选择 `GRaDOS Plugins` marketplace，安装 `GRaDOS` 插件，再新开一个线程。你可以直接写 `@grados`，也可以直接描述科研任务。
 
 ### 配套 Skill 🤖
 
 GRaDOS 仓库仍然自带配套 skill，位置在 `skills/grados/`。现在更推荐优先使用上面的 `grados client install ...` 本地安装路径；plugin 安装适合你明确想走原生 plugin 包装时使用。
-
-Codex plugin bundle 里的 `plugins/grados/skills/grados/` 是对 canonical `skills/grados/` 的镜像副本，这样通过本地 marketplace 安装时插件本身就是自包含的。
 
 - `skills/grados/SKILL.md` 对应当前 `search -> structure -> deep read -> cite -> verify` 工作流
 - `skills/grados/references/tools.md` 记录当前 16 个工具和 2 个资源
