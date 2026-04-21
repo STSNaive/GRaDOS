@@ -42,6 +42,22 @@ def _run(cmd: list[str], **kw: object) -> None:
     subprocess.run(cmd, check=True, **kw)  # noqa: S603
 
 
+def build_release_commit_message(version: str, changed: list[Path]) -> str:
+    """Build a conventional commit message for the release manifest bump."""
+    return f"chore: release v{version}"
+
+
+def _commit(message: str) -> None:
+    print("  $ git commit -F -")
+    subprocess.run(
+        ["git", "commit", "-F", "-"],
+        input=message,
+        text=True,
+        check=True,
+        cwd=REPO,
+    )  # noqa: S603
+
+
 def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
@@ -80,10 +96,7 @@ def main() -> None:
     # Commit if anything changed
     if changed:
         _run(["git", "add", *(str(p) for p in changed)], cwd=REPO)
-        _run(
-            ["git", "commit", "-m", f"chore(release): bump plugin versions to {version}"],
-            cwd=REPO,
-        )
+        _commit(build_release_commit_message(version, changed))
 
     # Create tag
     _run(["git", "tag", tag], cwd=REPO)

@@ -16,7 +16,7 @@
   <strong style="font-size:1.75rem;">Graduate Research and Document Operating System</strong>
 </p>
 
-GRaDOS 是一个面向学术检索、全文提取、本地论文存储与 ChromaDB 语义检索的 Python MCP 服务器。
+面向学术论文工作流的“丰富学习级” MCP 服务器。为了科学。
 
 GRaDOS 为 Claude、Codex、Cursor 等 AI agent 提供单一 stdio MCP 服务，用来检索学术数据库、跨付费墙抓取论文、把 PDF 解析为 canonical Markdown，并在写作时回读已保存论文做引用核验。
 

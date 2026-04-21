@@ -16,7 +16,7 @@
   <strong style="font-size:1.75rem;">Graduate Research and Document Operating System</strong>
 </p>
 
-The Python MCP server for academic paper search, full-text extraction, visible local paper storage, and semantic retrieval over a built-in ChromaDB index.
+The enrichment-grade MCP server for academic paper workflows. For science.
 
 GRaDOS gives AI agents (Claude, Codex, Cursor, and similar clients) a single stdio MCP server that can search academic databases, fetch papers through paywalls, parse PDFs into canonical Markdown, and revisit saved papers for citation-grounded writing.
 
