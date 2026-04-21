@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Native Claude Code plugins for GRaDOS academic research workflows.",
-    "version": "0.6.9"
+    "version": "0.6.10"
   },
   "plugins": [
     {
       "name": "grados",
       "source": "./",
       "description": "Academic paper search, full-text extraction, and citation-grounded research workflow.",
-      "version": "0.6.9",
+      "version": "0.6.10",
       "author": {
         "name": "macfish"
       },
