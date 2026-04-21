@@ -36,8 +36,9 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     assert codex_marketplace["plugins"][0]["name"] == "grados"
     assert codex_marketplace["plugins"][0]["source"]["source"] == "local"
     assert codex_marketplace["plugins"][0]["source"]["path"] == "./plugins/grados"
-    assert (repo_root / codex_marketplace["plugins"][0]["source"]["path"][2:] / ".codex-plugin" / "plugin.json").is_file()
-    assert (repo_root / codex_marketplace["plugins"][0]["source"]["path"][2:] / "plugin.mcp.json").is_file()
+    bundled_plugin_root = repo_root / codex_marketplace["plugins"][0]["source"]["path"][2:]
+    assert (bundled_plugin_root / ".codex-plugin" / "plugin.json").is_file()
+    assert (bundled_plugin_root / "plugin.mcp.json").is_file()
 
     assert codex_plugin_mcp == plugin_mcp
     assert plugin_mcp["mcpServers"]["grados"]["args"] == ["grados"]

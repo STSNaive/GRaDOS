@@ -15,6 +15,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added per-source async rate limiters (`grados._retry.throttle_source`) wired into PubMed (≥334ms between calls without an API key, ≥100ms with a key) and Web of Science (≥500ms between calls) so concurrent search calls no longer exceed upstream rate limits.
 - Added optional `PUBMED_API_KEY` config threading for PubMed E-utilities requests so the keyed 100ms pacing path is reachable when a user explicitly configures it.
 - Added `tests/test_timeout_retry.py` with regression coverage for retry sequences (503/503/200, `ConnectError` → success), `Retry-After` honoring, rate-limiter spacing, browser poll backoff sequence (0.5 → 1 → 2 cap), and runtime-policy config propagation.
+- Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
 - Changed all academic search calls (Crossref, PubMed ESearch/ESummary/EFetch, Web of Science, Elsevier Scopus, Springer Meta) to go through the unified retry decorator so transient 429/5xx responses and network errors no longer fail the whole page fetch.
