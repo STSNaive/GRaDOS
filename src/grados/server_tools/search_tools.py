@@ -28,8 +28,9 @@ async def search_academic_papers(
 ) -> str:
     """Search multiple academic databases sequentially and return deduplicated paper metadata."""
     from grados.search.resumable import run_resumable_search
+    from grados.storage.remote_metadata import upsert_remote_metadata
 
-    _, config = get_paths_and_config()
+    paths, config = get_paths_and_config()
     api_keys = get_api_keys(config)
 
     search_order = [source for source in config.search.order if config.search.enabled.get(source, True)]
@@ -47,6 +48,17 @@ async def search_academic_papers(
             "Provided continuation_token was not applied; it was stale, invalid, or tied to a different query. "
             "Results restarted from page 1."
         )
+    chroma_dir = getattr(paths, "database_chroma", None)
+    indexing_config = getattr(config, "indexing", None)
+    if chroma_dir is not None:
+        try:
+            upsert_remote_metadata(
+                chroma_dir,
+                list(result.results),
+                indexing_config=indexing_config,
+            )
+        except Exception as exc:
+            warnings.append(f"Remote metadata cache update failed: {exc.__class__.__name__}: {exc}")
 
     papers_md = []
     for i, paper in enumerate(result.results, 1):

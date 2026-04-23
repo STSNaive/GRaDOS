@@ -98,6 +98,60 @@ def _metadata_only_receipt(
     return "\n".join(lines)
 
 
+def _append_remote_metadata_warning(result: str, warning: str | None) -> str:
+    if not warning:
+        return result
+    return result + f"\n\n### Remote Metadata\n- {warning}"
+
+
+def _infer_remote_fetch_status(outcome: str, warnings: list[str]) -> str:
+    if outcome == "metadata_only":
+        return "metadata_only"
+    if outcome in {"native_full_text", "pdf_obtained"}:
+        return "fulltext"
+
+    warning_text = " ".join(warnings).lower()
+    challenge_markers = (
+        "publisher_challenge",
+        "challenge",
+        "captcha",
+        "are you a robot",
+        "just a moment",
+    )
+    if any(marker in warning_text for marker in challenge_markers):
+        return "challenge"
+    return "failed"
+
+
+def _record_remote_metadata_update(
+    *,
+    chroma_dir: Path,
+    doi: str,
+    fetch_status: str,
+    has_fulltext: bool,
+    source: str,
+    title: str,
+    metadata: PublisherMetadata | None,
+    indexing_config: object | None,
+) -> str | None:
+    from grados.storage.remote_metadata import record_remote_fetch_result
+
+    try:
+        record_remote_fetch_result(
+            chroma_dir,
+            doi=doi,
+            fetch_status=fetch_status,
+            has_fulltext=has_fulltext,
+            source=source,
+            title=title,
+            metadata=metadata,
+            indexing_config=indexing_config,
+        )
+    except Exception as exc:
+        return f"Remote metadata cache update failed: {exc.__class__.__name__}: {exc}"
+    return None
+
+
 def papers_index_resource() -> str:
     """Low-token index of saved papers."""
     from grados.storage.papers import list_saved_papers
@@ -144,6 +198,7 @@ async def extract_paper_full_text(
     from grados.extract.qa import is_valid_paper_content
 
     paths, config = get_paths_and_config()
+    indexing_config = getattr(config, "indexing", None)
     api_keys = {k: v for k, v in config.api_keys.model_dump().items() if v}
 
     fetch_result = await fetch_paper(
@@ -164,16 +219,42 @@ async def extract_paper_full_text(
         metadata = metadata.model_copy(update={"title": expected_title})
 
     if fetch_result.outcome == "metadata_only":
-        return _metadata_only_receipt(
-            doi,
+        remote_warning = _record_remote_metadata_update(
+            chroma_dir=paths.database_chroma,
+            doi=doi,
+            fetch_status="metadata_only",
+            has_fulltext=False,
             source=fetch_result.source,
+            title=expected_title or (metadata.title if metadata is not None else ""),
             metadata=metadata,
-            asset_hints=fetch_result.asset_hints,
-            warnings=fetch_result.warnings,
+            indexing_config=indexing_config,
+        )
+        return _append_remote_metadata_warning(
+            _metadata_only_receipt(
+                doi,
+                source=fetch_result.source,
+                metadata=metadata,
+                asset_hints=fetch_result.asset_hints,
+                warnings=fetch_result.warnings,
+            ),
+            remote_warning,
         )
 
     if fetch_result.outcome not in ("native_full_text", "pdf_obtained"):
-        return f"Failed to fetch paper: {doi}\nWarnings: " + "; ".join(fetch_result.warnings or [])
+        remote_warning = _record_remote_metadata_update(
+            chroma_dir=paths.database_chroma,
+            doi=doi,
+            fetch_status=_infer_remote_fetch_status(fetch_result.outcome, fetch_result.warnings),
+            has_fulltext=False,
+            source=fetch_result.source,
+            title=expected_title or (metadata.title if metadata is not None else ""),
+            metadata=metadata,
+            indexing_config=indexing_config,
+        )
+        return _append_remote_metadata_warning(
+            f"Failed to fetch paper: {doi}\nWarnings: " + "; ".join(fetch_result.warnings or []),
+            remote_warning,
+        )
 
     if fetch_result.outcome == "native_full_text":
         artifact = await build_library_document_artifact(
@@ -184,7 +265,20 @@ async def extract_paper_full_text(
             )
         )
         if not artifact.markdown:
-            return f"Failed to normalize native full text for {doi}"
+            remote_warning = _record_remote_metadata_update(
+                chroma_dir=paths.database_chroma,
+                doi=doi,
+                fetch_status="failed",
+                has_fulltext=True,
+                source=fetch_result.source,
+                title=expected_title or (metadata.title if metadata is not None else ""),
+                metadata=metadata,
+                indexing_config=indexing_config,
+            )
+            return _append_remote_metadata_warning(
+                f"Failed to normalize native full text for {doi}",
+                remote_warning,
+            )
         copied_pdf_path = ""
     else:
         copied_pdf_path = maybe_save_library_pdf(
@@ -212,7 +306,17 @@ async def extract_paper_full_text(
             result = f"Failed to parse PDF for {doi}\n\nWarnings:\n{warning_block}"
             if debug_block:
                 result += f"\n\nParser debug:\n{debug_block}"
-            return result
+            remote_warning = _record_remote_metadata_update(
+                chroma_dir=paths.database_chroma,
+                doi=doi,
+                fetch_status="failed",
+                has_fulltext=True,
+                source=fetch_result.source,
+                title=expected_title or (metadata.title if metadata is not None else ""),
+                metadata=metadata,
+                indexing_config=indexing_config,
+            )
+            return _append_remote_metadata_warning(result, remote_warning)
 
     title = ""
     authors: list[str] = []
@@ -259,6 +363,16 @@ async def extract_paper_full_text(
             "Error: {index_error}"
         ),
     )
+    remote_warning = _record_remote_metadata_update(
+        chroma_dir=paths.database_chroma,
+        doi=doi,
+        fetch_status="fulltext",
+        has_fulltext=True,
+        source=fetch_result.source,
+        title=title,
+        metadata=metadata,
+        indexing_config=indexing_config,
+    )
 
     result = (
         "## Paper Extracted with Partial Success\n\n"
@@ -281,8 +395,7 @@ async def extract_paper_full_text(
         result += "\n\n### Warnings\n" + "\n".join(f"- {warning}" for warning in persisted.warnings)
     if persisted.debug:
         result += "\n\n### Parser Debug\n" + "\n".join(f"- {entry}" for entry in persisted.debug)
-
-    return result
+    return _append_remote_metadata_warning(result, remote_warning)
 
 
 async def read_saved_paper(

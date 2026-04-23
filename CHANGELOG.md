@@ -9,6 +9,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Added
 - Added `keyring` as a runtime dependency plus a new `grados.secrets` module that resolves API keys with `env -> keychain -> config` precedence, migrates plaintext `config.json` secrets into the OS keychain on first use, and clears migrated plaintext keys with an atomic rewrite.
 - Added `grados auth set/status/migrate/clear` commands for explicit keychain management, masked source-aware API-key inspection, and one-shot migration of legacy plaintext config values.
+- Added a dedicated `remote_metadata` Chroma collection plus `grados.storage.remote_metadata` helpers for validated per-DOI metadata caching, semantic title/abstract lookup, and fetch-status backfills without introducing a second metadata database.
 - Added `tenacity` (>=9.1) as a runtime dependency and a `grados._retry` module providing a unified async HTTP retry decorator (3 attempts, exponential 1→8s backoff with jitter, retries on 429/5xx/connect/read-timeout/protocol errors); see ADR-008.
 - Added `PDF_DOWNLOAD_TIMEOUT` helper (connect=15s, read=60s) applied to all PDF downloads in the OA, Sci-Hub, and Springer fetch paths so slow, large-file transfers no longer time out mid-stream at 30s.
 - Added configurable timeout / retry knobs under nested `search`, `extract`, `extract.headlessBrowser`, and top-level `retryPolicy` config sections (`grados-config.example.json`); new processes pick up edits without code changes. See `RetryPolicyConfig` plus `SearchConfig.connect_timeout`, `SearchConfig.read_timeout`, `ExtractConfig.fetch_connect_timeout`, `ExtractConfig.fetch_read_timeout`, and `HeadlessBrowserConfig.deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`.
@@ -22,6 +23,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Changed
 - Changed `grados setup` and `grados status` to treat the OS keychain as the preferred API-key store: setup now points users to `grados auth set`, status reports keychain health plus each key's source (`env`, `keychain`, or legacy `config`), and both READMEs plus `grados-config.example.json` now describe `config.json` plaintext keys as a temporary import path rather than the long-term source of truth.
 - Changed config normalization to preserve all-caps keys such as `ELSEVIER_API_KEY`, preventing secret-field names and strategy IDs from being mangled during `config.json` loading.
+- Changed `search_academic_papers` to upsert deduplicated remote results into `remote_metadata` before returning the screening list, and changed `extract_paper_full_text` to backfill `metadata_only`, `challenge`, `failed`, and `fulltext` status transitions into the same cache during materialization.
+- Changed canonical Chroma document/chunk metadata to carry explicit `paper_id`, `remote_source`, and `doc_id` join keys so later corpus-layer work can associate saved full text with the remote metadata cache without re-deriving identifiers.
 - Changed all academic search calls (Crossref, PubMed ESearch/ESummary/EFetch, Web of Science, Elsevier Scopus, Springer Meta) to go through the unified retry decorator so transient 429/5xx responses and network errors no longer fail the whole page fetch.
 - Changed Elsevier TDM full-text + metadata fallback calls and Springer OA JATS / HTML / PDF fallback calls to use the retry decorator, improving reliability against upstream transient errors.
 - Changed browser automation `wait_for_load_state("networkidle")` to use an explicit 15s ceiling (now configurable via `extract.headlessBrowser.networkidleTimeout`) so SPA-style background polling can no longer silently consume the browser deadline before falling through to the main capture loop (see ADR-008).
@@ -138,6 +141,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Tests
 - Added regression coverage for keychain-backed secret resolution, automatic `config.json` secret migration + plaintext clearing, and the `grados auth` CLI flows.
+- Added regression coverage for remote-metadata helper upserts/queries, search-time metadata-cache population, extract-time `metadata_only`/`challenge`/`fulltext` status backfills, and canonical `paper_id` / `doc_id` metadata joins.
 - Added Stage B smoke coverage for research artifacts, failure memory, citation graphs, full-context retrieval, evidence grids, paper comparison, and draft-support auditing.
 - Added smoke coverage for client install flows and plugin manifests.
 - Added regression coverage for Docling-first parsing, Elsevier XML deterministic normalization, and canonical paragraph reread after Chroma retrieval.

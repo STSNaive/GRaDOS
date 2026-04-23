@@ -179,6 +179,67 @@ def test_search_academic_papers_warns_when_continuation_token_is_not_applied(mon
     assert "Composite Damping Study" in result
 
 
+def test_search_academic_papers_upserts_remote_metadata(tmp_path: Path, monkeypatch) -> None:
+    import grados.server_tools.search_tools as search_tools
+    import grados.storage.remote_metadata as remote_metadata
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_run_resumable_search(**kwargs):  # noqa: ANN003
+        return ResumableSearchResult(
+            query=kwargs["query"],
+            limit=kwargs["limit"],
+            results=[
+                PaperMetadata(
+                    title="Composite Damping Study",
+                    doi="10.1234/demo",
+                    abstract="A semantically searchable abstract.",
+                    authors=["Alice Smith"],
+                    year="2026",
+                    source="Crossref",
+                    url="https://doi.org/10.1234/demo",
+                )
+            ],
+            has_more=False,
+            exhausted_sources=["Crossref"],
+            next_continuation_token=None,
+            warnings=[],
+            continuation_applied=True,
+        )
+
+    def fake_upsert(chroma_dir, records, *, indexing_config=None):  # noqa: ANN001
+        calls.append(
+            {
+                "chroma_dir": chroma_dir,
+                "records": records,
+                "indexing_config": indexing_config,
+            }
+        )
+        return len(records)
+
+    monkeypatch.setattr(
+        search_tools,
+        "get_paths_and_config",
+        lambda: (
+            SimpleNamespace(database_chroma=tmp_path / "grados-home" / "database" / "chroma"),
+            SimpleNamespace(
+                search=SimpleNamespace(order=["Crossref"], enabled={"Crossref": True}),
+                academic_etiquette_email="research@example.edu",
+                indexing=object(),
+            ),
+        ),
+    )
+    monkeypatch.setattr(search_tools, "get_api_keys", lambda config: {})
+    monkeypatch.setattr("grados.search.resumable.run_resumable_search", fake_run_resumable_search)
+    monkeypatch.setattr(remote_metadata, "upsert_remote_metadata", fake_upsert)
+
+    result = asyncio.run(search_academic_papers("composite damping"))
+
+    assert "Composite Damping Study" in result
+    assert len(calls) == 1
+    assert calls[0]["records"][0].doi == "10.1234/demo"
+
+
 def test_search_saved_papers_rejects_invalid_year_range() -> None:
     result = asyncio.run(search_saved_papers("composite vibration", year_from=2025, year_to=2024))
 
@@ -491,6 +552,9 @@ def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, m
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
 
     import grados.extract.fetch as fetch_module
+    import grados.storage.remote_metadata as remote_metadata
+
+    calls: list[dict[str, object]] = []
 
     async def fake_fetch_paper(**kwargs):
         return fetch_module.FetchResult(
@@ -508,7 +572,12 @@ def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, m
             warnings=["OA lookup failed", "Browser fallback unavailable"],
         )
 
+    def fake_record_remote_fetch_result(chroma_dir, **kwargs):  # noqa: ANN001, ANN003
+        calls.append({"chroma_dir": chroma_dir, **kwargs})
+        return 1
+
     monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", fake_record_remote_fetch_result)
 
     result = asyncio.run(
         extract_paper_full_text(
@@ -523,6 +592,44 @@ def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, m
     assert "Metadata Only Demo" in result
     assert "https://example.com/article" in result
     assert not (tmp_path / "grados-home" / "papers" / "10_1234_demo.md").exists()
+    assert len(calls) == 1
+    assert calls[0]["fetch_status"] == "metadata_only"
+    assert calls[0]["has_fulltext"] is False
+
+
+def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.extract.fetch as fetch_module
+    import grados.storage.remote_metadata as remote_metadata
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_fetch_paper(**kwargs):
+        return fetch_module.FetchResult(
+            outcome="failed",
+            source="Headless Browser",
+            metadata=PublisherMetadata(
+                doi="10.1234/demo",
+                title="Challenge Demo",
+                publisher="Elsevier",
+            ),
+            warnings=["Browser automation: publisher_challenge"],
+        )
+
+    def fake_record_remote_fetch_result(chroma_dir, **kwargs):  # noqa: ANN001, ANN003
+        calls.append({"chroma_dir": chroma_dir, **kwargs})
+        return 1
+
+    monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", fake_record_remote_fetch_result)
+
+    result = asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
+
+    assert "Failed to fetch paper: 10.1234/demo" in result
+    assert len(calls) == 1
+    assert calls[0]["fetch_status"] == "challenge"
+    assert calls[0]["has_fulltext"] is False
 
 
 def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path: Path, monkeypatch) -> None:
@@ -530,7 +637,10 @@ def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path
 
     import grados.extract.fetch as fetch_module
     import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
     import grados.storage.vector as vector
+
+    calls: list[dict[str, object]] = []
 
     async def fake_fetch_paper(**kwargs):
         return fetch_module.FetchResult(
@@ -550,6 +660,11 @@ def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path
     monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
     monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
     monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(
+        remote_metadata,
+        "record_remote_fetch_result",
+        lambda chroma_dir, **kwargs: calls.append({"chroma_dir": chroma_dir, **kwargs}) or 1,
+    )
 
     asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
 
@@ -561,6 +676,9 @@ def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path
     assert record.year == "2025"
     assert record.journal == "Composite Structures"
     assert record.source == "Elsevier TDM"
+    assert len(calls) == 1
+    assert calls[0]["fetch_status"] == "fulltext"
+    assert calls[0]["has_fulltext"] is True
 
 
 def test_parse_pdf_file_returns_preview_and_qa_warning(tmp_path: Path, monkeypatch) -> None:

@@ -16,11 +16,13 @@ __all__ = [
     "get_chunks_collection",
     "get_client",
     "get_docs_collection",
+    "get_remote_metadata_collection",
     "query_collection",
 ]
 
 _DOCS_COLLECTION_NAME = "papers_docs"
 _CHUNKS_COLLECTION_NAME = "papers_chunks"
+_REMOTE_METADATA_COLLECTION_NAME = "remote_metadata"
 _CHROMA_CALL_TIMEOUT_SECONDS = 10.0
 _CHROMA_CALL_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="grados-chroma")
 logger = logging.getLogger(__name__)
@@ -70,11 +72,20 @@ def get_chunks_collection(client: Any) -> Any:
     )
 
 
+def get_remote_metadata_collection(client: Any) -> Any:
+    """Get or create remote metadata collection."""
+    return client.get_or_create_collection(
+        name=_REMOTE_METADATA_COLLECTION_NAME,
+        metadata={"hnsw:space": "cosine"},
+    )
+
+
 def collection_get(
     *,
     collection: Any,
     ids: list[str] | None = None,
     limit: int | None = None,
+    where: dict[str, Any] | None = None,
     include: list[str] | None = None,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {}
@@ -82,6 +93,8 @@ def collection_get(
         params["ids"] = ids
     if limit is not None:
         params["limit"] = limit
+    if where is not None:
+        params["where"] = where
     if include is not None:
         params["include"] = include
 
@@ -102,6 +115,19 @@ def collection_get(
             warnings.append(str(exc))
             logger.warning(warnings[-1])
             return {"degraded_filter": True, "warnings": warnings}
+        except TypeError:
+            if "where" in params:
+                warnings.append("Chroma get() does not support where filter; retried without metadata filter.")
+                logger.warning(warnings[-1])
+                params.pop("where", None)
+                try:
+                    result = _as_result_dict(_run_with_timeout("get()", lambda: collection.get(**params)))
+                except TimeoutError as timeout_exc:
+                    warnings.append(str(timeout_exc))
+                    logger.warning(warnings[-1])
+                    return {"degraded_filter": True, "warnings": warnings}
+            else:
+                raise
         return {
             **result,
             "degraded_filter": True,

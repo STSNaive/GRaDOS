@@ -800,7 +800,11 @@ def test_index_paper_writes_real_embeddings_and_section_metadata(tmp_path: Path,
     assert chunk_metadatas[0]["section_name"] == "Abstract"
     assert chunk_metadatas[1]["section_name"] == "Methods"
     assert chunk_metadatas[2]["section_name"] == "References"
+    assert chunk_metadatas[0]["paper_id"] == "10_1234_demo"
+    assert chunk_metadatas[0]["doc_id"] == "10_1234_demo"
     doc_metadata = fake_docs.last_upsert["metadatas"][0]
+    assert doc_metadata["paper_id"] == "10_1234_demo"
+    assert doc_metadata["remote_source"] == ""
     assert doc_metadata["cites_json"] == '["10.9999/example-ref"]'
     stats = get_index_stats(tmp_path / "chroma", indexing_config=IndexingConfig())
     assert stats.index_manifest_present is True
