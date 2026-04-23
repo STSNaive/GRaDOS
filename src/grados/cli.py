@@ -15,8 +15,19 @@ from rich.table import Table
 
 from grados import __version__
 from grados._retry import install_runtime_defaults
-from grados.config import GRaDOSPaths, generate_default_config, load_config
+from grados.config import GRaDOSPaths, generate_default_config, get_secret_summary, load_config
 from grados.integrations import inspect_clients, install_clients, remove_clients
+from grados.secrets import (
+    ApiKeySpec,
+    ApiKeyStatus,
+    SecretStoreError,
+    build_secret_store,
+    clear_plaintext_api_keys,
+    iter_api_key_specs,
+    mask_secret,
+    migrate_plaintext_config_secrets,
+    resolve_api_key_spec,
+)
 
 console = Console()
 
@@ -65,10 +76,20 @@ def _path_stat(p: Path) -> str:
     return ", ".join(parts) if parts else "✓"
 
 
-def _api_key_status(key: str) -> str:
-    if not key:
-        return "[dim]未设置[/dim]"
-    return f"[green]✓[/green] ...{key[-4:]}"
+def _api_key_status(entry: ApiKeyStatus) -> str:
+    if not entry.present:
+        return "[dim]missing[/dim]"
+    preview = mask_secret(entry.value)
+    return f"[green]✓[/green] {entry.source} {preview}".rstrip()
+
+
+def _keychain_status_line(keychain_available: bool, backend_name: str, error: str) -> str:
+    if keychain_available:
+        backend = backend_name or "available"
+        return f"[green]✓[/green] keychain ({backend})"
+    if error:
+        return f"[yellow]![/yellow] keychain unavailable: {error}"
+    return "[yellow]![/yellow] keychain unavailable"
 
 
 def _print_embedding_runtime_warnings(runtime: dict[str, object]) -> None:
@@ -77,6 +98,13 @@ def _print_embedding_runtime_warnings(runtime: dict[str, object]) -> None:
         return
     for warning in warnings:
         console.print(f"[yellow]![/yellow] {warning}")
+
+
+def _require_api_key_spec(provider: str) -> ApiKeySpec:
+    try:
+        return resolve_api_key_spec(provider)
+    except KeyError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 # ── CLI Group ────────────────────────────────────────────────────────────────
@@ -105,6 +133,147 @@ def version() -> None:
         console.print(f"  chromadb {pkg_version('chromadb')}")
     except Exception:
         pass
+
+
+@main.group("auth")
+def auth_group() -> None:
+    """Manage API keys stored in the OS keychain."""
+
+
+@auth_group.command("set")
+@click.argument("provider")
+@click.option("--value", help="API key value. Prompts securely when omitted.")
+@click.option("--force", is_flag=True, help="Overwrite an existing different keychain value.")
+def auth_set(provider: str, value: str | None, force: bool) -> None:
+    """Store one provider API key in the OS keychain."""
+    spec = _require_api_key_spec(provider)
+    store = build_secret_store()
+    if not store.available:
+        raise click.ClickException(store.error or "Keychain backend is unavailable.")
+
+    paths = GRaDOSPaths()
+    paths.ensure_directories()
+
+    resolved_value = value or click.prompt(f"Enter API key for {spec.display_name}", hide_input=True)
+    resolved_value = resolved_value.strip()
+    if not resolved_value:
+        raise click.ClickException("API key cannot be empty.")
+
+    try:
+        existing = store.get(spec.slug).strip()
+    except SecretStoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if existing and existing != resolved_value and not force:
+        raise click.ClickException(
+            f"{spec.display_name} already has a different keychain value. Re-run with --force to overwrite."
+        )
+
+    try:
+        store.set(spec.slug, resolved_value)
+        readback = store.get(spec.slug).strip()
+    except SecretStoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if readback != resolved_value:
+        raise click.ClickException(f"Keychain readback mismatch for {spec.display_name}.")
+
+    cleared = clear_plaintext_api_keys(paths.config_file, {spec.field_name})
+    console.print(f"[green]Stored[/green] {spec.display_name} in keychain ({store.backend_name or 'backend'}).")
+    if cleared:
+        console.print(f"[green]Cleared[/green] plaintext {spec.field_name} from {paths.config_file}.")
+
+
+@auth_group.command("status")
+def auth_status() -> None:
+    """Show API key presence, source, and keychain health."""
+    paths = GRaDOSPaths()
+    config = load_config(paths)
+    summary = get_secret_summary(config)
+
+    console.print()
+    console.print("[bold]GRaDOS Auth Status[/bold]")
+    console.print(f"配置文件: [cyan]{paths.config_file}[/cyan]")
+    if summary is not None:
+        console.print(
+            _keychain_status_line(
+                summary.keychain_available,
+                summary.keychain_backend,
+                summary.keychain_error,
+            )
+        )
+    console.print()
+
+    for spec in iter_api_key_specs():
+        if summary is not None:
+            entry = summary.entries[spec.field_name]
+            console.print(f"  {_api_key_status(entry)}  {spec.display_name}")
+            if entry.conflict:
+                console.print("     [yellow]![/yellow] config.json value differs from keychain")
+        else:
+            value = getattr(config.api_keys, spec.field_name, "")
+            fallback = ApiKeyStatus(spec=spec, value=value, source="config" if value else "missing")
+            console.print(f"  {_api_key_status(fallback)}  {spec.display_name}")
+
+    if summary is not None and summary.warnings:
+        console.print()
+        console.print("[bold]Warnings[/bold]")
+        for warning in summary.warnings:
+            console.print(f"  - {warning}")
+    console.print()
+
+
+@auth_group.command("migrate")
+@click.argument("provider", required=False)
+@click.option("--force", is_flag=True, help="Overwrite existing different keychain values.")
+def auth_migrate(provider: str | None, force: bool) -> None:
+    """Import plaintext API keys from config.json into the keychain and clear them from disk."""
+    paths = GRaDOSPaths()
+    if not paths.config_file.is_file():
+        raise click.ClickException(f"Config file not found: {paths.config_file}")
+
+    try:
+        summary = migrate_plaintext_config_secrets(
+            config_file=paths.config_file,
+            provider=provider,
+            force=force,
+        )
+    except KeyError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except SecretStoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print()
+    console.print("[bold]GRaDOS Auth Migrate[/bold]")
+    console.print(f"配置文件: [cyan]{paths.config_file}[/cyan]")
+    if summary.migrated:
+        console.print(f"[green]Migrated[/green]: {', '.join(summary.migrated)}")
+    if summary.cleared:
+        console.print(f"[green]Cleared[/green]: {', '.join(summary.cleared)}")
+    if summary.skipped:
+        console.print(f"[yellow]Skipped[/yellow]: {', '.join(summary.skipped)}")
+    if summary.warnings:
+        console.print("[bold]Warnings[/bold]")
+        for warning in summary.warnings:
+            console.print(f"  - {warning}")
+    console.print()
+
+
+@auth_group.command("clear")
+@click.argument("provider")
+def auth_clear(provider: str) -> None:
+    """Delete one provider API key from the OS keychain."""
+    spec = _require_api_key_spec(provider)
+    store = build_secret_store()
+    if not store.available:
+        raise click.ClickException(store.error or "Keychain backend is unavailable.")
+
+    try:
+        deleted = store.delete(spec.slug)
+    except SecretStoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if deleted:
+        console.print(f"[green]Cleared[/green] {spec.display_name} from keychain.")
+    else:
+        console.print(f"[dim]No keychain entry found[/dim] for {spec.display_name}.")
 
 
 # ── grados setup ─────────────────────────────────────────────────────────────
@@ -136,7 +305,7 @@ def setup() -> None:
             encoding="utf-8",
         )
         console.print(f"[green]已生成[/green] {paths.config_file}")
-        console.print("  [dim]请用编辑器打开配置文件填写 API keys[/dim]")
+        console.print("  [dim]优先使用 `grados auth set <provider>` 写入系统 keychain[/dim]")
 
     # 3. Check parser runtime + optional extras
     console.print("[bold]3/4[/bold] 检测解析器依赖...")
@@ -158,6 +327,7 @@ def setup() -> None:
     console.print()
     console.print("[green bold]Setup 完成！[/green bold]")
     console.print(f"  配置文件: {paths.config_file}")
+    console.print("  API keys: [cyan]grados auth set elsevier[/cyan] / [cyan]grados auth status[/cyan]")
     console.print("  运行 [cyan]grados status[/cyan] 查看完整状态")
     console.print()
 
@@ -453,6 +623,7 @@ def status() -> None:
     core_deps = [
         ("fastmcp", "fastmcp"),
         ("httpx", "httpx"),
+        ("keyring", "keyring"),
         ("docling", "docling"),
         ("pymupdf4llm", "pymupdf4llm"),
         ("patchright", "patchright"),
@@ -525,17 +696,24 @@ def status() -> None:
     # API Keys
     console.print()
     console.print("[bold]API Keys[/bold]")
-    keys = config.api_keys
-    for field_name, display in [
-        ("ELSEVIER_API_KEY", "Elsevier"),
-        ("WOS_API_KEY", "Web of Science"),
-        ("SPRINGER_meta_API_KEY", "Springer Meta"),
-        ("SPRINGER_OA_API_KEY", "Springer OA"),
-        ("LLAMAPARSE_API_KEY", "LlamaParse"),
-        ("ZOTERO_API_KEY", "Zotero"),
-    ]:
-        val = getattr(keys, field_name, "")
-        console.print(f"  {_api_key_status(val)}  {display}")
+    summary = get_secret_summary(config)
+    if summary is not None:
+        console.print(
+            f"  {_keychain_status_line(summary.keychain_available, summary.keychain_backend, summary.keychain_error)}"
+        )
+        for spec in iter_api_key_specs():
+            entry = summary.entries[spec.field_name]
+            console.print(f"  {_api_key_status(entry)}  {spec.display_name}")
+            if entry.conflict:
+                console.print("     [yellow]![/yellow] config.json value differs from keychain")
+        if summary.warnings:
+            console.print("  [dim]Use `grados auth status` for migration warnings and details.[/dim]")
+    else:
+        keys = config.api_keys
+        for spec in iter_api_key_specs():
+            value = getattr(keys, spec.field_name, "")
+            entry = ApiKeyStatus(spec=spec, value=value, source="config" if value else "missing")
+            console.print(f"  {_api_key_status(entry)}  {spec.display_name}")
 
     console.print()
 

@@ -96,6 +96,7 @@ grados client install all
 ```
 
 这会创建 `~/GRaDOS/config.json`，准备可见目录结构，安装托管浏览器资产，并预热默认的 Harrier embedding 运行时。由于当前 canonical 解析链已经改为 Docling 优先，默认安装现在也会自带 `docling`。
+推荐用 `grados auth set <provider>` 把 API Key 写入系统 keychain。若你临时把明文 key 填进 `config.json`，GRaDOS 会在下次运行时自动导入 keychain，并在迁移成功后清空原文件中的明文值。
 
 ### 方式 B：extras、零安装或 pip
 
@@ -137,8 +138,8 @@ uv run grados status
 1. 用 `uv tool install grados` 安装 GRaDOS（现在默认就会安装 Docling）
 2. 运行 `grados setup`
 3. 运行 `grados client install all`，一步接入 Claude Code 和 Codex
-4. 编辑 `~/GRaDOS/config.json`
-5. 运行 `grados status` 检查依赖、浏览器资产和 API Key
+4. 运行 `grados auth set elsevier`（以及你需要的其他 provider）
+5. 运行 `grados status` 检查依赖、浏览器资产、keychain 健康状态和 API Key 来源
 6. 如果你已经有 PDF 库，运行 `grados import-pdfs --from /path/to/papers --recursive`
 7. 如果你是从旧的 MiniLM 语义索引升级，请先执行一次 `grados reindex`
 
@@ -320,6 +321,7 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 | `ZOTERO_API_KEY` | Zotero Settings -> Keys | 否 |
 
 Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `PUBMED_API_KEY` 可作为 E-utilities 节流上限的可选增强。GRaDOS 会使用你已配置的服务，未配置的会自动跳过；即使没有第三方 Key，本地论文工作流也能使用，远程检索也仍可依赖免费来源运行。
+推荐路径是 `grados auth set <provider>`，它会把 secret 存进系统 keychain。若你临时把明文 key 填进 `~/GRaDOS/config.json`，GRaDOS 会在下一次运行时导入 keychain，并在迁移成功后清空文件中的明文字段。
 
 ### 运行顺序 🌊
 

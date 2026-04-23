@@ -7,13 +7,16 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
+
+from grados.secrets import SecretResolutionSummary, resolve_api_keys
 
 __all__ = [
     "GRaDOSConfig",
     "GRaDOSPaths",
     "IndexingConfig",
     "generate_default_config",
+    "get_secret_summary",
     "load_config",
     "resolve_data_root",
 ]
@@ -327,6 +330,7 @@ class GRaDOSConfig(BaseModel):
     api_keys: ApiKeysConfig = Field(default_factory=ApiKeysConfig)
     retry_policy: RetryPolicyConfig = Field(default_factory=RetryPolicyConfig)
     academic_etiquette_email: str = "your-email@university.edu"
+    _secret_summary: SecretResolutionSummary | None = PrivateAttr(default=None)
 
 
 # ── Config loading ───────────────────────────────────────────────────────────
@@ -339,6 +343,10 @@ def _snake_to_camel_keys(data: Any) -> Any:
         for k, v in data.items():
             # Strip _comment fields
             if k.startswith("_comment"):
+                continue
+            # Preserve all-caps keys such as API key env names and strategy IDs.
+            if any(ch.isalpha() for ch in k) and k.upper() == k:
+                out[k] = _snake_to_camel_keys(v)
                 continue
             # camelCase → snake_case
             snake = ""
@@ -360,8 +368,18 @@ def load_config(paths: GRaDOSPaths | None = None) -> GRaDOSConfig:
     if config_file.is_file():
         raw = json.loads(config_file.read_text(encoding="utf-8"))
         normalized = _snake_to_camel_keys(raw)
-        return GRaDOSConfig.model_validate(normalized)
-    return GRaDOSConfig()
+        config = GRaDOSConfig.model_validate(normalized)
+    else:
+        config = GRaDOSConfig()
+
+    summary = resolve_api_keys(
+        config_file=config_file,
+        config_values={k: v for k, v in config.api_keys.model_dump().items() if isinstance(v, str)},
+    )
+    for field_name, entry in summary.entries.items():
+        setattr(config.api_keys, field_name, entry.value)
+    config._secret_summary = summary
+    return config
 
 
 def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
@@ -372,6 +390,10 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     data["_comment_debug"] = "Set to true to enable verbose benchmark logs."
     data["_comment_academic_etiquette_email"] = (
         "Email for academic APIs (Crossref, Unpaywall). Change to your real institutional email."
+    )
+    data["_comment_api_keys"] = (
+        "Plaintext API keys in config.json are a temporary import path only. "
+        "GRaDOS will migrate them to the OS keychain on the next run and then clear them from this file."
     )
     data["_comment_indexing"] = (
         "Semantic indexing defaults. Changing model_id or section-aware chunking settings requires `grados reindex`."
@@ -432,3 +454,8 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "Honor Retry-After / X-RateLimit-Reset response headers when true."
     )
     return data
+
+
+def get_secret_summary(config: GRaDOSConfig) -> SecretResolutionSummary | None:
+    """Return the cached API-key resolution summary from `load_config`."""
+    return config._secret_summary

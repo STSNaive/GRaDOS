@@ -96,6 +96,7 @@ grados client install all
 ```
 
 This creates `~/GRaDOS/config.json`, prepares the visible directory layout, installs managed browser assets, and warms the default Harrier embedding runtime. `docling` is now included in the default install because the canonical parsing pipeline is Docling-first.
+Use `grados auth set <provider>` to store API keys in the OS keychain. Plaintext keys placed in `config.json` are treated as a one-time import path and are cleared after a successful migration.
 
 ### Option B: extras, zero-install, or pip
 
@@ -137,8 +138,8 @@ uv run grados status
 1. Install GRaDOS with `uv tool install grados` (this now includes Docling by default)
 2. Run `grados setup`
 3. Run `grados client install all` to register Claude Code and Codex in one step
-4. Edit `~/GRaDOS/config.json`
-5. Run `grados status` to confirm dependencies, browser assets, and API keys
+4. Run `grados auth set elsevier` (and any other providers you need)
+5. Run `grados status` to confirm dependencies, browser assets, keychain health, and API-key sources
 6. If you already have a PDF library, run `grados import-pdfs --from /path/to/papers --recursive`
 7. If you are upgrading from an older MiniLM-backed index, run `grados reindex` once before semantic search
 
@@ -320,6 +321,7 @@ Root selection priority:
 | `ZOTERO_API_KEY` | Zotero Settings -> Keys | No |
 
 Crossref works without an API key. PubMed also works without one, but `PUBMED_API_KEY` is available as an optional pacing upgrade for E-utilities. GRaDOS will use whichever services are configured and skip the rest; the default remote search flow still works with the free sources, and the local paper workflow works without any third-party key.
+The preferred path is `grados auth set <provider>`, which stores the secret in the OS keychain. If you temporarily place a plaintext key in `~/GRaDOS/config.json`, GRaDOS will import it into the keychain on the next run and then clear the plaintext value from the file.
 
 ### Runtime Order 🌊
 

@@ -25,6 +25,7 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
     setup_result = runner.invoke(main, ["setup"], env=env)
     assert setup_result.exit_code == 0
     assert (home / "config.json").is_file()
+    assert "grados auth set" in setup_result.output
 
     version_result = runner.invoke(main, ["version"], env=env)
     assert version_result.exit_code == 0

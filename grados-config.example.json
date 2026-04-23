@@ -150,6 +150,7 @@
         "defaultCollectionKey": "",
         "_comment_defaultCollectionKey": "Optional. Zotero collection key to file papers into by default. Leave empty to save to library root. Get a key from your Zotero library URL."
     },
+    "_comment_apiKeys": "Plaintext API keys in config.json are only a one-time import path. GRaDOS migrates them to the OS keychain on the next run and then clears them from this file.",
     "apiKeys": {
         "ELSEVIER_API_KEY": "",
         "PUBMED_API_KEY": "",
