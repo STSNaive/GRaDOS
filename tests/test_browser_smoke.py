@@ -213,6 +213,8 @@ def test_fetch_with_browser_surfaces_sciencedirect_manual_fallback_warning(
     )
 
     assert result.outcome == "timed_out"
+    assert result.via == "browser"
+    assert result.state == "timeout"
     assert any("ScienceDirect manual PDF fallback failed" in warning for warning in result.warnings)
 
 
@@ -324,6 +326,8 @@ def test_fetch_with_browser_cleans_up_listeners_after_reused_session_error(
     )
 
     assert result.outcome == "error"
+    assert result.via == "browser"
+    assert result.state == "error"
     assert result.warnings == ["boom during polling"]
     assert root_page.listeners.get("response", []) == []
     assert root_page.listeners.get("download", []) == []
@@ -435,6 +439,9 @@ def test_fetch_with_browser_returns_publisher_challenge_when_detected(
     )
 
     assert result.outcome == "publisher_challenge"
+    assert result.via == "browser"
+    assert result.state == "challenge"
+    assert result.manual is True
     assert result.warnings[-1] == "Browser automation: publisher_challenge"
     assert root_page.listeners.get("response", []) == []
     assert root_page.listeners.get("download", []) == []

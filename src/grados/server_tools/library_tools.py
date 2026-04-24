@@ -104,11 +104,13 @@ def _append_remote_metadata_warning(result: str, warning: str | None) -> str:
     return result + f"\n\n### Remote Metadata\n- {warning}"
 
 
-def _infer_remote_fetch_status(outcome: str, warnings: list[str]) -> str:
+def _infer_remote_fetch_status(outcome: str, state: str, warnings: list[str]) -> str:
     if outcome == "metadata_only":
         return "metadata_only"
     if outcome in {"native_full_text", "pdf_obtained"}:
         return "fulltext"
+    if state == "challenge":
+        return "challenge"
 
     warning_text = " ".join(warnings).lower()
     challenge_markers = (
@@ -244,7 +246,7 @@ async def extract_paper_full_text(
         remote_warning = _record_remote_metadata_update(
             chroma_dir=paths.database_chroma,
             doi=doi,
-            fetch_status=_infer_remote_fetch_status(fetch_result.outcome, fetch_result.warnings),
+            fetch_status=_infer_remote_fetch_status(fetch_result.outcome, fetch_result.state, fetch_result.warnings),
             has_fulltext=False,
             source=fetch_result.source,
             title=expected_title or (metadata.title if metadata is not None else ""),
@@ -385,7 +387,11 @@ async def extract_paper_full_text(
     result += f"- **Words:** {persisted.summary.word_count:,}\n"
     result += f"- **Characters:** {persisted.summary.char_count:,}\n"
     result += f"- **Source:** {fetch_result.source}\n"
+    if fetch_result.via:
+        result += f"- **Via:** {fetch_result.via}\n"
     result += f"- **Outcome:** {fetch_result.outcome}\n"
+    if fetch_result.state:
+        result += f"- **State:** {fetch_result.state}\n"
     result += f"- **Index Status:** {persisted.summary.index_status}\n"
     if persisted.artifact.parser_used:
         result += f"- **Parser Used:** {persisted.artifact.parser_used}\n"

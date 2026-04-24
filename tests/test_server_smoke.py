@@ -647,6 +647,8 @@ def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path
             text="# Typed Metadata Demo\n\n## Abstract\n\n" + ("Composite vibration content. " * 80),
             outcome="native_full_text",
             source="Elsevier TDM",
+            via="api",
+            state="ok",
             metadata=PublisherMetadata(
                 doi="10.1234/demo",
                 title="Typed Metadata Demo",
@@ -666,7 +668,7 @@ def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path
         lambda chroma_dir, **kwargs: calls.append({"chroma_dir": chroma_dir, **kwargs}) or 1,
     )
 
-    asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
+    result = asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
 
     record = load_paper_record(tmp_path / "grados-home" / "papers", doi="10.1234/demo")
 
@@ -676,6 +678,10 @@ def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path
     assert record.year == "2025"
     assert record.journal == "Composite Structures"
     assert record.source == "Elsevier TDM"
+    assert record.corpus == "canonical"
+    assert record.tier == "stable"
+    assert "Via:** api" in result
+    assert "State:** ok" in result
     assert len(calls) == 1
     assert calls[0]["fetch_status"] == "fulltext"
     assert calls[0]["has_fulltext"] is True

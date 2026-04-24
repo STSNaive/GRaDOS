@@ -161,12 +161,12 @@ class SearchConfig(BaseModel):
 
 
 class FetchStrategyConfig(BaseModel):
-    order: list[str] = Field(default=["TDM", "OA", "SciHub", "Headless"])
+    order: list[str] = Field(default=["api", "browser", "oa", "scihub"])
     enabled: dict[str, bool] = Field(default_factory=lambda: {
-        "TDM": True,
-        "OA": True,
-        "SciHub": True,
-        "Headless": True,
+        "api": True,
+        "browser": True,
+        "oa": True,
+        "scihub": True,
     })
 
 
@@ -247,7 +247,7 @@ class ExtractConfig(BaseModel):
     fetch_connect_timeout: float = Field(
         default=15.0,
         ge=1.0,
-        description="TCP connect timeout (seconds) for OA / TDM / Sci-Hub landing calls.",
+        description="TCP connect timeout (seconds) for api / oa / scihub HTTP calls.",
     )
     fetch_read_timeout: float = Field(
         default=60.0,
@@ -423,7 +423,7 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "Response read timeout in seconds for academic search APIs."
     )
     data["extract"]["_comment_fetch_connect_timeout"] = (
-        "TCP connect timeout in seconds for OA / TDM / Sci-Hub HTTP calls."
+        "TCP connect timeout in seconds for api / oa / scihub HTTP calls."
     )
     data["extract"]["_comment_fetch_read_timeout"] = (
         "Response read timeout in seconds for PDF and landing-page downloads. "

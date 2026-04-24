@@ -27,12 +27,12 @@
         "papersDirectory": "./markdown",
         "_comment_papersDirectory": "Where parsed Markdown (.md) files are saved. This is the BASE_DIR for mcp-local-rag. Agent uses ingest_file / query_documents on files here.",
         "fetchStrategy": {
-            "order": ["TDM", "OA", "SciHub", "Headless"],
+            "order": ["api", "browser", "oa", "scihub"],
             "enabled": {
-                "TDM": true,
-                "OA": true,
-                "SciHub": true,
-                "Headless": true
+                "api": true,
+                "browser": true,
+                "oa": true,
+                "scihub": true
             }
         },
         "tdm": {

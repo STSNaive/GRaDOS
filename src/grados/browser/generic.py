@@ -46,6 +46,9 @@ class BrowserFetchResult:
     pdf_buffer: bytes | None = None
     source: str = ""
     outcome: str = ""
+    via: str = "browser"
+    state: str = ""
+    manual: bool = False
     warnings: list[str] = field(default_factory=list)
 
 
@@ -77,6 +80,7 @@ async def fetch_with_browser(
                 pdf_buffer=None,
                 source="Headless Browser",
                 outcome="no_browser",
+                state="nobrowser",
                 warnings=["No compatible browser executable found. Run 'grados setup'."],
             )
 
@@ -115,6 +119,7 @@ async def fetch_with_browser(
                 pdf_buffer=state.pdf_buffer,
                 source=f"Headless Browser ({runtime.browser_label})",
                 outcome="pdf_obtained",
+                state="ok",
                 warnings=state.warnings,
             )
 
@@ -124,6 +129,8 @@ async def fetch_with_browser(
             pdf_buffer=None,
             source=f"Headless Browser ({runtime.browser_label})",
             outcome=outcome,
+            state="challenge" if state.challenge_seen else "timeout",
+            manual=state.challenge_seen,
             warnings=state.warnings + [f"Browser automation: {outcome}"],
         )
     except Exception as exc:
@@ -136,6 +143,7 @@ async def fetch_with_browser(
             pdf_buffer=None,
             source=source,
             outcome="error",
+            state="error",
             warnings=[str(exc)],
         )
     finally:

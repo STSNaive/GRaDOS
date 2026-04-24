@@ -10,6 +10,7 @@ from typing import Any
 
 from grados.storage.chroma_client import collection_get
 from grados.storage.chunking import extract_reference_dois, split_paragraphs
+from grados.storage.corpus import CANONICAL_CORPUS, CANONICAL_TIER
 
 __all__ = [
     "canonical_excerpt",
@@ -49,6 +50,11 @@ class PaperDocumentSummary:
     uri: str
     content_hash: str = ""
     indexed_at: str = ""
+    corpus: str = CANONICAL_CORPUS
+    tier: str = CANONICAL_TIER
+    workset_id: str = ""
+    promoted_at: str = ""
+    promote_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -112,6 +118,11 @@ def document_record_from_metadata(metadata: dict[str, Any], document: str = "") 
         "embedding_prompt_mode": str(metadata.get("embedding_prompt_mode", "")),
         "uri": f"grados://papers/{safe_doi}",
         "content_markdown": document,
+        "corpus": str(metadata.get("corpus", "") or CANONICAL_CORPUS),
+        "tier": str(metadata.get("tier", "") or CANONICAL_TIER),
+        "workset_id": str(metadata.get("workset_id", "") or ""),
+        "promoted_at": str(metadata.get("promoted_at", "") or ""),
+        "promote_reason": str(metadata.get("promote_reason", "") or ""),
     }
 
 
@@ -138,6 +149,11 @@ def paper_document_summary_from_record(record: dict[str, Any]) -> PaperDocumentS
         uri=str(record.get("uri", "")),
         content_hash=str(record.get("content_hash", "")),
         indexed_at=str(record.get("indexed_at", "")),
+        corpus=str(record.get("corpus", "") or CANONICAL_CORPUS),
+        tier=str(record.get("tier", "") or CANONICAL_TIER),
+        workset_id=str(record.get("workset_id", "") or ""),
+        promoted_at=str(record.get("promoted_at", "") or ""),
+        promote_reason=str(record.get("promote_reason", "") or ""),
     )
 
 

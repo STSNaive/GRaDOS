@@ -26,7 +26,7 @@ GRaDOS is designed to sit inside an agent research workflow:
 
 1. Check the local paper library first with `search_saved_papers`, `get_saved_paper_structure`, or `grados://papers/{safe_doi}`
 2. Search remote academic sources in configured priority order
-3. Fetch full text through `TDM -> OA -> Sci-Hub -> Headless`
+3. Fetch full text through `api -> browser -> oa -> scihub`
 4. Parse PDFs through `Docling -> Marker -> PyMuPDF`
 5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, and semantic data to ChromaDB
 6. Re-open saved papers with low-token structure cards and deep-reading windows before citing them
@@ -341,11 +341,13 @@ Full-text fetch priority:
 {
   "extract": {
     "fetchStrategy": {
-      "order": ["TDM", "OA", "SciHub", "Headless"]
+      "order": ["api", "browser", "oa", "scihub"]
     }
   }
 }
 ```
+
+Legacy fetch-strategy aliases such as `TDM`, `OA`, `SciHub`, and `Headless` are still accepted while existing configs migrate.
 
 PDF parsing priority:
 

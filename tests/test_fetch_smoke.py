@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 from grados.extract.fetch import FetchResult, _fetch_tdm, build_fetch_strategies, build_tdm_providers
 from grados.publisher.common import PublisherMetadata
 from grados.publisher.elsevier import ElsevierFetchResult, ElsevierMetadataSignal, _extract_elsevier_markdown_from_xml
@@ -47,6 +48,8 @@ def test_fetch_tdm_respects_order_and_enabled_publishers(monkeypatch) -> None:
     assert calls == ["Springer"]
     assert result.outcome == "native_full_text"
     assert result.source == "Springer TDM"
+    assert result.via == "api"
+    assert result.state == "ok"
     assert result.asset_hints == [{"kind": "article_pdf", "url": "https://example.com/paper.pdf"}]
 
 
@@ -54,14 +57,22 @@ def test_fetch_result_defaults_include_asset_hints() -> None:
     result = FetchResult()
 
     assert result.asset_hints == []
+    assert result.via == ""
+    assert result.state == ""
 
 
 def test_fetch_strategy_builders_preserve_order_and_filter_unknown_names() -> None:
     strategies = build_fetch_strategies(["OA", "Unknown", "Headless"])
     providers = build_tdm_providers(["Springer", "Missing", "Elsevier"])
 
-    assert [strategy.name for strategy in strategies] == ["OA", "Headless"]
+    assert [strategy.name for strategy in strategies] == ["oa", "browser"]
     assert [provider.name for provider in providers] == ["Springer", "Elsevier"]
+
+
+def test_fetch_strategy_builders_default_to_browser_first_order() -> None:
+    strategies = build_fetch_strategies()
+
+    assert [strategy.name for strategy in strategies] == ["api", "browser", "oa", "scihub"]
 
 
 def test_fetch_tdm_returns_metadata_only_when_no_full_text_available(monkeypatch) -> None:
@@ -100,6 +111,8 @@ def test_fetch_tdm_returns_metadata_only_when_no_full_text_available(monkeypatch
 
     assert result.outcome == "metadata_only"
     assert result.source == "Elsevier TDM"
+    assert result.via == "api"
+    assert result.state == "partial"
     assert result.metadata is not None
     assert result.metadata.title == "Metadata Only Paper"
     assert result.metadata.pii == "S123456789000001"
@@ -113,6 +126,8 @@ def test_fetch_paper_preserves_metadata_only_after_later_failures(monkeypatch) -
         return FetchResult(
             outcome="metadata_only",
             source="Elsevier TDM",
+            via="api",
+            state="partial",
             metadata=PublisherMetadata(
                 doi="10.1234/demo",
                 title="Metadata Only Paper",
@@ -124,7 +139,7 @@ def test_fetch_paper_preserves_metadata_only_after_later_failures(monkeypatch) -
         )
 
     async def fake_fetch_oa(*args, **kwargs):
-        return FetchResult(outcome="failed", warnings=["OA lookup failed"])
+        return FetchResult(outcome="failed", via="oa", state="error", warnings=["OA lookup failed"])
 
     monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
     monkeypatch.setattr(fetch_module, "_fetch_oa", fake_fetch_oa)
@@ -134,15 +149,107 @@ def test_fetch_paper_preserves_metadata_only_after_later_failures(monkeypatch) -
             doi="10.1234/demo",
             api_keys={"ELSEVIER_API_KEY": "elsevier-key"},
             etiquette_email="test@example.com",
-            fetch_order=["TDM", "OA"],
+            fetch_order=["api", "oa"],
         )
     )
 
     assert result.outcome == "metadata_only"
     assert result.source == "Elsevier TDM"
+    assert result.via == "api"
+    assert result.state == "partial"
     assert result.metadata is not None
     assert result.metadata.title == "Metadata Only Paper"
     assert result.warnings == ["OA lookup failed"]
+
+
+def test_fetch_paper_preserves_browser_challenge_in_final_result(monkeypatch, tmp_path) -> None:
+    import grados.extract.fetch as fetch_module
+    from grados.browser.generic import BrowserFetchResult
+
+    async def fake_fetch_tdm(*args, **kwargs):
+        return FetchResult(outcome="failed", via="api", state="error", warnings=["api miss"])
+
+    async def fake_fetch_oa(*args, **kwargs):
+        return FetchResult(outcome="failed", via="oa", state="error", warnings=["oa miss"])
+
+    async def fake_fetch_with_browser(doi, config, paths):  # noqa: ANN001
+        _ = (doi, config, paths)
+        return BrowserFetchResult(
+            source="Headless Browser",
+            outcome="publisher_challenge",
+            state="challenge",
+            manual=True,
+            warnings=["Browser automation: publisher_challenge"],
+        )
+
+    monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
+    monkeypatch.setattr(fetch_module, "_fetch_oa", fake_fetch_oa)
+    monkeypatch.setattr("grados.browser.generic.fetch_with_browser", fake_fetch_with_browser)
+
+    result = asyncio.run(
+        fetch_module.fetch_paper(
+            doi="10.1234/demo",
+            api_keys={},
+            etiquette_email="test@example.com",
+            fetch_order=["api", "browser", "oa"],
+            headless_config=HeadlessBrowserConfig(),
+            paths=GRaDOSPaths(tmp_path / "grados-home"),
+        )
+    )
+
+    assert result.outcome == "publisher_challenge"
+    assert result.via == "browser"
+    assert result.state == "challenge"
+    assert result.warnings == ["api miss", "Browser automation: publisher_challenge", "oa miss"]
+
+
+def test_fetch_paper_stops_after_browser_success(monkeypatch, tmp_path) -> None:
+    import grados.extract.fetch as fetch_module
+    from grados.browser.generic import BrowserFetchResult
+
+    calls: list[str] = []
+
+    async def fake_fetch_tdm(*args, **kwargs):
+        calls.append("api")
+        return FetchResult(outcome="metadata_only", via="api", state="partial")
+
+    async def fake_fetch_oa(*args, **kwargs):
+        calls.append("oa")
+        return FetchResult(outcome="failed", via="oa", state="error", warnings=["oa miss"])
+
+    async def fake_fetch_scihub(*args, **kwargs):
+        calls.append("scihub")
+        return FetchResult(outcome="failed", via="scihub", state="error")
+
+    async def fake_fetch_with_browser(doi, config, paths):  # noqa: ANN001
+        _ = (doi, config, paths)
+        calls.append("browser")
+        return BrowserFetchResult(
+            pdf_buffer=b"%PDF-1.4\n%stub",
+            source="Headless Browser",
+            outcome="pdf_obtained",
+            state="ok",
+        )
+
+    monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
+    monkeypatch.setattr(fetch_module, "_fetch_oa", fake_fetch_oa)
+    monkeypatch.setattr(fetch_module, "_fetch_scihub", fake_fetch_scihub)
+    monkeypatch.setattr("grados.browser.generic.fetch_with_browser", fake_fetch_with_browser)
+
+    result = asyncio.run(
+        fetch_module.fetch_paper(
+            doi="10.1234/demo",
+            api_keys={},
+            etiquette_email="test@example.com",
+            headless_config=HeadlessBrowserConfig(),
+            paths=GRaDOSPaths(tmp_path / "grados-home"),
+        )
+    )
+
+    assert calls == ["api", "browser"]
+    assert result.outcome == "pdf_obtained"
+    assert result.via == "browser"
+    assert result.state == "ok"
 
 
 def test_fetch_oa_surfaces_warning_when_pdf_download_fails() -> None:
@@ -171,6 +278,8 @@ def test_fetch_oa_surfaces_warning_when_pdf_download_fails() -> None:
     result = asyncio.run(_fetch_oa("10.1234/demo", "test@example.com", FakeClient()))  # type: ignore[arg-type]
 
     assert result.outcome == "failed"
+    assert result.via == "oa"
+    assert result.state == "error"
     assert result.warnings == ["OA PDF fetch failed: RuntimeError: network down"]
 
 
@@ -197,6 +306,8 @@ def test_fetch_scihub_surfaces_warning_when_pdf_link_missing() -> None:
     )
 
     assert result.outcome == "failed"
+    assert result.via == "scihub"
+    assert result.state == "error"
     assert result.warnings == ["Sci-Hub lookup failed: no PDF link found"]
 
 
@@ -228,6 +339,8 @@ def test_fetch_scihub_ignores_legacy_fallback_mirror_key() -> None:
     )
 
     assert result.outcome == "failed"
+    assert result.via == "scihub"
+    assert result.state == "error"
     assert client.last_url == "https://sci-hub.se/10.1234/demo"
 
 

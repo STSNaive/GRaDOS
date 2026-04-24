@@ -78,6 +78,11 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
     assert metadata["year"] == "2025"
     assert metadata["journal"] == "Composite Structures"
     assert json.loads(metadata["authors_json"]) == ["Alice", "Bob"]
+    assert metadata["corpus"] == "canonical"
+    assert metadata["tier"] == "stable"
+    assert metadata["workset_id"] == ""
+    assert metadata["promoted_at"] == ""
+    assert metadata["promote_reason"] == ""
     assert calls == [
         {
             "chroma": str(chroma_dir),
@@ -93,6 +98,11 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
                 "journal": "Composite Structures",
                 "section_headings": ["Demo Paper Title", "Abstract", "Methods", "Results"],
                 "assets_manifest_path": "",
+                "corpus": "canonical",
+                "tier": "stable",
+                "workset_id": "",
+                "promoted_at": "",
+                "promote_reason": "",
             },
         }
     ]

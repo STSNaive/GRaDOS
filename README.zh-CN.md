@@ -26,7 +26,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 1. 先用 `search_saved_papers`、`get_saved_paper_structure` 或 `grados://papers/{safe_doi}` 检查本地论文库
 2. 按配置好的优先级检索远程学术数据库
-3. 按 `TDM -> OA -> Sci-Hub -> Headless` 瀑布抓取全文
+3. 按 `api -> browser -> oa -> scihub` 瀑布抓取全文
 4. 按 `Docling -> Marker -> PyMuPDF` 瀑布解析 PDF
 5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把语义检索数据写入 ChromaDB
 6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
@@ -341,11 +341,13 @@ Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `P
 {
   "extract": {
     "fetchStrategy": {
-      "order": ["TDM", "OA", "SciHub", "Headless"]
+      "order": ["api", "browser", "oa", "scihub"]
     }
   }
 }
 ```
+
+旧的抓取策略别名 `TDM`、`OA`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。
 
 PDF 解析优先级：
 

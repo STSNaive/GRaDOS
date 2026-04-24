@@ -242,3 +242,51 @@
 - canonical save、listener cleanup、citation cache、full-context / compare / audit 等关键契约可以在单一实现点维护，入口层不再重复解释。
 - 测试边界可以更贴近真实职责：workflow 测试锁多阶段语义，adapter smoke test 锁对外 payload，避免所有护栏都堆在一个大文件对应的一组 smoke tests 上。
 - 后续若继续给已有能力增加 CLI twin、MCP twin 或新的领域入口，优先复用 shared core，而不是复制一份 orchestration。
+
+---
+
+## ADR-010：Corpus 分层采用“先 canonical，后按需 working”的两阶段演进
+
+- 状态：Accepted
+- 日期：2026-04-23
+
+### 背景
+- `remote_metadata` 落地后，GRaDOS 已具备“先缓存远程 metadata，再决定是否 materialize 全文”的基础。
+- 用户讨论中明确希望保留未来的 `working corpus + canonical library` 路线，但当前个人研究库通常仍在 100-500 篇量级，主要矛盾不是 Chroma 容量，而是长期库与探索性材料的边界。
+- 如果现在立刻拆出 `working_docs/working_chunks`，会同时引入 promotion、跨库检索、双层去重和新的用户心智；在当前阶段，这些复杂度的收益还不如先把 `remote_metadata` 和 acquisition 主线做好。
+
+### 决策
+- `Phase 1` 继续保持单一长期库心智：摘要筛选通过后，`extract_paper_full_text` 成功获取的全文仍直接进入 canonical `papers/*.md` 与 `papers_docs` / `papers_chunks`。
+- `Phase 1` 只在 canonical 记录上预留轻量 corpus 字段：`corpus=canonical`、`tier=stable`、`workset_id`、`promoted_at`、`promote_reason`。旧记录缺字段时，一律按 `canonical/stable` 解释。
+- `working vs canonical` 的区别是“同一次筛选后的不同落盘层”，不是第二次 LLM 审核，也不是另一条 fetch 或 parse 流程。
+- `search_saved_papers` 在 `Phase 1` 继续默认只搜索 canonical；working corpus 只有在未来真的引入后，才会通过显式选项参与检索。
+- `Phase 2` 只有在专题式批量 materialize 已经明显把大量临时工作材料混入长期库时才触发；届时在同一 Chroma 实例内新增 `working_docs` / `working_chunks`，而不是引入新数据库。
+
+### 结果与影响
+- 当前版本维持一个长期库的简单用户心智，不额外增加操作面。
+- corpus 字段已经预留，未来若进入 `Phase 2`，不需要重新改写 canonical 数据模型。
+- 当前阶段的主要收益仍来自 `remote_metadata` 复用与 acquisition 优化，而不是更早引入 promotion 机制。
+
+---
+
+## ADR-011：全文获取默认顺序改为 `api -> browser -> oa -> scihub`
+
+- 状态：Accepted
+- 日期：2026-04-23
+
+### 背景
+- GRaDOS 的主要使用前提是机构访问权限与校园网环境，而不是公开 OA-only 场景。
+- 在这种前提下，browser/PDF download 不是一个“最后才试的 headless fallback”，而是订阅全文获取的主路径之一。
+- 旧的 `TDM -> OA -> Sci-Hub -> Headless` 顺序会把 browser 放得过后，导致本来可以直接通过机构权限拿到的 PDF，要先经过不必要的 OA / mirror 尝试。
+
+### 决策
+- fetch strategy 的 canonical 命名统一收敛为单词：`api`、`browser`、`oa`、`scihub`。
+- 默认顺序改为 `api -> browser -> oa -> scihub`。
+- `api` 表示 publisher API / TDM 路径；`browser` 表示机构权限下的浏览器/PDF download；`oa` 表示合法 OA shortcut；`scihub` 仍只保留为末级兜底。
+- `TDM`、`OA`、`SciHub`、`Headless` 继续作为 legacy alias 兼容读取，但不再作为文档主命名。
+- browser 结果在主流程中保留 `state`，至少区分 `ok`、`challenge`、`timeout`、`nobrowser`、`error`，避免把需要人工接力的 challenge 折叠成无差别的 `failed`。
+
+### 结果与影响
+- 新配置和文档统一围绕 `api/browser/oa/scihub` 组织，用户心智更接近真实使用路径。
+- 旧配置不需要一次性重写；legacy alias 仍可运行。
+- acquisition 后续仍会继续补全 `resume` / 更完整 provenance，但默认顺序与命名面已经先稳定下来。

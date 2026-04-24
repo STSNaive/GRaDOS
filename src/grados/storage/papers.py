@@ -11,6 +11,7 @@ from typing import Any
 
 from grados.publisher.common import safe_doi_filename
 from grados.storage.chunking import split_paragraphs, strip_frontmatter
+from grados.storage.corpus import normalize_corpus_metadata
 from grados.storage.frontmatter import (
     build_front_matter,
     parse_authors_metadata,
@@ -62,6 +63,7 @@ def save_paper_markdown(
     mirror_written = False
     index_status = "not_requested"
     index_error = ""
+    normalized_frontmatter = normalize_corpus_metadata(extra_frontmatter)
 
     if write_mirror:
         papers_dir.mkdir(parents=True, exist_ok=True)
@@ -74,7 +76,7 @@ def save_paper_markdown(
             authors=authors,
             year=year,
             journal=journal,
-            extra=extra_frontmatter,
+            extra=normalized_frontmatter,
         )
         content = f"{front}\n\n{markdown}"
         file_path.write_text(content, encoding="utf-8")
@@ -96,7 +98,12 @@ def save_paper_markdown(
                 year=year,
                 journal=journal,
                 section_headings=headings[:20],
-                assets_manifest_path=(extra_frontmatter or {}).get("assets_manifest_path", ""),
+                assets_manifest_path=normalized_frontmatter.get("assets_manifest_path", ""),
+                corpus=normalized_frontmatter["corpus"],
+                tier=normalized_frontmatter["tier"],
+                workset_id=normalized_frontmatter["workset_id"],
+                promoted_at=normalized_frontmatter["promoted_at"],
+                promote_reason=normalized_frontmatter["promote_reason"],
             )
             index_status = "indexed"
         except Exception as exc:
@@ -217,6 +224,11 @@ class PaperRecord:
     word_count: int
     char_count: int
     content_markdown: str
+    corpus: str = "canonical"
+    tier: str = "stable"
+    workset_id: str = ""
+    promoted_at: str = ""
+    promote_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -259,6 +271,7 @@ def load_paper_record(
 
     raw_content = file_path.read_text(encoding="utf-8")
     metadata = read_frontmatter_metadata(raw_content)
+    corpus_metadata = normalize_corpus_metadata(metadata)
     content = strip_frontmatter(raw_content)
     paragraphs = split_paragraphs(raw_content, include_front_matter=False)
     headings = [
@@ -283,6 +296,11 @@ def load_paper_record(
         word_count=len(content.split()),
         char_count=len(content),
         content_markdown=content,
+        corpus=corpus_metadata["corpus"],
+        tier=corpus_metadata["tier"],
+        workset_id=corpus_metadata["workset_id"],
+        promoted_at=corpus_metadata["promoted_at"],
+        promote_reason=corpus_metadata["promote_reason"],
     )
 
 
@@ -518,7 +536,13 @@ def list_saved_papers(papers_dir: Path, chroma_dir: Path | None = None) -> list[
 
 
 def _prepend_front_matter(markdown: str, record: PaperRecord) -> str:
-    extra: dict[str, str] = {}
+    extra: dict[str, str] = normalize_corpus_metadata({
+        "corpus": record.corpus,
+        "tier": record.tier,
+        "workset_id": record.workset_id,
+        "promoted_at": record.promoted_at,
+        "promote_reason": record.promote_reason,
+    })
     if record.assets_manifest_path:
         extra["assets_manifest_path"] = record.assets_manifest_path
 
@@ -530,6 +554,6 @@ def _prepend_front_matter(markdown: str, record: PaperRecord) -> str:
         authors=[str(author) for author in record.authors if str(author)],
         year=record.year,
         journal=record.journal,
-        extra=extra or None,
+        extra=extra,
     )
     return f"{front}\n\n{markdown}"

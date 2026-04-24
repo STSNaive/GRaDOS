@@ -802,9 +802,13 @@ def test_index_paper_writes_real_embeddings_and_section_metadata(tmp_path: Path,
     assert chunk_metadatas[2]["section_name"] == "References"
     assert chunk_metadatas[0]["paper_id"] == "10_1234_demo"
     assert chunk_metadatas[0]["doc_id"] == "10_1234_demo"
+    assert chunk_metadatas[0]["corpus"] == "canonical"
+    assert chunk_metadatas[0]["tier"] == "stable"
     doc_metadata = fake_docs.last_upsert["metadatas"][0]
     assert doc_metadata["paper_id"] == "10_1234_demo"
     assert doc_metadata["remote_source"] == ""
+    assert doc_metadata["corpus"] == "canonical"
+    assert doc_metadata["tier"] == "stable"
     assert doc_metadata["cites_json"] == '["10.9999/example-ref"]'
     stats = get_index_stats(tmp_path / "chroma", indexing_config=IndexingConfig())
     assert stats.index_manifest_present is True
@@ -984,8 +988,12 @@ def test_get_paper_document_and_list_paper_documents_return_dataclasses(monkeypa
     assert isinstance(document, PaperDocument)
     assert document is not None
     assert document.content_markdown == "# Demo"
+    assert document.corpus == "canonical"
+    assert document.tier == "stable"
     assert isinstance(documents[0], PaperDocumentSummary)
     assert documents[0].safe_doi == "10_1234_demo"
+    assert documents[0].corpus == "canonical"
+    assert documents[0].tier == "stable"
 
 
 def test_resolve_papers_dir_handles_standard_and_fallback_layouts(tmp_path: Path) -> None:

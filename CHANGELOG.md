@@ -25,6 +25,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed config normalization to preserve all-caps keys such as `ELSEVIER_API_KEY`, preventing secret-field names and strategy IDs from being mangled during `config.json` loading.
 - Changed `search_academic_papers` to upsert deduplicated remote results into `remote_metadata` before returning the screening list, and changed `extract_paper_full_text` to backfill `metadata_only`, `challenge`, `failed`, and `fulltext` status transitions into the same cache during materialization.
 - Changed canonical Chroma document/chunk metadata to carry explicit `paper_id`, `remote_source`, and `doc_id` join keys so later corpus-layer work can associate saved full text with the remote metadata cache without re-deriving identifiers.
+- Changed phase-1 canonical corpus persistence to reserve `corpus/tier/workset_id/promoted_at/promote_reason` on both markdown frontmatter and Chroma metadata, while older saved papers continue to hydrate with `canonical/stable` defaults when those fields are absent.
+- Changed full-text acquisition defaults to use canonical fetch-strategy names (`api`, `browser`, `oa`, `scihub`) and the browser-first order `api -> browser -> oa -> scihub`; legacy `TDM` / `OA` / `SciHub` / `Headless` values remain accepted as aliases.
+- Changed fetch results and browser results to surface `via` and `state` fields, and changed the main fetch waterfall to preserve browser `challenge` / `timeout` / `nobrowser` states instead of collapsing every browser miss into a generic final `failed`.
 - Changed all academic search calls (Crossref, PubMed ESearch/ESummary/EFetch, Web of Science, Elsevier Scopus, Springer Meta) to go through the unified retry decorator so transient 429/5xx responses and network errors no longer fail the whole page fetch.
 - Changed Elsevier TDM full-text + metadata fallback calls and Springer OA JATS / HTML / PDF fallback calls to use the retry decorator, improving reliability against upstream transient errors.
 - Changed browser automation `wait_for_load_state("networkidle")` to use an explicit 15s ceiling (now configurable via `extract.headlessBrowser.networkidleTimeout`) so SPA-style background polling can no longer silently consume the browser deadline before falling through to the main capture loop (see ADR-008).
@@ -142,6 +145,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Tests
 - Added regression coverage for keychain-backed secret resolution, automatic `config.json` secret migration + plaintext clearing, and the `grados auth` CLI flows.
 - Added regression coverage for remote-metadata helper upserts/queries, search-time metadata-cache population, extract-time `metadata_only`/`challenge`/`fulltext` status backfills, and canonical `paper_id` / `doc_id` metadata joins.
+- Added regression coverage for phase-1 corpus defaults so new canonical saves write `corpus/tier/workset` metadata and older Chroma records without those fields still hydrate as `canonical/stable`.
+- Added regression coverage for browser-first fetch strategy defaults, legacy fetch-strategy alias compatibility, preserved browser challenge states, browser success short-circuiting, and user-facing `Via/State` receipt lines.
 - Added Stage B smoke coverage for research artifacts, failure memory, citation graphs, full-context retrieval, evidence grids, paper comparison, and draft-support auditing.
 - Added smoke coverage for client install flows and plugin manifests.
 - Added regression coverage for Docling-first parsing, Elsevier XML deterministic normalization, and canonical paragraph reread after Chroma retrieval.
