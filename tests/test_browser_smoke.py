@@ -435,6 +435,11 @@ def test_fetch_with_browser_returns_publisher_challenge_when_detected(
                 keep_interactive_window_open=False,
             ),
             GRaDOSPaths(tmp_path / "grados-home"),
+            resume={
+                "kind": "browser_profile",
+                "doi": "10.1234/demo",
+                "url": "https://www.sciencedirect.com/science/article/pii/S1234567890",
+            },
         )
     )
 
@@ -442,6 +447,9 @@ def test_fetch_with_browser_returns_publisher_challenge_when_detected(
     assert result.via == "browser"
     assert result.state == "challenge"
     assert result.manual is True
+    assert result.host == "www.sciencedirect.com"
+    assert result.resume["kind"] == "browser_profile"
+    assert result.resume["profile_dir"].endswith("browser/profile")
     assert result.warnings[-1] == "Browser automation: publisher_challenge"
     assert root_page.listeners.get("response", []) == []
     assert root_page.listeners.get("download", []) == []

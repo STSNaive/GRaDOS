@@ -53,12 +53,15 @@ Preconditions:
 
 - browser runtime prepared with `grados setup`
 - choose one ScienceDirect DOI known to require interactive browser flow
+- access to the MCP tool surface that exposes `extract_paper_full_text`
 
 Suggested checks:
 
-1. run paper extraction for that DOI
+1. call `extract_paper_full_text` for that DOI
 2. confirm browser path either captures a real PDF or surfaces `publisher_challenge`
-3. confirm no HTML challenge page is saved as a PDF
+3. if a challenge is surfaced, confirm the receipt includes `Manual Browser Resume` with host, URL/profile when available, and `resume_browser=true` retry guidance
+4. complete publisher verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true`
+5. confirm the resumed attempt starts at the browser path, uses the saved URL/profile when present, and does not save an HTML challenge page as a PDF
 
 ### Local Import
 

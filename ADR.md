@@ -261,6 +261,14 @@
 - `working vs canonical` 的区别是“同一次筛选后的不同落盘层”，不是第二次 LLM 审核，也不是另一条 fetch 或 parse 流程。
 - `search_saved_papers` 在 `Phase 1` 继续默认只搜索 canonical；working corpus 只有在未来真的引入后，才会通过显式选项参与检索。
 - `Phase 2` 只有在专题式批量 materialize 已经明显把大量临时工作材料混入长期库时才触发；届时在同一 Chroma 实例内新增 `working_docs` / `working_chunks`，而不是引入新数据库。
+- `Phase 2` 的触发信号包括：
+  - 单个专题经常一次 materialize 数十到上百篇全文，其中明显有一批只是临时工作材料。
+  - 用户频繁需要“只搜当前专题候选”，而不想污染长期 canonical 库。
+  - 主库开始混入大量探索性全文，人工清理长期库变得痛苦。
+- `Phase 2` 的 promotion 规则保持显式优先：用户显式 `pin` / `save` / `promote` 最优先；最多补轻量提示，例如同一论文被多次检索命中、被引用/导出、或跨多个 workset 复用时提示升格，但不默认自动升格。
+- `Phase 2` 默认检索规则仍保持保守：canonical 是默认搜索面；working 只在用户显式选择“包含当前工作集”时并入。
+- 去重规则以 `doi` / `safe_doi` 为全局主键；同一 DOI 不在同一 corpus 重复入库；promotion 时若 canonical 已有同 DOI，则只补 workset 关联和 provenance，不重复建第二份全文索引。
+- merged search 中，同一 DOI 同时存在 canonical 和 working 时优先返回 canonical；working 只作为补充上下文，不与 canonical 抢主结果位。
 
 ### 结果与影响
 - 当前版本维持一个长期库的简单用户心智，不额外增加操作面。
@@ -285,8 +293,11 @@
 - `api` 表示 publisher API / TDM 路径；`browser` 表示机构权限下的浏览器/PDF download；`oa` 表示合法 OA shortcut；`scihub` 仍只保留为末级兜底。
 - `TDM`、`OA`、`SciHub`、`Headless` 继续作为 legacy alias 兼容读取，但不再作为文档主命名。
 - browser 结果在主流程中保留 `state`，至少区分 `ok`、`challenge`、`timeout`、`nobrowser`、`error`，避免把需要人工接力的 challenge 折叠成无差别的 `failed`。
+- browser challenge 是一级可恢复状态：当 publisher 人机验证阻断 PDF 捕获时，流程保存 `manual=true`、`host`、`resume` 句柄、`trace` provenance 与当前 profile 信息到 `remote_metadata`，并在 receipt 中提示用户完成验证后重试。
+- `resume_browser=true` 表示“从上一次 browser challenge 继续”，应优先使用保存的 publisher URL / browser profile，并从 `browser` strategy 开始，不再重新跑 `api` 优先的整条链。
+- `trace` 最小字段集为 `via`、`state`、`host`、`time`、`hash`、`resume`、`manual`；这些 provenance 字段只进入 metadata，不进入 embedding 文本。
 
 ### 结果与影响
 - 新配置和文档统一围绕 `api/browser/oa/scihub` 组织，用户心智更接近真实使用路径。
 - 旧配置不需要一次性重写；legacy alias 仍可运行。
-- acquisition 后续仍会继续补全 `resume` / 更完整 provenance，但默认顺序与命名面已经先稳定下来。
+- Elsevier / ScienceDirect 等需要人工验证的页面不再表现为普通失败；用户完成一次验证后，可以复用项目自己的浏览器 profile 继续同一 DOI 的获取尝试。

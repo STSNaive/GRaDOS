@@ -10,6 +10,7 @@ from grados.config import GRaDOSPaths
 from grados.extract.parse import ParsePipelineResult
 
 if TYPE_CHECKING:
+    from grados.config import IndexingConfig
     from grados.storage.papers import PaperSavedSummary
 
 
@@ -135,6 +136,7 @@ def persist_reviewed_library_document(
     asset_hints: list[dict[str, Any]] | None = None,
     copied_pdf_path: str = "",
     index_warning_message: str = "",
+    indexing_config: IndexingConfig | None = None,
 ) -> PersistedLibraryDocument:
     """Persist reviewed markdown into canonical storage and refresh the index."""
     markdown = review.artifact.markdown
@@ -172,6 +174,7 @@ def persist_reviewed_library_document(
         authors=authors,
         year=year,
         journal=journal,
+        indexing_config=indexing_config,
     )
 
     index_warning_added = False

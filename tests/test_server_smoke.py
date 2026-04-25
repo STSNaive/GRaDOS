@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+from grados.config import IndexingConfig
 from grados.publisher.common import PublisherMetadata
 from grados.search.academic import PaperMetadata
 from grados.search.resumable import ResumableSearchResult
@@ -495,7 +496,14 @@ def test_extract_paper_full_text_writes_asset_manifest(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
     monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
-    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: 1)
+    captured: dict[str, object] = {}
+
+    def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = args
+        captured["indexing_config"] = kwargs.get("indexing_config")
+        return 1
+
+    monkeypatch.setattr(vector, "index_paper", fake_index_paper)
 
     result = asyncio.run(
         extract_paper_full_text(
@@ -508,6 +516,7 @@ def test_extract_paper_full_text_writes_asset_manifest(tmp_path: Path, monkeypat
     manifest_file = tmp_path / "grados-home" / "papers" / "_assets" / "10_1234_demo.json"
     assert "Paper Extracted Successfully" in result
     assert manifest_file.is_file()
+    assert isinstance(captured["indexing_config"], IndexingConfig)
 
 
 def test_extract_paper_full_text_reports_partial_success_when_indexing_fails(
@@ -530,7 +539,11 @@ def test_extract_paper_full_text_reports_partial_success_when_indexing_fails(
     monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
     monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
 
+    captured: dict[str, object] = {}
+
     def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = args
+        captured["indexing_config"] = kwargs.get("indexing_config")
         raise RuntimeError("embedding backend unavailable")
 
     monkeypatch.setattr(vector, "index_paper", fake_index_paper)
@@ -546,6 +559,7 @@ def test_extract_paper_full_text_reports_partial_success_when_indexing_fails(
     assert "Paper Extracted with Partial Success" in result
     assert "Index Status:** failed" in result
     assert "saved to papers/ only" in result
+    assert isinstance(captured["indexing_config"], IndexingConfig)
 
 
 def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, monkeypatch) -> None:
@@ -609,6 +623,18 @@ def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeyp
         return fetch_module.FetchResult(
             outcome="failed",
             source="Headless Browser",
+            via="browser",
+            state="challenge",
+            manual=True,
+            host="www.sciencedirect.com",
+            resume={
+                "kind": "browser_profile",
+                "doi": "10.1234/demo",
+                "host": "www.sciencedirect.com",
+                "url": "https://www.sciencedirect.com/science/article/pii/S1234567890",
+                "profile_dir": str(tmp_path / "grados-home" / "browser" / "profile"),
+                "action": "complete_publisher_verification_then_retry",
+            },
             metadata=PublisherMetadata(
                 doi="10.1234/demo",
                 title="Challenge Demo",
@@ -627,9 +653,74 @@ def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeyp
     result = asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
 
     assert "Failed to fetch paper: 10.1234/demo" in result
+    assert "Manual Browser Resume" in result
+    assert "www.sciencedirect.com" in result
     assert len(calls) == 1
     assert calls[0]["fetch_status"] == "challenge"
+    assert calls[0]["fetch_via"] == "browser"
+    assert calls[0]["fetch_state"] == "challenge"
+    assert calls[0]["fetch_host"] == "www.sciencedirect.com"
+    assert calls[0]["fetch_manual"] is True
+    assert isinstance(calls[0]["fetch_resume"], dict)
+    assert calls[0]["fetch_resume"]["kind"] == "browser_profile"
     assert calls[0]["has_fulltext"] is False
+
+
+def test_extract_paper_full_text_resume_browser_uses_saved_resume(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.extract.fetch as fetch_module
+    import grados.storage.remote_metadata as remote_metadata
+
+    fetch_calls: list[dict[str, object]] = []
+    metadata_calls: list[dict[str, object]] = []
+
+    def fake_get_remote_metadata_by_doi(chroma_dir, doi):  # noqa: ANN001
+        _ = (chroma_dir, doi)
+        return SimpleNamespace(
+            fetch_status="challenge",
+            fetch_manual=True,
+            fetch_resume=(
+                '{"kind": "browser_profile", "doi": "10.1234/demo", '
+                '"host": "www.sciencedirect.com", '
+                '"url": "https://www.sciencedirect.com/science/article/pii/S1234567890"}'
+            ),
+        )
+
+    async def fake_fetch_paper(**kwargs):
+        fetch_calls.append(kwargs)
+        return fetch_module.FetchResult(
+            outcome="metadata_only",
+            source="Headless Browser",
+            via="browser",
+            state="partial",
+            metadata=PublisherMetadata(
+                doi="10.1234/demo",
+                title="Resume Demo",
+                publisher="Elsevier",
+            ),
+        )
+
+    def fake_record_remote_fetch_result(chroma_dir, **kwargs):  # noqa: ANN001, ANN003
+        metadata_calls.append({"chroma_dir": chroma_dir, **kwargs})
+        return 1
+
+    monkeypatch.setattr(remote_metadata, "get_remote_metadata_by_doi", fake_get_remote_metadata_by_doi)
+    monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", fake_record_remote_fetch_result)
+
+    result = asyncio.run(extract_paper_full_text(doi="10.1234/demo", resume_browser=True))
+
+    assert "Paper Located but Full Text Unavailable" in result
+    assert len(fetch_calls) == 1
+    assert fetch_calls[0]["browser_resume"] == {
+        "kind": "browser_profile",
+        "doi": "10.1234/demo",
+        "host": "www.sciencedirect.com",
+        "url": "https://www.sciencedirect.com/science/article/pii/S1234567890",
+    }
+    assert len(metadata_calls) == 1
+    assert metadata_calls[0]["fetch_via"] == "browser"
 
 
 def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path: Path, monkeypatch) -> None:
@@ -733,7 +824,11 @@ def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
             parser_used="Docling",
         )
 
+    captured: dict[str, object] = {}
+
     def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = args
+        captured["indexing_config"] = kwargs.get("indexing_config")
         raise RuntimeError("embedding backend unavailable")
 
     monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
@@ -751,6 +846,7 @@ def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
     assert "PDF Parsed & Saved with Partial Success" in result
     assert "Index Status:** failed" in result
     assert "saved to papers/ only" in result
+    assert isinstance(captured["indexing_config"], IndexingConfig)
 
     record = load_paper_record(tmp_path / "grados-home" / "papers", doi="10.1234/local-parse")
     assert record is not None

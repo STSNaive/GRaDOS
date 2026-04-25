@@ -1,6 +1,5 @@
 {
     "debug": false,
-    "_comment_debug": "Set to true to enable verbose benchmark logs and detailed extract failure diagnostics.",
     "search": {
         "order": [
             "Elsevier",
@@ -16,142 +15,117 @@
             "Crossref": true,
             "PubMed": true
         },
-        "connectTimeout": 10,
-        "_comment_connectTimeout": "TCP connect timeout in seconds for academic search APIs (Crossref, PubMed, WoS, Elsevier, Springer).",
-        "readTimeout": 30,
-        "_comment_readTimeout": "Response read timeout in seconds for academic search APIs."
+        "connect_timeout": 10.0,
+        "read_timeout": 30.0,
+        "_comment_connect_timeout": "TCP connect timeout in seconds for academic search APIs (Crossref, PubMed, WoS, Elsevier, Springer).",
+        "_comment_read_timeout": "Response read timeout in seconds for academic search APIs."
     },
     "extract": {
-        "downloadDirectory": "./downloads",
-        "_comment_downloadDirectory": "Where raw PDF files are saved (archival only). NOT indexed by mcp-local-rag.",
-        "papersDirectory": "./markdown",
-        "_comment_papersDirectory": "Where parsed Markdown (.md) files are saved. This is the BASE_DIR for mcp-local-rag. Agent uses ingest_file / query_documents on files here.",
-        "fetchStrategy": {
-            "order": ["api", "browser", "oa", "scihub"],
+        "fetch_strategy": {
+            "order": [
+                "api",
+                "browser",
+                "oa",
+                "scihub"
+            ],
             "enabled": {
                 "api": true,
                 "browser": true,
                 "oa": true,
                 "scihub": true
-            }
+            },
+            "_comment_order": "PDF/full-text retrieval order. Browser is first-class for institutional publisher access."
         },
         "tdm": {
-            "order": ["Elsevier", "Springer"],
+            "order": [
+                "Elsevier",
+                "Springer"
+            ],
             "enabled": {
                 "Elsevier": true,
                 "Springer": true
-            }
+            },
+            "_comment_order": "Publisher API/TDM providers tried by the api fetch strategy."
         },
-        "sciHub": {
-            "autoUpdateMirror": true,
-            "mirrorUrlFile": "./scihub-mirrors.txt",
-            "fallback_mirror": "https://sci-hub.se"
+        "sci_hub": {
+            "auto_update_mirror": true,
+            "mirror_url_file": "",
+            "fallback_mirror": "https://sci-hub.se",
+            "_comment_fallback_mirror": "Fallback Sci-Hub mirror used only when the scihub strategy is enabled."
         },
-        "headlessBrowser": {
+        "headless_browser": {
             "browser": "chrome",
-            "_comment_browser": "Fallback system browser type when GRaDOS cannot use its managed browser. Options: 'chrome', 'msedge'.",
-            "managedDataDirectory": "./.grados/browser",
-            "_comment_managedDataDirectory": "Root directory for GRaDOS-managed browser assets. Keep browser binaries and profiles here so the same layout can later move cleanly into OS-level app-data locations.",
-            "preferManagedBrowser": true,
-            "_comment_preferManagedBrowser": "If true, GRaDOS first looks for its own Playwright-managed Chrome for Testing installation before checking system Chrome/Edge paths.",
-            "managedBrowserDirectory": "",
-            "_comment_managedBrowserDirectory": "Optional explicit override for the managed browser cache directory. Leave empty to use managedDataDirectory + '/browsers/playwright'. Relative paths resolve from PROJECT_ROOT.",
-            "autoInstallManagedBrowser": true,
-            "_comment_autoInstallManagedBrowser": "If true, 'grados --init' and 'grados --prepare-browser' attempt a best-effort 'patchright install chromium --no-shell' into managedBrowserDirectory.",
-            "profileDirectory": "",
-            "_comment_profileDirectory": "Optional explicit override for the persistent GRaDOS Chrome profile. Leave empty to use managedDataDirectory + '/profiles/chrome'. Keeping this persistent reduces repeated publisher verification prompts across runs.",
-            "usePersistentProfile": true,
-            "_comment_usePersistentProfile": "If true, GRaDOS launches Chrome with profileDirectory as a persistent user-data-dir instead of using a throwaway in-memory context.",
-            "executablePath": "",
-            "_comment_executablePath": "Optional absolute or PROJECT_ROOT-relative browser executable path override. This is used after the managed GRaDOS browser when preferManagedBrowser=true, so it behaves as a fallback/manual pin rather than overriding the managed runtime.",
-            "interactiveCaptchaHelp": true,
-            "_comment_interactiveCaptchaHelp": "Legacy compatibility flag. Visible browser mode is now the only browser-fetch mode, so this setting no longer changes whether a window opens.",
-            "reuseInteractiveWindow": true,
-            "_comment_reuseInteractiveWindow": "If true, keep reusing the same visible browser window/session for later publisher fetches so one verification can help subsequent DOI fetches.",
-            "keepInteractiveWindowOpen": true,
-            "_comment_keepInteractiveWindowOpen": "If true, do not close the visible browser window after a successful publisher fetch. GRaDOS will reuse it on later runs while the session stays alive.",
-            "closePdfPageAfterCapture": true,
-            "_comment_closePdfPageAfterCapture": "If true, close the spawned PDF tab/page after a real PDF is captured, while keeping the reusable browser window alive.",
-            "deadlineSeconds": 120,
-            "_comment_deadlineSeconds": "Maximum wall-clock seconds for the browser main polling loop per DOI.",
-            "networkidleTimeout": 15,
-            "_comment_networkidleTimeout": "Ceiling in seconds for wait_for_load_state('networkidle'). Publisher SPAs with background polling can keep the network busy indefinitely; this timeout lets the main polling loop run instead. See ADR-008.",
-            "pollMinSeconds": 0.5,
-            "_comment_pollMinSeconds": "Starting sleep between main-loop iterations. Backs off up to pollMaxSeconds on consecutive idle ticks.",
-            "pollMaxSeconds": 2.0,
-            "_comment_pollMaxSeconds": "Upper bound for the main-loop sleep after exponential backoff."
+            "prefer_managed_browser": true,
+            "auto_install_managed_browser": true,
+            "use_persistent_profile": true,
+            "executable_path": "",
+            "reuse_interactive_window": true,
+            "keep_interactive_window_open": true,
+            "close_pdf_page_after_capture": true,
+            "deadline_seconds": 120.0,
+            "networkidle_timeout": 15.0,
+            "poll_min_seconds": 0.5,
+            "poll_max_seconds": 2.0,
+            "_comment_browser": "Fallback system browser type when the managed browser is unavailable. Supported value: chrome.",
+            "_comment_prefer_managed_browser": "Prefer the GRaDOS-managed Chrome for Testing under GRADOS_HOME/browser/chromium.",
+            "_comment_auto_install_managed_browser": "Reserved bootstrap policy flag; run `grados setup` to install/update the managed browser.",
+            "_comment_use_persistent_profile": "Use GRADOS_HOME/browser/profile as a persistent browser profile to reduce repeated publisher checks.",
+            "_comment_executable_path": "Optional absolute browser executable override used after the managed browser when prefer_managed_browser=true.",
+            "_comment_reuse_interactive_window": "Reuse the same visible browser session while the process stays alive.",
+            "_comment_keep_interactive_window_open": "Keep the visible browser open after fetch attempts so completed verification can help later requests.",
+            "_comment_close_pdf_page_after_capture": "Close captured PDF tabs while keeping the reusable browser window/profile alive.",
+            "_comment_deadline_seconds": "Maximum wall-clock seconds for the browser main polling loop per DOI.",
+            "_comment_networkidle_timeout": "Ceiling in seconds for wait_for_load_state('networkidle'). See ADR-008.",
+            "_comment_poll_min_seconds": "Starting sleep between browser main-loop iterations.",
+            "_comment_poll_max_seconds": "Upper bound for the browser main-loop sleep after exponential backoff."
         },
         "parsing": {
-            "markerTimeout": 120000,
-            "_comment_markerTimeout": "Maximum time in milliseconds to wait for the isolated Marker subprocess (default: 120000).",
-            "order": ["Docling", "Marker", "PyMuPDF"],
+            "order": [
+                "Docling",
+                "Marker",
+                "PyMuPDF"
+            ],
             "enabled": {
                 "Docling": true,
-                "Marker": true,
+                "Marker": false,
                 "PyMuPDF": true
-            }
+            },
+            "marker_timeout": 120000,
+            "_comment_marker_timeout": "Maximum time in milliseconds to wait for the isolated Marker subprocess."
         },
         "qa": {
-            "minCharacters": 1500
+            "min_characters": 1500
         },
-        "fetchConnectTimeout": 15,
-        "_comment_fetchConnectTimeout": "TCP connect timeout in seconds for OA / TDM / Sci-Hub HTTP calls.",
-        "fetchReadTimeout": 60,
-        "_comment_fetchReadTimeout": "Response read timeout in seconds for PDF and landing-page downloads. Keep generous: large PDFs and intermediate redirects can stream slowly."
+        "fetch_connect_timeout": 15.0,
+        "fetch_read_timeout": 60.0,
+        "_comment_fetch_connect_timeout": "TCP connect timeout in seconds for api / oa / scihub HTTP calls.",
+        "_comment_fetch_read_timeout": "Response read timeout in seconds for PDF and landing-page downloads. Keep generous: large PDFs and intermediate redirects can stream slowly."
     },
-    "_comment_indexing": "Semantic indexing defaults for the built-in ChromaDB retrieval pipeline. Changing model or chunking settings requires `grados reindex`.",
     "indexing": {
         "provider": "harrier",
-        "_comment_provider": "Default local embedding provider used for semantic indexing.",
-        "modelId": "microsoft/harrier-oss-v1-270m",
-        "_comment_modelId": "Stable local default for Phase A. Use Harrier 0.6B only when you have more memory headroom.",
-        "queryPromptName": "web_search_query",
-        "_comment_queryPromptName": "Harrier query-side prompt. Query/document encoding is intentionally asymmetric.",
-        "queryInstruction": "Given a scientific literature search query, retrieve relevant abstracts and passages that answer the query",
-        "maxLength": 4096,
-        "_comment_maxLength": "Recommended indexing length cap. Model max context is not the same as a safe local indexing length.",
-        "batchSize": 0,
-        "_comment_batchSize": "Embedding encode batch size. 0 means conservative auto-sizing by device.",
+        "model_id": "microsoft/harrier-oss-v1-270m",
+        "query_prompt_name": "web_search_query",
+        "query_instruction": "Given a scientific literature search query, retrieve relevant abstracts and passages that answer the query",
+        "max_length": 4096,
+        "batch_size": 0,
         "device": "auto",
-        "cacheDir": "",
-        "_comment_cacheDir": "Leave empty to use the default GRaDOS model cache under GRADOS_HOME/models/embedding.",
-        "chunkMinChars": 300,
-        "chunkMaxChars": 2000,
-        "chunkOverlapParagraphs": 1
-    },
-    "localRag": {
-        "enabled": true,
-        "_comment_enabled": "Set to false to skip local paper library steps in the agent workflow (Step 0 in SKILL.md). The mcp-local-rag server must still be separately registered in your MCP client.",
-        "_comment": "Reference config for mcp-local-rag. Current 0.10.x requires Node.js 20+. Install: npx -y mcp-local-rag. For direct local-rag:* calls to share the same index as GRaDOS search_saved_papers, keep BASE_DIR/DB_PATH/CACHE_DIR/MODEL_NAME aligned with the MCP client config shown in the README.",
-        "baseDirShouldMatch": "./markdown",
-        "_comment_baseDirShouldMatch": "Set mcp-local-rag's BASE_DIR env var to the same absolute path as extract.papersDirectory above.",
-        "dbPath": "./lancedb",
-        "_comment_dbPath": "Optional but recommended. Keep this aligned with the companion mcp-local-rag DB_PATH so GRaDOS search_saved_papers and direct local-rag tools see the same semantic index.",
-        "cacheDir": "./models",
-        "_comment_cacheDir": "Optional model cache directory for both mcp-local-rag and GRaDOS's built-in semantic saved-paper search.",
-        "modelName": "Xenova/all-MiniLM-L6-v2",
-        "_comment_modelName": "Optional embedding model for mcp-local-rag CLI usage. Changing it requires rebuilding the local RAG index.",
-        "command": "npx",
-        "_comment_command": "Optional CLI command GRaDOS should use when search_saved_papers attempts semantic retrieval through mcp-local-rag.",
-        "args": ["-y", "mcp-local-rag"],
-        "_comment_args": "Optional CLI args paired with localRag.command above."
-    },
-    "playwrightMcp": {
-        "_comment": "Optional companion: Playwright MCP provides LLM-friendly browser automation as a fallback when the built-in headless browser fails. Install: npm install -g @playwright/mcp. Register: claude mcp add playwright -- npx @playwright/mcp --headless",
-        "_comment_usage": "When extract_paper_full_text fails, the agent can use Playwright MCP tools (browser_navigate, browser_snapshot, browser_click) to adaptively navigate publisher pages and download PDFs, then call parse_pdf_file to parse them.",
-        "_comment_install": "See https://github.com/microsoft/playwright-mcp for setup instructions."
+        "cache_dir": "",
+        "chunk_min_chars": 300,
+        "chunk_max_chars": 2000,
+        "chunk_overlap_paragraphs": 1,
+        "_comment_provider": "Default local embedding provider used for semantic indexing.",
+        "_comment_model_id": "Default embedding model. Harrier 270M is the stable local default; use 0.6B only when you have headroom.",
+        "_comment_query_prompt_name": "Harrier query-side prompt name. Query/document encoding is intentionally asymmetric.",
+        "_comment_max_length": "Recommended indexing length cap. Model max context is not the same as a safe local indexing length.",
+        "_comment_batch_size": "Embedding encode batch size. Use 0 for conservative auto-sizing by device.",
+        "_comment_cache_dir": "Optional model cache override. Leave empty to use GRaDOS_HOME/models/embedding."
     },
     "zotero": {
-        "_comment": "Zotero Web API settings. Get your API key at https://www.zotero.org/settings/keys and your library ID at https://www.zotero.org/settings/keys (shown as 'Your userID for use in API calls').",
-        "libraryId": "",
-        "_comment_libraryId": "Your Zotero numeric user ID (not username). Found at zotero.org/settings/keys.",
-        "libraryType": "user",
-        "_comment_libraryType": "'user' for personal library, 'group' for shared group library.",
-        "defaultCollectionKey": "",
-        "_comment_defaultCollectionKey": "Optional. Zotero collection key to file papers into by default. Leave empty to save to library root. Get a key from your Zotero library URL."
+        "library_id": "",
+        "library_type": "user",
+        "default_collection_key": ""
     },
-    "_comment_apiKeys": "Plaintext API keys in config.json are only a one-time import path. GRaDOS migrates them to the OS keychain on the next run and then clears them from this file.",
-    "apiKeys": {
+    "api_keys": {
         "ELSEVIER_API_KEY": "",
         "PUBMED_API_KEY": "",
         "WOS_API_KEY": "",
@@ -160,15 +134,18 @@
         "LLAMAPARSE_API_KEY": "",
         "ZOTERO_API_KEY": ""
     },
-    "_comment_retryPolicy": "Unified retry knobs for external HTTP calls (ADR-008). Retries cover 429, 5xx, and transient network errors with exponential backoff + jitter.",
-    "retryPolicy": {
-        "maxAttempts": 3,
-        "_comment_maxAttempts": "Total attempts including the first call. 1 disables retries.",
-        "maxWait": 8,
-        "_comment_maxWait": "Upper bound in seconds on a single backoff wait between attempts.",
-        "respectRetryAfter": true,
-        "_comment_respectRetryAfter": "Honor Retry-After / X-RateLimit-Reset response headers when true."
+    "retry_policy": {
+        "max_attempts": 3,
+        "max_wait": 8.0,
+        "respect_retry_after": true,
+        "_comment_max_attempts": "Total attempts including the first call. 1 disables retries.",
+        "_comment_max_wait": "Upper bound in seconds on a single backoff wait between attempts.",
+        "_comment_respect_retry_after": "Honor Retry-After / X-RateLimit-Reset response headers when true."
     },
-    "_comment_academicEtiquetteEmail": "Email used for academic APIs (Crossref, Unpaywall) to identify requests and get into their polite pools. CHANGE THIS to your real institutional email.",
-    "academicEtiquetteEmail": "your-email@university.edu"
+    "academic_etiquette_email": "your-email@university.edu",
+    "_comment_debug": "Set to true to enable verbose benchmark logs.",
+    "_comment_academic_etiquette_email": "Email for academic APIs (Crossref, Unpaywall). Change to your real institutional email.",
+    "_comment_api_keys": "Plaintext API keys in config.json are a temporary import path only. GRaDOS will migrate them to the OS keychain on the next run and then clear them from this file.",
+    "_comment_indexing": "Semantic indexing defaults. Changing model_id or section-aware chunking settings requires `grados reindex`.",
+    "_comment_retry_policy": "Unified retry knobs for external HTTP calls (ADR-008). Retries cover 429, 5xx, network errors."
 }

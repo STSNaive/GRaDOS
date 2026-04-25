@@ -349,6 +349,8 @@ Full-text fetch priority:
 
 Legacy fetch-strategy aliases such as `TDM`, `OA`, `SciHub`, and `Headless` are still accepted while existing configs migrate.
 
+The browser strategy is a first-class path for institutional publisher access. If a publisher verification page blocks PDF capture, GRaDOS records a `challenge` with manual-resume metadata in `remote_metadata`; complete the verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true` to continue from the saved browser URL/profile instead of restarting at `api`.
+
 PDF parsing priority:
 
 ```json

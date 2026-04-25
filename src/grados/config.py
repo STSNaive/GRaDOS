@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
 
-from grados.secrets import SecretResolutionSummary, resolve_api_keys
+from grados.secrets import SecretResolutionSummary, iter_api_key_specs, resolve_api_keys
 
 __all__ = [
     "GRaDOSConfig",
@@ -336,6 +336,13 @@ class GRaDOSConfig(BaseModel):
 # ── Config loading ───────────────────────────────────────────────────────────
 
 
+def _preserve_literal_config_key(key: str) -> bool:
+    """Return true for config keys whose spelling is part of a public contract."""
+    if key in {spec.field_name for spec in iter_api_key_specs()}:
+        return True
+    return any(ch.isalpha() for ch in key) and key.upper() == key
+
+
 def _snake_to_camel_keys(data: Any) -> Any:
     """Recursively convert camelCase JSON keys to snake_case for Pydantic."""
     if isinstance(data, dict):
@@ -344,8 +351,8 @@ def _snake_to_camel_keys(data: Any) -> Any:
             # Strip _comment fields
             if k.startswith("_comment"):
                 continue
-            # Preserve all-caps keys such as API key env names and strategy IDs.
-            if any(ch.isalpha() for ch in k) and k.upper() == k:
+            # Preserve literal keys such as API-key env names and strategy IDs.
+            if _preserve_literal_config_key(k):
                 out[k] = _snake_to_camel_keys(v)
                 continue
             # camelCase → snake_case
@@ -429,6 +436,39 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "Response read timeout in seconds for PDF and landing-page downloads. "
         "Keep generous: large PDFs and intermediate redirects can stream slowly."
     )
+    data["extract"]["fetch_strategy"]["_comment_order"] = (
+        "PDF/full-text retrieval order. Browser is first-class for institutional publisher access."
+    )
+    data["extract"]["tdm"]["_comment_order"] = (
+        "Publisher API/TDM providers tried by the api fetch strategy."
+    )
+    data["extract"]["sci_hub"]["_comment_fallback_mirror"] = (
+        "Fallback Sci-Hub mirror used only when the scihub strategy is enabled."
+    )
+    data["extract"]["headless_browser"]["_comment_browser"] = (
+        "Fallback system browser type when the managed browser is unavailable. Supported value: chrome."
+    )
+    data["extract"]["headless_browser"]["_comment_prefer_managed_browser"] = (
+        "Prefer the GRaDOS-managed Chrome for Testing under GRADOS_HOME/browser/chromium."
+    )
+    data["extract"]["headless_browser"]["_comment_auto_install_managed_browser"] = (
+        "Reserved bootstrap policy flag; run `grados setup` to install/update the managed browser."
+    )
+    data["extract"]["headless_browser"]["_comment_use_persistent_profile"] = (
+        "Use GRADOS_HOME/browser/profile as a persistent browser profile to reduce repeated publisher checks."
+    )
+    data["extract"]["headless_browser"]["_comment_executable_path"] = (
+        "Optional absolute browser executable override used after the managed browser when prefer_managed_browser=true."
+    )
+    data["extract"]["headless_browser"]["_comment_reuse_interactive_window"] = (
+        "Reuse the same visible browser session while the process stays alive."
+    )
+    data["extract"]["headless_browser"]["_comment_keep_interactive_window_open"] = (
+        "Keep the visible browser open after fetch attempts so completed verification can help later requests."
+    )
+    data["extract"]["headless_browser"]["_comment_close_pdf_page_after_capture"] = (
+        "Close captured PDF tabs while keeping the reusable browser window/profile alive."
+    )
     data["extract"]["headless_browser"]["_comment_deadline_seconds"] = (
         "Maximum wall-clock seconds for the browser main polling loop per DOI."
     )
@@ -440,6 +480,9 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     )
     data["extract"]["headless_browser"]["_comment_poll_max_seconds"] = (
         "Upper bound for the browser main-loop sleep after exponential backoff."
+    )
+    data["extract"]["parsing"]["_comment_marker_timeout"] = (
+        "Maximum time in milliseconds to wait for the isolated Marker subprocess."
     )
     data["_comment_retry_policy"] = (
         "Unified retry knobs for external HTTP calls (ADR-008). Retries cover 429, 5xx, network errors."

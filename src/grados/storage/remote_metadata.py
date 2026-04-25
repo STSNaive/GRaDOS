@@ -49,6 +49,12 @@ class RemoteMetadataRecord(BaseModel):
     has_abstract: bool = False
     has_fulltext: bool = False
     fetch_status: str = "metadata_only"
+    fetch_via: str = ""
+    fetch_state: str = ""
+    fetch_host: str = ""
+    fetch_resume: str = ""
+    fetch_manual: bool = False
+    fetch_trace: str = ""
     first_seen_at: str = ""
     last_seen_at: str = ""
     updated_at: str = ""
@@ -194,6 +200,12 @@ def _coerce_remote_record(record: Any) -> RemoteMetadataRecord | None:
                 "has_abstract": bool(payload.get("has_abstract", bool(abstract))),
                 "has_fulltext": bool(payload.get("has_fulltext", False)),
                 "fetch_status": str(payload.get("fetch_status", "metadata_only") or "metadata_only"),
+                "fetch_via": str(payload.get("fetch_via", "") or ""),
+                "fetch_state": str(payload.get("fetch_state", "") or ""),
+                "fetch_host": str(payload.get("fetch_host", "") or ""),
+                "fetch_resume": str(payload.get("fetch_resume", "") or ""),
+                "fetch_manual": bool(payload.get("fetch_manual", False)),
+                "fetch_trace": str(payload.get("fetch_trace", "") or ""),
                 "first_seen_at": str(payload.get("first_seen_at", "") or ""),
                 "last_seen_at": str(payload.get("last_seen_at", "") or ""),
                 "updated_at": str(payload.get("updated_at", "") or ""),
@@ -219,6 +231,12 @@ def _record_from_chroma_row(metadata: dict[str, Any], document: str = "") -> Rem
         "has_abstract": bool(metadata.get("has_abstract", False)),
         "has_fulltext": bool(metadata.get("has_fulltext", False)),
         "fetch_status": str(metadata.get("fetch_status", "metadata_only") or "metadata_only"),
+        "fetch_via": str(metadata.get("fetch_via", "") or ""),
+        "fetch_state": str(metadata.get("fetch_state", "") or ""),
+        "fetch_host": str(metadata.get("fetch_host", "") or ""),
+        "fetch_resume": str(metadata.get("fetch_resume", "") or ""),
+        "fetch_manual": bool(metadata.get("fetch_manual", False)),
+        "fetch_trace": str(metadata.get("fetch_trace", "") or ""),
         "first_seen_at": str(metadata.get("first_seen_at", "") or ""),
         "last_seen_at": str(metadata.get("last_seen_at", "") or ""),
         "updated_at": str(metadata.get("updated_at", "") or ""),
@@ -235,6 +253,32 @@ def _record_from_chroma_row(metadata: dict[str, Any], document: str = "") -> Rem
     return record
 
 
+def _deserialize_fetch_trace(raw: str) -> list[Any]:
+    if not raw:
+        return []
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return loaded if isinstance(loaded, list) else []
+
+
+def _merge_fetch_trace(existing: str, incoming: str) -> str:
+    incoming_items = _deserialize_fetch_trace(incoming)
+    if not incoming_items:
+        return existing
+
+    merged: list[Any] = []
+    seen: set[str] = set()
+    for item in [*_deserialize_fetch_trace(existing), *incoming_items]:
+        key = json.dumps(item, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return json.dumps(merged, sort_keys=True, ensure_ascii=False)
+
+
 def _merge_records(existing: RemoteMetadataRecord | None, incoming: RemoteMetadataRecord) -> RemoteMetadataRecord:
     now = _now_iso()
     if existing is None:
@@ -248,6 +292,7 @@ def _merge_records(existing: RemoteMetadataRecord | None, incoming: RemoteMetada
     existing_authors = _deserialize_authors(existing.authors)
     incoming_authors = _deserialize_authors(incoming.authors)
     merged_abstract = incoming.abstract if len(incoming.abstract) >= len(existing.abstract) else existing.abstract
+    incoming_succeeded = incoming.has_fulltext or incoming.fetch_status == "fulltext"
     merged = existing.model_copy(update={
         "doi": incoming.doi or existing.doi,
         "safe_doi": incoming.safe_doi or existing.safe_doi,
@@ -261,6 +306,12 @@ def _merge_records(existing: RemoteMetadataRecord | None, incoming: RemoteMetada
         "has_abstract": existing.has_abstract or incoming.has_abstract or bool(merged_abstract),
         "has_fulltext": existing.has_fulltext or incoming.has_fulltext,
         "fetch_status": _merge_fetch_status(existing.fetch_status, incoming.fetch_status),
+        "fetch_via": incoming.fetch_via or existing.fetch_via,
+        "fetch_state": incoming.fetch_state or existing.fetch_state,
+        "fetch_host": incoming.fetch_host or existing.fetch_host,
+        "fetch_resume": "" if incoming_succeeded else incoming.fetch_resume or existing.fetch_resume,
+        "fetch_manual": False if incoming_succeeded else incoming.fetch_manual or existing.fetch_manual,
+        "fetch_trace": _merge_fetch_trace(existing.fetch_trace, incoming.fetch_trace),
         "first_seen_at": existing.first_seen_at or incoming.first_seen_at or now,
         "last_seen_at": now,
         "updated_at": now,
@@ -411,6 +462,12 @@ def record_remote_fetch_result(
     source: str = "",
     title: str = "",
     metadata: PublisherMetadata | None = None,
+    fetch_via: str = "",
+    fetch_state: str = "",
+    fetch_host: str = "",
+    fetch_resume: dict[str, str] | None = None,
+    fetch_manual: bool = False,
+    fetch_trace: list[dict[str, Any]] | None = None,
     indexing_config: IndexingConfig | None = None,
 ) -> int:
     """Upsert one DOI after a fetch/materialize attempt."""
@@ -430,5 +487,15 @@ def record_remote_fetch_result(
         "source": source.strip() or payload.get("source", ""),
         "has_fulltext": has_fulltext,
         "fetch_status": fetch_status,
+        "fetch_via": fetch_via.strip(),
+        "fetch_state": fetch_state.strip(),
+        "fetch_host": fetch_host.strip(),
+        "fetch_resume": json.dumps(fetch_resume, sort_keys=True, ensure_ascii=False) if fetch_resume else "",
+        "fetch_manual": bool(fetch_manual),
+        "fetch_trace": (
+            json.dumps(fetch_trace, sort_keys=True, ensure_ascii=False)
+            if fetch_trace is not None
+            else ""
+        ),
     })
     return upsert_remote_metadata(chroma_dir, [payload], indexing_config=indexing_config)

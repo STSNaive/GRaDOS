@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from grados.publisher.common import safe_doi_filename
 from grados.storage.chunking import split_paragraphs, strip_frontmatter
@@ -18,6 +18,9 @@ from grados.storage.frontmatter import (
     read_frontmatter_metadata,
     read_frontmatter_metadata_from_file,
 )
+
+if TYPE_CHECKING:
+    from grados.config import IndexingConfig
 
 # ── Save / Read ──────────────────────────────────────────────────────────────
 
@@ -51,6 +54,7 @@ def save_paper_markdown(
     year: str = "",
     journal: str = "",
     write_mirror: bool = True,
+    indexing_config: IndexingConfig | None = None,
 ) -> PaperSavedSummary:
     """Save parsed paper as markdown with YAML frontmatter.
 
@@ -86,25 +90,24 @@ def save_paper_markdown(
         try:
             from grados.storage.vector import index_paper
 
-            index_paper(
-                chroma_dir,
-                doi,
-                safe,
-                title,
-                markdown,
-                source=source,
-                fetch_outcome=fetch_outcome,
-                authors=authors,
-                year=year,
-                journal=journal,
-                section_headings=headings[:20],
-                assets_manifest_path=normalized_frontmatter.get("assets_manifest_path", ""),
-                corpus=normalized_frontmatter["corpus"],
-                tier=normalized_frontmatter["tier"],
-                workset_id=normalized_frontmatter["workset_id"],
-                promoted_at=normalized_frontmatter["promoted_at"],
-                promote_reason=normalized_frontmatter["promote_reason"],
-            )
+            index_kwargs: dict[str, Any] = {
+                "source": source,
+                "fetch_outcome": fetch_outcome,
+                "authors": authors,
+                "year": year,
+                "journal": journal,
+                "section_headings": headings[:20],
+                "assets_manifest_path": normalized_frontmatter.get("assets_manifest_path", ""),
+                "corpus": normalized_frontmatter["corpus"],
+                "tier": normalized_frontmatter["tier"],
+                "workset_id": normalized_frontmatter["workset_id"],
+                "promoted_at": normalized_frontmatter["promoted_at"],
+                "promote_reason": normalized_frontmatter["promote_reason"],
+            }
+            if indexing_config is not None:
+                index_kwargs["indexing_config"] = indexing_config
+
+            index_paper(chroma_dir, doi, safe, title, markdown, **index_kwargs)
             index_status = "indexed"
         except Exception as exc:
             message = f"{exc.__class__.__name__}: {exc}" if str(exc).strip() else exc.__class__.__name__

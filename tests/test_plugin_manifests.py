@@ -56,3 +56,9 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
             (bundled_skill_root / relative_path).read_text(encoding="utf-8")
             == (canonical_skill_root / relative_path).read_text(encoding="utf-8")
         )
+
+    tools_reference = (canonical_skill_root / "references" / "tools.md").read_text(encoding="utf-8")
+    assert "api -> browser -> oa -> scihub" in tools_reference
+    assert "Docling -> Marker -> PyMuPDF" in tools_reference
+    assert "TDM -> OA -> Sci-Hub -> Headless" not in tools_reference
+    assert "PyMuPDF -> Marker -> Docling" not in tools_reference

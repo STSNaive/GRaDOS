@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from grados.config import GRaDOSPaths
+from grados.config import GRaDOSPaths, IndexingConfig
 from grados.extract.parse import ParsePipelineResult
 from grados.workflows.library import (
     LibraryDocumentArtifact,
@@ -53,7 +53,12 @@ def test_review_and_persist_library_document_applies_shared_contracts(
 
     import grados.storage.vector as vector
 
+    indexing_config = IndexingConfig(chunk_min_chars=25, chunk_max_chars=90)
+    captured: dict[str, object] = {}
+
     def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = args
+        captured["indexing_config"] = kwargs.get("indexing_config")
         raise RuntimeError("embedding backend unavailable")
 
     monkeypatch.setattr(vector, "index_paper", fake_index_paper)
@@ -82,6 +87,7 @@ def test_review_and_persist_library_document_applies_shared_contracts(
         extra_frontmatter={"source_pdf_hash": "abc123"},
         asset_hints=[{"kind": "figure_image", "url": "https://example.com/fig1.png"}],
         index_warning_message="Search index refresh failed — paper saved to papers/ only. Error: {index_error}",
+        indexing_config=indexing_config,
     )
 
     assert persisted.qa_passed is False
@@ -96,3 +102,4 @@ def test_review_and_persist_library_document_applies_shared_contracts(
         "Search index refresh failed — paper saved to papers/ only. Error: RuntimeError: embedding backend unavailable",
     ]
     assert persisted.debug == ["docling:ok"]
+    assert captured["indexing_config"] is indexing_config

@@ -120,6 +120,49 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     assert len(queried) == 1
     assert queried[0].doi == "10.1234/demo"
 
+    challenged = record_remote_fetch_result(
+        tmp_path / "chroma",
+        doi="10.1234/demo",
+        fetch_status="challenge",
+        has_fulltext=False,
+        source="Headless Browser",
+        fetch_via="browser",
+        fetch_state="challenge",
+        fetch_host="www.sciencedirect.com",
+        fetch_resume={
+            "kind": "browser_profile",
+            "doi": "10.1234/demo",
+            "host": "www.sciencedirect.com",
+            "url": "https://www.sciencedirect.com/science/article/pii/S1234567890",
+            "profile_dir": "/tmp/grados/browser/profile",
+        },
+        fetch_manual=True,
+        fetch_trace=[
+            {
+                "via": "browser",
+                "state": "challenge",
+                "host": "www.sciencedirect.com",
+                "time": "2026-04-25T00:00:00+00:00",
+                "hash": "abc123",
+                "manual": True,
+                "resume": {"kind": "browser_profile"},
+            }
+        ],
+    )
+
+    assert challenged == 1
+
+    challenge_record = get_remote_metadata_by_doi(tmp_path / "chroma", "10.1234/demo")
+
+    assert challenge_record is not None
+    assert challenge_record.fetch_status == "challenge"
+    assert challenge_record.fetch_via == "browser"
+    assert challenge_record.fetch_state == "challenge"
+    assert challenge_record.fetch_host == "www.sciencedirect.com"
+    assert challenge_record.fetch_manual is True
+    assert '"kind": "browser_profile"' in challenge_record.fetch_resume
+    assert '"state": "challenge"' in challenge_record.fetch_trace
+
     updated = record_remote_fetch_result(
         tmp_path / "chroma",
         doi="10.1234/demo",
@@ -134,6 +177,17 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
             journal="Composite Structures",
             publisher="Elsevier",
         ),
+        fetch_trace=[
+            {
+                "via": "browser",
+                "state": "ok",
+                "host": "www.sciencedirect.com",
+                "time": "2026-04-25T00:01:00+00:00",
+                "hash": "def456",
+                "manual": False,
+                "resume": {},
+            }
+        ],
     )
 
     assert updated == 1
@@ -145,3 +199,7 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     assert refreshed.has_fulltext is True
     assert refreshed.source == "Elsevier TDM"
     assert refreshed.journal == "Composite Structures"
+    assert refreshed.fetch_manual is False
+    assert refreshed.fetch_resume == ""
+    assert '"state": "challenge"' in refreshed.fetch_trace
+    assert '"state": "ok"' in refreshed.fetch_trace

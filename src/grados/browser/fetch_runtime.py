@@ -155,15 +155,17 @@ async def navigate_to_doi_target(
     root_page: Any,
     *,
     doi: str,
+    target_url: str = "",
     state: BrowserFetchState,
     networkidle_timeout_ms: int,
     logger: logging.Logger,
 ) -> None:
     """Navigate to the DOI landing page before the main polling loop."""
+    destination = target_url or f"https://doi.org/{doi}"
     try:
-        await root_page.goto(f"https://doi.org/{doi}", wait_until="domcontentloaded", timeout=30000)
+        await root_page.goto(destination, wait_until="domcontentloaded", timeout=30000)
     except Exception as exc:
-        state.report_warning(f"Browser goto failed for DOI {doi}: {exc.__class__.__name__}: {exc}")
+        state.report_warning(f"Browser goto failed for {destination}: {exc.__class__.__name__}: {exc}")
 
     try:
         await root_page.wait_for_load_state("networkidle", timeout=networkidle_timeout_ms)

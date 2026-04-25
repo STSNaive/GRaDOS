@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 from grados._retry import (
     current_browser_deadline_seconds,
@@ -49,6 +50,8 @@ class BrowserFetchResult:
     via: str = "browser"
     state: str = ""
     manual: bool = False
+    host: str = ""
+    resume: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -57,10 +60,42 @@ def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) ->
     return _next_browser_poll_delay(current, poll_min, poll_max)
 
 
+def _page_url(page: object) -> str:
+    try:
+        return str(getattr(page, "url", "") or "")
+    except Exception:
+        return ""
+
+
+def _host_from_url(url: str) -> str:
+    return urlparse(url).netloc.lower()
+
+
+def _browser_resume_payload(
+    *,
+    doi: str,
+    url: str,
+    host: str,
+    paths: GRaDOSPaths,
+    config: HeadlessBrowserConfig,
+) -> dict[str, str]:
+    payload = {
+        "kind": "browser_profile",
+        "doi": doi,
+        "url": url,
+        "host": host,
+        "action": "complete_publisher_verification_then_retry",
+    }
+    if config.use_persistent_profile:
+        payload["profile_dir"] = str(paths.browser_profile)
+    return payload
+
+
 async def fetch_with_browser(
     doi: str,
     config: HeadlessBrowserConfig,
     paths: GRaDOSPaths,
+    resume: dict[str, str] | None = None,
 ) -> BrowserFetchResult:
     """Fetch a paper PDF using browser automation."""
     runtime = None
@@ -91,6 +126,7 @@ async def fetch_with_browser(
         await navigate_to_doi_target(
             runtime.root_page,
             doi=doi,
+            target_url=(resume or {}).get("url", ""),
             state=state,
             networkidle_timeout_ms=current_browser_networkidle_timeout_ms(),
             logger=logger,
@@ -125,12 +161,27 @@ async def fetch_with_browser(
 
         await finalize_browser_no_capture(runtime)
         outcome = "publisher_challenge" if state.challenge_seen else "timed_out"
+        final_url = state.final_url or _page_url(runtime.root_page)
+        host = _host_from_url(final_url)
+        resume = (
+            _browser_resume_payload(
+                doi=doi,
+                url=final_url,
+                host=host,
+                paths=paths,
+                config=config,
+            )
+            if state.challenge_seen
+            else {}
+        )
         return BrowserFetchResult(
             pdf_buffer=None,
             source=f"Headless Browser ({runtime.browser_label})",
             outcome=outcome,
             state="challenge" if state.challenge_seen else "timeout",
             manual=state.challenge_seen,
+            host=host,
+            resume=resume,
             warnings=state.warnings + [f"Browser automation: {outcome}"],
         )
     except Exception as exc:

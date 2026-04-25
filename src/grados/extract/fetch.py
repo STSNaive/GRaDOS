@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
@@ -33,6 +36,10 @@ class FetchResult:
     text_format: str = ""  # markdown | text | html | xml
     metadata: PublisherMetadata | None = None
     asset_hints: list[dict[str, str]] = field(default_factory=list)
+    manual: bool = False
+    host: str = ""
+    resume: dict[str, str] = field(default_factory=dict)
+    trace: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -47,6 +54,7 @@ class FetchStrategyContext:
     sci_hub_config: dict[str, Any]
     headless_config: HeadlessBrowserConfig | None
     paths: GRaDOSPaths | None
+    browser_resume: dict[str, str] | None
 
 
 @dataclass(frozen=True)
@@ -117,7 +125,12 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
 
     from grados.browser.generic import fetch_with_browser
 
-    browser_result = await fetch_with_browser(context.doi, context.headless_config, context.paths)
+    browser_result = await fetch_with_browser(
+        context.doi,
+        context.headless_config,
+        context.paths,
+        resume=context.browser_resume,
+    )
     if browser_result.pdf_buffer:
         return FetchResult(
             pdf_buffer=browser_result.pdf_buffer,
@@ -125,6 +138,9 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
             source=browser_result.source,
             via=browser_result.via,
             state=browser_result.state,
+            manual=browser_result.manual,
+            host=browser_result.host,
+            resume=browser_result.resume,
             warnings=browser_result.warnings,
         )
     return FetchResult(
@@ -132,6 +148,9 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
         source=browser_result.source,
         via=browser_result.via,
         state=browser_result.state,
+        manual=browser_result.manual,
+        host=browser_result.host,
+        resume=browser_result.resume,
         warnings=browser_result.warnings,
     )
 
@@ -257,6 +276,16 @@ def build_fetch_strategies(order: list[str] | None = None) -> list[FetchStrategy
     return strategies
 
 
+def _resume_fetch_strategies(strategies: list[FetchStrategy]) -> list[FetchStrategy]:
+    for index, strategy in enumerate(strategies):
+        if strategy.name == "browser":
+            return strategies[index:]
+    browser = FETCH_STRATEGY_REGISTRY.get("browser")
+    if browser is None:
+        return strategies
+    return [browser, *strategies]
+
+
 def build_tdm_providers(order: list[str] | None = None) -> list[TDMProvider]:
     resolved_order = order or ["Elsevier", "Springer"]
     return [TDM_PROVIDER_REGISTRY[name] for name in resolved_order if name in TDM_PROVIDER_REGISTRY]
@@ -336,6 +365,25 @@ def _format_fetch_warning(prefix: str, exc: Exception) -> str:
     return f"{prefix}: {exc.__class__.__name__}"
 
 
+def _trace_fetch_result(doi: str, result: FetchResult) -> dict[str, Any]:
+    payload = {
+        "via": result.via,
+        "state": result.state,
+        "outcome": result.outcome,
+        "host": result.host,
+        "manual": result.manual,
+        "resume": result.resume,
+    }
+    digest = hashlib.sha1(
+        json.dumps({"doi": doi, **payload}, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
+    return {
+        **payload,
+        "time": datetime.now(UTC).isoformat(),
+        "hash": digest,
+    }
+
+
 async def fetch_paper(
     doi: str,
     api_keys: dict[str, str],
@@ -347,11 +395,15 @@ async def fetch_paper(
     sci_hub_config: dict[str, Any] | None = None,
     headless_config: HeadlessBrowserConfig | None = None,
     paths: GRaDOSPaths | None = None,
+    browser_resume: dict[str, str] | None = None,
 ) -> FetchResult:
     """Execute the fetch waterfall for a DOI."""
     strategies = build_fetch_strategies(fetch_order)
+    if browser_resume is not None:
+        strategies = _resume_fetch_strategies(strategies)
     enabled = _normalize_fetch_enabled(fetch_enabled) or {strategy.name: True for strategy in strategies}
     warnings: list[str] = []
+    trace: list[dict[str, Any]] = []
     partial_result: FetchResult | None = None
     failure_result: FetchResult | None = None
 
@@ -366,6 +418,7 @@ async def fetch_paper(
             sci_hub_config=sci_hub_config or {},
             headless_config=headless_config,
             paths=paths,
+            browser_resume=browser_resume,
         )
 
         for strategy in strategies:
@@ -374,8 +427,10 @@ async def fetch_paper(
 
             result = await strategy.run(context)
             warnings.extend(result.warnings)
+            trace.extend(result.trace or [_trace_fetch_result(doi, result)])
             if _is_fetch_success(result):
                 result.warnings = warnings.copy()
+                result.trace = trace.copy()
                 return result
             if _is_fetch_partial(result):
                 partial_result = _prefer_partial_result(partial_result, result)
@@ -384,12 +439,14 @@ async def fetch_paper(
 
     if partial_result is not None:
         partial_result.warnings = warnings.copy()
+        partial_result.trace = trace.copy()
         return partial_result
     if failure_result is not None:
         failure_result.warnings = warnings.copy()
+        failure_result.trace = trace.copy()
         return failure_result
 
-    return FetchResult(outcome="failed", state="error", warnings=warnings)
+    return FetchResult(outcome="failed", state="error", trace=trace, warnings=warnings)
 
 
 # ── TDM ──────────────────────────────────────────────────────────────────────

@@ -172,13 +172,22 @@ def test_fetch_paper_preserves_browser_challenge_in_final_result(monkeypatch, tm
     async def fake_fetch_oa(*args, **kwargs):
         return FetchResult(outcome="failed", via="oa", state="error", warnings=["oa miss"])
 
-    async def fake_fetch_with_browser(doi, config, paths):  # noqa: ANN001
-        _ = (doi, config, paths)
+    async def fake_fetch_with_browser(doi, config, paths, resume=None):  # noqa: ANN001
+        _ = (doi, config, paths, resume)
         return BrowserFetchResult(
             source="Headless Browser",
             outcome="publisher_challenge",
             state="challenge",
             manual=True,
+            host="www.sciencedirect.com",
+            resume={
+                "kind": "browser_profile",
+                "doi": "10.1234/demo",
+                "host": "www.sciencedirect.com",
+                "url": "https://www.sciencedirect.com/science/article/pii/S1234567890",
+                "profile_dir": str(paths.browser_profile),
+                "action": "complete_publisher_verification_then_retry",
+            },
             warnings=["Browser automation: publisher_challenge"],
         )
 
@@ -200,6 +209,10 @@ def test_fetch_paper_preserves_browser_challenge_in_final_result(monkeypatch, tm
     assert result.outcome == "publisher_challenge"
     assert result.via == "browser"
     assert result.state == "challenge"
+    assert result.manual is True
+    assert result.host == "www.sciencedirect.com"
+    assert result.resume["kind"] == "browser_profile"
+    assert result.resume["profile_dir"].endswith("browser/profile")
     assert result.warnings == ["api miss", "Browser automation: publisher_challenge", "oa miss"]
 
 
@@ -221,8 +234,8 @@ def test_fetch_paper_stops_after_browser_success(monkeypatch, tmp_path) -> None:
         calls.append("scihub")
         return FetchResult(outcome="failed", via="scihub", state="error")
 
-    async def fake_fetch_with_browser(doi, config, paths):  # noqa: ANN001
-        _ = (doi, config, paths)
+    async def fake_fetch_with_browser(doi, config, paths, resume=None):  # noqa: ANN001
+        _ = (doi, config, paths, resume)
         calls.append("browser")
         return BrowserFetchResult(
             pdf_buffer=b"%PDF-1.4\n%stub",
@@ -250,6 +263,59 @@ def test_fetch_paper_stops_after_browser_success(monkeypatch, tmp_path) -> None:
     assert result.outcome == "pdf_obtained"
     assert result.via == "browser"
     assert result.state == "ok"
+
+
+def test_fetch_paper_resume_starts_at_browser_and_passes_resume(monkeypatch, tmp_path) -> None:
+    import grados.extract.fetch as fetch_module
+    from grados.browser.generic import BrowserFetchResult
+
+    calls: list[str] = []
+    resume = {
+        "kind": "browser_profile",
+        "doi": "10.1234/demo",
+        "url": "https://www.sciencedirect.com/science/article/pii/S1234567890",
+        "host": "www.sciencedirect.com",
+    }
+
+    async def fake_fetch_tdm(*args, **kwargs):
+        _ = (args, kwargs)
+        raise AssertionError("resume should not rerun api")
+
+    async def fake_fetch_with_browser(doi, config, paths, resume=None):  # noqa: ANN001
+        _ = (doi, config, paths)
+        calls.append("browser")
+        assert resume == {
+            "kind": "browser_profile",
+            "doi": "10.1234/demo",
+            "url": "https://www.sciencedirect.com/science/article/pii/S1234567890",
+            "host": "www.sciencedirect.com",
+        }
+        return BrowserFetchResult(
+            pdf_buffer=b"%PDF-1.4\n%stub",
+            source="Headless Browser",
+            outcome="pdf_obtained",
+            state="ok",
+        )
+
+    monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
+    monkeypatch.setattr("grados.browser.generic.fetch_with_browser", fake_fetch_with_browser)
+
+    result = asyncio.run(
+        fetch_module.fetch_paper(
+            doi="10.1234/demo",
+            api_keys={},
+            etiquette_email="test@example.com",
+            headless_config=HeadlessBrowserConfig(),
+            paths=GRaDOSPaths(tmp_path / "grados-home"),
+            browser_resume=resume,
+        )
+    )
+
+    assert calls == ["browser"]
+    assert result.outcome == "pdf_obtained"
+    assert result.via == "browser"
+    assert result.trace[0]["via"] == "browser"
+    assert result.trace[0]["state"] == "ok"
 
 
 def test_fetch_oa_surfaces_warning_when_pdf_download_fails() -> None:

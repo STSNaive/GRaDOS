@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
@@ -104,6 +105,47 @@ def _append_remote_metadata_warning(result: str, warning: str | None) -> str:
     return result + f"\n\n### Remote Metadata\n- {warning}"
 
 
+def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
+    manual = bool(getattr(fetch_result, "manual", False))
+    resume = getattr(fetch_result, "resume", {}) or {}
+    if not manual or not isinstance(resume, dict) or not resume:
+        return result
+
+    host = str(getattr(fetch_result, "host", "") or resume.get("host", "") or "")
+    url = str(resume.get("url", "") or "")
+    profile_dir = str(resume.get("profile_dir", "") or "")
+    action = str(resume.get("action", "complete_publisher_verification_then_retry") or "")
+    result += "\n\n### Manual Browser Resume\n"
+    if host:
+        result += f"- **Host:** {host}\n"
+    if url:
+        result += f"- **URL:** {url}\n"
+    if profile_dir:
+        result += f"- **Profile:** {profile_dir}\n"
+    if action:
+        result += f"- **Action:** {action}\n"
+    result += "- **Retry:** call `extract_paper_full_text` with `resume_browser=true` after verification.\n"
+    return result.rstrip()
+
+
+def _load_browser_resume(chroma_dir: Path, doi: str) -> dict[str, str] | None:
+    from grados.storage.remote_metadata import get_remote_metadata_by_doi
+
+    record = get_remote_metadata_by_doi(chroma_dir, doi)
+    if record is None or record.fetch_status != "challenge" or not record.fetch_manual:
+        return None
+    if not record.fetch_resume:
+        return None
+    try:
+        loaded = json.loads(record.fetch_resume)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    resume = {str(key): str(value) for key, value in loaded.items() if str(value)}
+    return resume or None
+
+
 def _infer_remote_fetch_status(outcome: str, state: str, warnings: list[str]) -> str:
     if outcome == "metadata_only":
         return "metadata_only"
@@ -134,7 +176,13 @@ def _record_remote_metadata_update(
     source: str,
     title: str,
     metadata: PublisherMetadata | None,
-    indexing_config: object | None,
+    fetch_via: str = "",
+    fetch_state: str = "",
+    fetch_host: str = "",
+    fetch_resume: dict[str, str] | None = None,
+    fetch_manual: bool = False,
+    fetch_trace: list[dict[str, object]] | None = None,
+    indexing_config: object | None = None,
 ) -> str | None:
     from grados.storage.remote_metadata import record_remote_fetch_result
 
@@ -147,6 +195,12 @@ def _record_remote_metadata_update(
             source=source,
             title=title,
             metadata=metadata,
+            fetch_via=fetch_via,
+            fetch_state=fetch_state,
+            fetch_host=fetch_host,
+            fetch_resume=fetch_resume,
+            fetch_manual=fetch_manual,
+            fetch_trace=fetch_trace,
             indexing_config=indexing_config,
         )
     except Exception as exc:
@@ -193,6 +247,15 @@ async def extract_paper_full_text(
         str | None,
         Field(description="Optional title hint used for QA validation and save metadata only."),
     ] = None,
+    resume_browser: Annotated[
+        bool,
+        Field(
+            description=(
+                "Resume a previous browser challenge for this DOI. When true, GRaDOS starts at the browser "
+                "strategy and uses the saved publisher URL/profile instead of rerunning the full api-first chain."
+            )
+        ),
+    ] = False,
 ) -> str:
     """Fetch, parse, and save one paper's canonical full text by DOI."""
     from grados.extract.fetch import fetch_paper
@@ -202,6 +265,9 @@ async def extract_paper_full_text(
     paths, config = get_paths_and_config()
     indexing_config = getattr(config, "indexing", None)
     api_keys = {k: v for k, v in config.api_keys.model_dump().items() if v}
+    browser_resume = _load_browser_resume(paths.database_chroma, doi) if resume_browser else None
+    if resume_browser and browser_resume is None:
+        browser_resume = {}
 
     fetch_result = await fetch_paper(
         doi=doi,
@@ -214,6 +280,7 @@ async def extract_paper_full_text(
         sci_hub_config=config.extract.sci_hub.model_dump(),
         headless_config=config.extract.headless_browser,
         paths=paths,
+        browser_resume=browser_resume if resume_browser else None,
     )
 
     metadata = normalize_publisher_metadata(fetch_result.metadata)
@@ -229,6 +296,12 @@ async def extract_paper_full_text(
             source=fetch_result.source,
             title=expected_title or (metadata.title if metadata is not None else ""),
             metadata=metadata,
+            fetch_via=fetch_result.via,
+            fetch_state=fetch_result.state,
+            fetch_host=fetch_result.host,
+            fetch_resume=fetch_result.resume,
+            fetch_manual=fetch_result.manual,
+            fetch_trace=fetch_result.trace,
             indexing_config=indexing_config,
         )
         return _append_remote_metadata_warning(
@@ -251,10 +324,20 @@ async def extract_paper_full_text(
             source=fetch_result.source,
             title=expected_title or (metadata.title if metadata is not None else ""),
             metadata=metadata,
+            fetch_via=fetch_result.via,
+            fetch_state=fetch_result.state,
+            fetch_host=fetch_result.host,
+            fetch_resume=fetch_result.resume,
+            fetch_manual=fetch_result.manual,
+            fetch_trace=fetch_result.trace,
             indexing_config=indexing_config,
         )
-        return _append_remote_metadata_warning(
+        failed_result = _append_manual_resume_receipt(
             f"Failed to fetch paper: {doi}\nWarnings: " + "; ".join(fetch_result.warnings or []),
+            fetch_result,
+        )
+        return _append_remote_metadata_warning(
+            failed_result,
             remote_warning,
         )
 
@@ -275,6 +358,12 @@ async def extract_paper_full_text(
                 source=fetch_result.source,
                 title=expected_title or (metadata.title if metadata is not None else ""),
                 metadata=metadata,
+                fetch_via=fetch_result.via,
+                fetch_state=fetch_result.state,
+                fetch_host=fetch_result.host,
+                fetch_resume=fetch_result.resume,
+                fetch_manual=fetch_result.manual,
+                fetch_trace=fetch_result.trace,
                 indexing_config=indexing_config,
             )
             return _append_remote_metadata_warning(
@@ -316,6 +405,12 @@ async def extract_paper_full_text(
                 source=fetch_result.source,
                 title=expected_title or (metadata.title if metadata is not None else ""),
                 metadata=metadata,
+                fetch_via=fetch_result.via,
+                fetch_state=fetch_result.state,
+                fetch_host=fetch_result.host,
+                fetch_resume=fetch_result.resume,
+                fetch_manual=fetch_result.manual,
+                fetch_trace=fetch_result.trace,
                 indexing_config=indexing_config,
             )
             return _append_remote_metadata_warning(result, remote_warning)
@@ -364,6 +459,7 @@ async def extract_paper_full_text(
             "Search index refresh failed — canonical markdown was saved to papers/ only. "
             "Error: {index_error}"
         ),
+        indexing_config=indexing_config,
     )
     remote_warning = _record_remote_metadata_update(
         chroma_dir=paths.database_chroma,
@@ -373,6 +469,12 @@ async def extract_paper_full_text(
         source=fetch_result.source,
         title=title,
         metadata=metadata,
+        fetch_via=fetch_result.via,
+        fetch_state=fetch_result.state,
+        fetch_host=fetch_result.host,
+        fetch_resume=fetch_result.resume,
+        fetch_manual=fetch_result.manual,
+        fetch_trace=fetch_result.trace,
         indexing_config=indexing_config,
     )
 
@@ -620,6 +722,7 @@ async def parse_pdf_file(
                 "Search index refresh failed — canonical markdown was saved to papers/ only. "
                 "Error: {index_error}"
             ),
+            indexing_config=config.indexing,
         )
         result = (
             "## PDF Parsed & Saved with Partial Success\n\n"

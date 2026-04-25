@@ -174,6 +174,7 @@ async def import_local_pdf_library(
             },
             copied_pdf_path=copied_pdf_path,
             index_warning_message="Search index refresh failed — paper saved to papers/ only. Error: {index_error}",
+            indexing_config=config.indexing,
         )
         existing_safe_dois.add(persisted.summary.safe_doi)
         if persisted.index_warning_added:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from grados.config import IndexingConfig
 from grados.storage.chunking import extract_reference_dois, split_paragraphs
 from grados.storage.frontmatter import read_frontmatter_metadata
 from grados.storage.papers import (
@@ -129,6 +130,33 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
 
     pdf_path = save_pdf("10.1234/demo", b"%PDF-1.4\n%stub", downloads_dir)
     assert pdf_path.is_file()
+
+
+def test_save_paper_markdown_passes_indexing_config_to_indexer(tmp_path: Path, monkeypatch) -> None:
+    papers_dir = tmp_path / "papers"
+    chroma_dir = tmp_path / "database" / "chroma"
+    indexing_config = IndexingConfig(chunk_min_chars=20, chunk_max_chars=80)
+    captured: dict[str, object] = {}
+
+    import grados.storage.vector as vector
+
+    def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = args
+        captured["indexing_config"] = kwargs.get("indexing_config")
+        return 1
+
+    monkeypatch.setattr(vector, "index_paper", fake_index_paper)
+
+    save_paper_markdown(
+        doi="10.1234/indexing-config",
+        markdown="# Demo\n\n## Abstract\n\nConfig-aware indexing.",
+        papers_dir=papers_dir,
+        title="Demo",
+        chroma_dir=chroma_dir,
+        indexing_config=indexing_config,
+    )
+
+    assert captured["indexing_config"] is indexing_config
 
 
 def test_list_saved_papers_reads_complete_frontmatter_header(tmp_path: Path, monkeypatch) -> None:

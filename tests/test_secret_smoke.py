@@ -59,6 +59,32 @@ def test_load_config_auto_migrates_plaintext_api_keys_to_keychain(tmp_path: Path
     assert raw["api_keys"]["ELSEVIER_API_KEY"] == ""
 
 
+def test_load_config_auto_migrates_mixed_case_plaintext_api_key(tmp_path: Path, monkeypatch) -> None:
+    _clear_api_key_env(monkeypatch)
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+
+    config_data = generate_default_config(paths)
+    config_data["apiKeys"] = config_data.pop("api_keys")
+    config_data["apiKeys"]["SPRINGER_meta_API_KEY"] = "springer-secret-1234"
+    paths.config_file.write_text(json.dumps(config_data, indent=4, ensure_ascii=False), encoding="utf-8")
+
+    fake_store = FakeSecretStore()
+    monkeypatch.setattr(secrets, "build_secret_store", lambda service_name=secrets.KEYCHAIN_SERVICE_NAME: fake_store)
+
+    config = load_config(paths)
+    summary = get_secret_summary(config)
+
+    assert config.api_keys.SPRINGER_meta_API_KEY == "springer-secret-1234"
+    assert summary is not None
+    assert summary.entries["SPRINGER_meta_API_KEY"].source == "keychain"
+    assert fake_store.values["springer_meta"] == "springer-secret-1234"
+
+    raw = json.loads(paths.config_file.read_text(encoding="utf-8"))
+    assert raw["apiKeys"]["SPRINGER_meta_API_KEY"] == ""
+
+
 def test_auth_commands_store_status_and_clear_keychain(tmp_path: Path, monkeypatch) -> None:
     _clear_api_key_env(monkeypatch)
     home = tmp_path / "grados-home"

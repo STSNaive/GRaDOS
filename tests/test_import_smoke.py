@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from grados.config import GRaDOSPaths, generate_default_config
+from grados.config import GRaDOSPaths, IndexingConfig, generate_default_config
 from grados.extract.parse import ParsePipelineResult
 from grados.importing import import_local_pdf_library
 
@@ -102,8 +102,11 @@ def test_import_local_pdf_library_surfaces_index_warning(tmp_path: Path, monkeyp
     import grados.storage.vector as vector
 
     monkeypatch.setattr(importing, "parse_pdf_with_diagnostics", fake_parse_pdf)
+    captured: dict[str, object] = {}
 
     def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = args
+        captured["indexing_config"] = kwargs.get("indexing_config")
         raise RuntimeError("index backend offline")
 
     monkeypatch.setattr(vector, "index_paper", fake_index_paper)
@@ -121,3 +124,4 @@ def test_import_local_pdf_library_surfaces_index_warning(tmp_path: Path, monkeyp
     assert "index_warning" in result.items[0].detail
     assert any("index refresh failed" in warning.lower() for warning in result.warnings)
     assert (paths.papers / "10_1234_demo_a.md").is_file()
+    assert isinstance(captured["indexing_config"], IndexingConfig)
