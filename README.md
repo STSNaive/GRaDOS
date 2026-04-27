@@ -245,10 +245,10 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 
 ### Timeout / Retry Knobs
 
-- `search`: `connectTimeout`, `readTimeout`
-- `extract`: `fetchConnectTimeout`, `fetchReadTimeout`
-- `extract.headlessBrowser`: `deadlineSeconds`, `networkidleTimeout`, `pollMinSeconds`, `pollMaxSeconds`
-- `retryPolicy`: `maxAttempts`, `maxWait`, `respectRetryAfter`
+- `search`: `connect_timeout`, `read_timeout`
+- `extract`: `fetch_connect_timeout`, `fetch_read_timeout`
+- `extract.headless_browser`: `deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`
+- `retry_policy`: `max_attempts`, `max_wait`, `respect_retry_after`
 
 ### Commands 🧰
 
@@ -262,6 +262,7 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 | `grados client list` | Show which supported clients currently have GRaDOS installed |
 | `grados client doctor` | Run a lightweight health check for supported clients |
 | `grados client remove claude|codex|all` | Remove GRaDOS MCP wiring and bundled skills from one or more clients |
+| `grados auth set/status/migrate/clear` | Manage provider API keys in the OS keychain |
 | `grados import-pdfs --from /path/to/papers --recursive` | Import an existing local PDF library into the canonical paper store |
 | `grados status` | Show config, dependency, runtime-asset, and API-key health |
 | `grados paths` | Show the resolved GRaDOS filesystem layout |
@@ -321,6 +322,7 @@ Root selection priority:
 | `ZOTERO_API_KEY` | Zotero Settings -> Keys | No |
 
 Crossref works without an API key. PubMed also works without one, but `PUBMED_API_KEY` is available as an optional pacing upgrade for E-utilities. GRaDOS will use whichever services are configured and skip the rest; the default remote search flow still works with the free sources, and the local paper workflow works without any third-party key.
+
 The preferred path is `grados auth set <provider>`, which stores the secret in the OS keychain. If you temporarily place a plaintext key in `~/GRaDOS/config.json`, GRaDOS will import it into the keychain on the next run and then clear the plaintext value from the file.
 
 ### Runtime Order 🌊
@@ -340,7 +342,7 @@ Full-text fetch priority:
 ```json
 {
   "extract": {
-    "fetchStrategy": {
+    "fetch_strategy": {
       "order": ["api", "browser", "oa", "scihub"]
     }
   }

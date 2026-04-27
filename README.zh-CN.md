@@ -245,10 +245,10 @@ cp -R skills/grados "<skills-root>/"
 
 ### 超时与重试
 
-- `search`: `connectTimeout`, `readTimeout`
-- `extract`: `fetchConnectTimeout`, `fetchReadTimeout`
-- `extract.headlessBrowser`: `deadlineSeconds`, `networkidleTimeout`, `pollMinSeconds`, `pollMaxSeconds`
-- `retryPolicy`: `maxAttempts`, `maxWait`, `respectRetryAfter`
+- `search`: `connect_timeout`, `read_timeout`
+- `extract`: `fetch_connect_timeout`, `fetch_read_timeout`
+- `extract.headless_browser`: `deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`
+- `retry_policy`: `max_attempts`, `max_wait`, `respect_retry_after`
 
 ### 命令 🧰
 
@@ -262,6 +262,7 @@ cp -R skills/grados "<skills-root>/"
 | `grados client list` | 查看当前哪些受支持客户端已经安装了 GRaDOS |
 | `grados client doctor` | 对受支持客户端做轻量健康检查 |
 | `grados client remove claude|codex|all` | 从一个或多个客户端移除 GRaDOS 的 MCP 注册和内置 skills |
+| `grados auth set/status/migrate/clear` | 在系统 keychain 中管理各 provider 的 API Key |
 | `grados import-pdfs --from /path/to/papers --recursive` | 把已有 PDF 文件夹导入 canonical 论文库 |
 | `grados status` | 查看配置、依赖、运行时资产和 API Key 状态 |
 | `grados paths` | 查看当前解析到的 GRaDOS 文件布局 |
@@ -321,6 +322,7 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 | `ZOTERO_API_KEY` | Zotero Settings -> Keys | 否 |
 
 Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `PUBMED_API_KEY` 可作为 E-utilities 节流上限的可选增强。GRaDOS 会使用你已配置的服务，未配置的会自动跳过；即使没有第三方 Key，本地论文工作流也能使用，远程检索也仍可依赖免费来源运行。
+
 推荐路径是 `grados auth set <provider>`，它会把 secret 存进系统 keychain。若你临时把明文 key 填进 `~/GRaDOS/config.json`，GRaDOS 会在下一次运行时导入 keychain，并在迁移成功后清空文件中的明文字段。
 
 ### 运行顺序 🌊
@@ -340,7 +342,7 @@ Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `P
 ```json
 {
   "extract": {
-    "fetchStrategy": {
+    "fetch_strategy": {
       "order": ["api", "browser", "oa", "scihub"]
     }
   }

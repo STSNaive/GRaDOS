@@ -361,4 +361,3 @@ def migrate_plaintext_config_secrets(
             fields_to_clear,
         )]
     return summary
-
