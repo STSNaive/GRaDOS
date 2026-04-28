@@ -351,9 +351,7 @@ Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `P
 }
 ```
 
-旧的抓取策略别名 `TDM`、`OA`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。
-
-启用 `scihub` 策略时，镜像解析会按顺序尝试：`extract.sci_hub.auto_update_mirror=true` 时从 Wikipedia infobox 抽取候选域名，然后读取本地 `mirror_url_file`，最后使用 `fallback_mirror`。它仍应作为末级兜底；在合法可用时优先使用 publisher、OA 或机构权限路径。
+旧的抓取策略别名 `TDM`、`OA`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。当前 `scihub` 运行时使用 `extract.sci_hub.fallback_mirror` 作为配置镜像。
 
 `browser` 是机构权限访问 publisher 全文的一等路径。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
 

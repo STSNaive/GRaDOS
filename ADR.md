@@ -203,7 +203,7 @@
   - Marker：沿用 `config.extract.parsing.marker_timeout`
 - 按数据库分档速率节流：PubMed 无 key ≥334ms / 有 key ≥100ms；WoS ≥500ms；Crossref 继续走 polite pool；Elsevier / Unpaywall / Springer 依赖响应头动态退避，无需前置节流。节流器为进程内 `asyncio.Lock` + 单调最小间隔，跨并发任务共享。
 - 运行时 policy：`grados._retry` 模块级 `_CURRENT` 由 `install_runtime_defaults(config)` 在 MCP 工具入口 / CLI 启动时从 `~/GRaDOS/config.json` 注入；装饰器与 timeout getter 在每次调用时读取 `_CURRENT`，不做 import-time 冻结。
-- 配置面：新增 `retryPolicy`（顶层）、`search.connectTimeout` / `readTimeout`、`extract.fetchConnectTimeout` / `fetchReadTimeout`、`extract.headlessBrowser.deadlineSeconds` / `networkidleTimeout` / `pollMinSeconds` / `pollMaxSeconds`；所有新字段有保守默认值，缺失字段走 Pydantic default，不破坏旧 config。
+- 配置面：新增 `retry_policy`（顶层）、`search.connect_timeout` / `read_timeout`、`extract.fetch_connect_timeout` / `fetch_read_timeout`、`extract.headless_browser.deadline_seconds` / `networkidle_timeout` / `poll_min_seconds` / `poll_max_seconds`；所有新字段有保守默认值，缺失字段走 Pydantic default，不破坏旧 config。
 - 所有 retry / timeout / throttle 事件必须产生可观测 warning / debug（对齐 ADR-004）。
 
 ### 结果与影响

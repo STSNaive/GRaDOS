@@ -48,8 +48,6 @@
             "_comment_order": "Publisher API/TDM providers tried by the api fetch strategy."
         },
         "sci_hub": {
-            "auto_update_mirror": true,
-            "mirror_url_file": "",
             "fallback_mirror": "https://sci-hub.se",
             "_comment_fallback_mirror": "Fallback Sci-Hub mirror used only when the scihub strategy is enabled."
         },

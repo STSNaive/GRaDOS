@@ -176,8 +176,6 @@ class FetchStrategyConfig(BaseModel):
 
 
 class SciHubConfig(BaseModel):
-    auto_update_mirror: bool = True
-    mirror_url_file: str = ""
     fallback_mirror: str = "https://sci-hub.se"
 
 
@@ -447,15 +445,8 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     data["extract"]["tdm"]["_comment_order"] = (
         "Publisher API/TDM providers tried by the api fetch strategy."
     )
-    data["extract"]["sci_hub"]["_comment_auto_update_mirror"] = (
-        "When the scihub strategy runs, fetch candidate Sci-Hub domains from Wikipedia before local fallback."
-    )
-    data["extract"]["sci_hub"]["_comment_mirror_url_file"] = (
-        "Optional local cache file. GRaDOS reads mirrors from this file and writes the first Wikipedia candidate "
-        "when auto-update succeeds."
-    )
     data["extract"]["sci_hub"]["_comment_fallback_mirror"] = (
-        "Static fallback mirror tried after Wikipedia and mirror_url_file candidates."
+        "Fallback Sci-Hub mirror used only when the scihub strategy is enabled."
     )
     data["extract"]["headless_browser"]["_comment_browser"] = (
         "Fallback system browser type when the managed browser is unavailable. Supported value: chrome."

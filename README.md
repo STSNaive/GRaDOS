@@ -351,9 +351,7 @@ Full-text fetch priority:
 }
 ```
 
-Legacy fetch-strategy aliases such as `TDM`, `OA`, `SciHub`, and `Headless` are still accepted while existing configs migrate.
-
-When the `scihub` strategy is enabled, mirror resolution tries Wikipedia infobox candidates first if `extract.sci_hub.auto_update_mirror` is true, then local `mirror_url_file` entries, then `fallback_mirror`. Keep it as a last-resort fallback and prefer publisher, OA, or institutional access where lawful.
+Legacy fetch-strategy aliases such as `TDM`, `OA`, `SciHub`, and `Headless` are still accepted while existing configs migrate. The current `scihub` runtime uses `extract.sci_hub.fallback_mirror` as its configured mirror.
 
 The browser strategy is a first-class path for institutional publisher access. If a publisher verification page blocks PDF capture, GRaDOS records a `challenge` with manual-resume metadata in `remote_metadata`; complete the verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true` to continue from the saved browser URL/profile instead of restarting at `api`.
 
