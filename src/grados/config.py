@@ -94,6 +94,10 @@ class GRaDOSPaths:
         return self.database_root / "chroma"
 
     @property
+    def database_remote_metadata(self) -> Path:
+        return self.database_root / "remote_metadata"
+
+    @property
     def database_state(self) -> Path:
         return self.database_root / "research.sqlite3"
 
@@ -129,6 +133,7 @@ class GRaDOSPaths:
             ("浏览器配置", self.browser_profile),
             ("浏览器扩展", self.browser_extensions),
             ("嵌入模型", self.models_embedding),
+            ("远程元数据", self.database_remote_metadata),
             ("ChromaDB", self.database_chroma),
             ("日志目录", self.logs),
         ]
@@ -442,8 +447,15 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     data["extract"]["tdm"]["_comment_order"] = (
         "Publisher API/TDM providers tried by the api fetch strategy."
     )
+    data["extract"]["sci_hub"]["_comment_auto_update_mirror"] = (
+        "When the scihub strategy runs, fetch candidate Sci-Hub domains from Wikipedia before local fallback."
+    )
+    data["extract"]["sci_hub"]["_comment_mirror_url_file"] = (
+        "Optional local cache file. GRaDOS reads mirrors from this file and writes the first Wikipedia candidate "
+        "when auto-update succeeds."
+    )
     data["extract"]["sci_hub"]["_comment_fallback_mirror"] = (
-        "Fallback Sci-Hub mirror used only when the scihub strategy is enabled."
+        "Static fallback mirror tried after Wikipedia and mirror_url_file candidates."
     )
     data["extract"]["headless_browser"]["_comment_browser"] = (
         "Fallback system browser type when the managed browser is unavailable. Supported value: chrome."

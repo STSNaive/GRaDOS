@@ -6,6 +6,7 @@ from grados.publisher.common import PublisherMetadata
 from grados.search.academic import PaperMetadata
 from grados.storage.remote_metadata import (
     get_remote_metadata_by_doi,
+    migrate_remote_metadata_store,
     query_remote_metadata,
     record_remote_fetch_result,
     upsert_remote_metadata,
@@ -203,3 +204,51 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     assert refreshed.fetch_resume == ""
     assert '"state": "challenge"' in refreshed.fetch_trace
     assert '"state": "ok"' in refreshed.fetch_trace
+
+
+def test_migrate_remote_metadata_store_copies_legacy_records(tmp_path: Path, monkeypatch) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+
+    legacy_dir = tmp_path / "database" / "chroma"
+    metadata_dir = tmp_path / "database" / "remote_metadata"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "chroma.sqlite3").write_text("stub", encoding="utf-8")
+
+    legacy_collection = FakeRemoteMetadataCollection()
+    metadata_collection = FakeRemoteMetadataCollection()
+    legacy_collection.upsert(
+        ids=["10_1234_demo"],
+        documents=["Legacy Demo\n\nA cached remote abstract."],
+        metadatas=[
+            {
+                "schema_version": 1,
+                "doi": "10.1234/demo",
+                "safe_doi": "10_1234_demo",
+                "paper_id": "10_1234_demo",
+                "title": "Legacy Demo",
+                "authors": "[]",
+                "fetch_status": "challenge",
+                "fetch_manual": True,
+                "fetch_resume": '{"kind": "browser_profile"}',
+            }
+        ],
+        embeddings=[[1.0]],
+    )
+
+    collections = {
+        legacy_dir: legacy_collection,
+        metadata_dir: metadata_collection,
+    }
+
+    monkeypatch.setattr(remote_metadata, "get_client", lambda path: path)
+    monkeypatch.setattr(remote_metadata, "get_remote_metadata_collection", lambda client: collections[client])
+    monkeypatch.setattr(remote_metadata, "load_embedding_backend", lambda config=None: FakeEmbeddingBackend())
+
+    migrated = migrate_remote_metadata_store(legacy_dir, metadata_dir)
+
+    assert migrated == 1
+    record = get_remote_metadata_by_doi(metadata_dir, "10.1234/demo")
+    assert record is not None
+    assert record.fetch_status == "challenge"
+    assert record.fetch_manual is True
+    assert record.abstract == "A cached remote abstract."

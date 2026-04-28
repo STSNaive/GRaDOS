@@ -28,7 +28,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 2. 按配置好的优先级检索远程学术数据库
 3. 按 `api -> browser -> oa -> scihub` 瀑布抓取全文
 4. 按 `Docling -> Marker -> PyMuPDF` 瀑布解析 PDF
-5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把语义检索数据写入 ChromaDB
+5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把论文索引写入 `database/chroma/`，把远程元数据写入 `database/remote_metadata/`
 6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
 
 ### MCP 工具 🔧
@@ -69,6 +69,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | `papers/` | 带 YAML front-matter 的 canonical Markdown 论文 | 深读、结构卡片与检索 |
 | `downloads/` | 原始 `.pdf` 文件 | 抓取或导入后的归档副本 |
 | `database/chroma/` | ChromaDB collections | 内置语义检索存储 |
+| `database/remote_metadata/` | ChromaDB collection | 远程论文 metadata、fetch 状态与浏览器恢复缓存 |
 | `browser/` | 托管 Chromium、profile、extensions | 难处理 publisher 页面的浏览器回退 |
 | `models/` | embedding 与 OCR 模型缓存 | setup 预热的运行时资产 |
 
@@ -299,7 +300,8 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 │   └── extensions/
 ├── models/
 ├── database/
-│   └── chroma/
+│   ├── chroma/
+│   └── remote_metadata/
 ├── logs/
 └── cache/
 ```
@@ -350,6 +352,8 @@ Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `P
 ```
 
 旧的抓取策略别名 `TDM`、`OA`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。
+
+启用 `scihub` 策略时，镜像解析会按顺序尝试：`extract.sci_hub.auto_update_mirror=true` 时从 Wikipedia infobox 抽取候选域名，然后读取本地 `mirror_url_file`，最后使用 `fallback_mirror`。它仍应作为末级兜底；在合法可用时优先使用 publisher、OA 或机构权限路径。
 
 `browser` 是机构权限访问 publisher 全文的一等路径。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
 

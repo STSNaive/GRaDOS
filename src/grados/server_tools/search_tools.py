@@ -48,12 +48,14 @@ async def search_academic_papers(
             "Provided continuation_token was not applied; it was stale, invalid, or tied to a different query. "
             "Results restarted from page 1."
         )
-    chroma_dir = getattr(paths, "database_chroma", None)
+    metadata_dir = getattr(paths, "database_remote_metadata", None)
+    if metadata_dir is None:
+        metadata_dir = getattr(paths, "database_chroma", None)
     indexing_config = getattr(config, "indexing", None)
-    if chroma_dir is not None:
+    if metadata_dir is not None:
         try:
             upsert_remote_metadata(
-                chroma_dir,
+                metadata_dir,
                 list(result.results),
                 indexing_config=indexing_config,
             )

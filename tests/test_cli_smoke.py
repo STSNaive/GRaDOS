@@ -77,6 +77,60 @@ def test_update_db_command_reports_index_summary(tmp_path: Path, monkeypatch) ->
     assert "3" in result.output
 
 
+def test_reindex_migrates_remote_metadata_before_clearing_chroma(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    paths.database_chroma.mkdir(parents=True)
+    (paths.database_chroma / "legacy.sqlite3").write_text("legacy", encoding="utf-8")
+    (paths.papers / "10_1234_demo.md").write_text(
+        '---\ndoi: "10.1234/demo"\ntitle: "Demo"\n---\n\n# Abstract\n\nDemo content.',
+        encoding="utf-8",
+    )
+
+    import grados.storage.embedding as embedding
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    migrated_calls: list[tuple[Path, Path]] = []
+
+    monkeypatch.setattr(
+        embedding,
+        "inspect_embedding_runtime",
+        lambda paths, indexing: {
+            "max_length": 4096,
+            "batch_size_hint": 8,
+            "warnings": [],
+            "dependencies": {},
+            "runtime": "test",
+            "provider": "test",
+            "model_id": "test-model",
+            "query_prompt_mode": "query_document",
+            "cache_dir": str(tmp_path / "cache"),
+        },
+    )
+    monkeypatch.setattr(
+        remote_metadata,
+        "migrate_remote_metadata_store",
+        lambda legacy, target, **kwargs: migrated_calls.append((legacy, target)) or 1,
+    )
+    monkeypatch.setattr(vector, "index_all_papers", lambda chroma_dir, papers_dir, **kwargs: (1, 3))
+    monkeypatch.setattr(
+        vector,
+        "get_index_stats",
+        lambda chroma_dir, **kwargs: vector.IndexStats(unique_papers=1, total_chunks=3, reindex_required=False),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["reindex"], env={"GRADOS_HOME": str(home)})
+
+    assert result.exit_code == 0
+    assert migrated_calls == [(paths.database_chroma, paths.database_remote_metadata)]
+    assert "已迁移" in result.output
+    assert "已清空旧索引目录" in result.output
+    assert "已重建" in result.output
+
+
 def test_import_pdfs_command_reports_summary(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "library"
     source.mkdir()

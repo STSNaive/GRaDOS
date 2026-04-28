@@ -1,4 +1,4 @@
-"""Remote metadata cache stored in a dedicated Chroma collection."""
+"""Remote metadata cache stored outside the rebuildable paper index."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from grados.storage.embedding import load_embedding_backend
 __all__ = [
     "RemoteMetadataRecord",
     "get_remote_metadata_by_doi",
+    "migrate_remote_metadata_store",
     "query_remote_metadata",
     "record_remote_fetch_result",
     "upsert_remote_metadata",
@@ -32,7 +33,7 @@ __all__ = [
 
 
 class RemoteMetadataRecord(BaseModel):
-    """Normalized remote metadata row stored in Chroma."""
+    """Normalized remote metadata row stored in the remote metadata Chroma store."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -355,19 +356,57 @@ def _existing_records_by_id(collection: Any, ids: list[str]) -> dict[str, Remote
     return existing
 
 
+def _all_records_from_collection(collection: Any) -> list[RemoteMetadataRecord]:
+    count = int(collection.count())
+    if count <= 0:
+        return []
+    result = collection_get(collection=collection, limit=count)
+    metadatas = result.get("metadatas", [])
+    documents = result.get("documents", [])
+    if metadatas and isinstance(metadatas[0], list):
+        metadatas = metadatas[0]
+    if documents and isinstance(documents[0], list):
+        documents = documents[0]
+    return [
+        _record_from_chroma_row(metadata, str(document or ""))
+        for metadata, document in zip(metadatas or [], documents or [])
+        if isinstance(metadata, dict)
+    ]
+
+
+def migrate_remote_metadata_store(
+    legacy_chroma_dir: Path,
+    metadata_dir: Path,
+    *,
+    indexing_config: IndexingConfig | None = None,
+) -> int:
+    """Copy legacy remote metadata rows out of the rebuildable paper index store."""
+    if legacy_chroma_dir.resolve() == metadata_dir.resolve():
+        return 0
+    if not legacy_chroma_dir.exists() or not any(legacy_chroma_dir.iterdir()):
+        return 0
+
+    legacy_client = get_client(legacy_chroma_dir)
+    legacy_collection = get_remote_metadata_collection(legacy_client)
+    records = _all_records_from_collection(legacy_collection)
+    if not records:
+        return 0
+    return upsert_remote_metadata(metadata_dir, records, indexing_config=indexing_config)
+
+
 def upsert_remote_metadata(
-    chroma_dir: Path,
+    metadata_dir: Path,
     records: list[Any],
     *,
     indexing_config: IndexingConfig | None = None,
 ) -> int:
-    """Upsert one row per paper into the remote metadata Chroma collection."""
+    """Upsert one row per paper into the remote metadata store."""
     normalized = [record for item in records if (record := _coerce_remote_record(item)) is not None]
     if not normalized:
         return 0
 
     config = resolve_indexing_config(indexing_config)
-    client = get_client(chroma_dir)
+    client = get_client(metadata_dir)
     collection = get_remote_metadata_collection(client)
     existing = _existing_records_by_id(collection, [record.paper_id for record in normalized])
 
@@ -388,7 +427,7 @@ def upsert_remote_metadata(
 
 
 def get_remote_metadata_by_doi(
-    chroma_dir: Path,
+    metadata_dir: Path,
     doi: str,
 ) -> RemoteMetadataRecord | None:
     """Load one remote metadata row by DOI."""
@@ -396,14 +435,14 @@ def get_remote_metadata_by_doi(
     if not normalized_doi:
         return None
     paper_id = safe_doi_filename(normalized_doi)
-    client = get_client(chroma_dir)
+    client = get_client(metadata_dir)
     collection = get_remote_metadata_collection(client)
     existing = _existing_records_by_id(collection, [paper_id])
     return existing.get(paper_id)
 
 
 def query_remote_metadata(
-    chroma_dir: Path,
+    metadata_dir: Path,
     query: str,
     *,
     where: dict[str, Any] | None = None,
@@ -411,7 +450,7 @@ def query_remote_metadata(
     indexing_config: IndexingConfig | None = None,
 ) -> list[RemoteMetadataRecord]:
     """Run a semantic query against the remote metadata collection."""
-    client = get_client(chroma_dir)
+    client = get_client(metadata_dir)
     collection = get_remote_metadata_collection(client)
     if collection.count() == 0:
         return []
@@ -454,7 +493,7 @@ def query_remote_metadata(
 
 
 def record_remote_fetch_result(
-    chroma_dir: Path,
+    metadata_dir: Path,
     *,
     doi: str,
     fetch_status: str,
@@ -498,4 +537,4 @@ def record_remote_fetch_result(
             else ""
         ),
     })
-    return upsert_remote_metadata(chroma_dir, [payload], indexing_config=indexing_config)
+    return upsert_remote_metadata(metadata_dir, [payload], indexing_config=indexing_config)

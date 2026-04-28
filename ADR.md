@@ -17,6 +17,7 @@
 ### 决策
 - `papers/*.md` 是唯一用户侧 canonical 全文来源。
 - `database/chroma` 只承担可重建的检索索引职责，不再承担正文真源职责。
+- `database/remote_metadata` 单独保存远程论文 metadata、fetch 状态与 browser resume 信息；它不是 `grados reindex` 要清理的可重建 paper index。
 - `grados reindex` 的产品语义明确为“重建检索索引”，而不是“恢复论文正文”。
 - 用户侧读论文、列论文、获取结构、深读上下文时，都应从 `papers/*.md` 读取 canonical Markdown。
 - canonical mirror 的 durable 写入必须先于索引刷新；不得允许“只有索引、没有 `papers/*.md` 原文”的状态成为持久结果。

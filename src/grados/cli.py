@@ -662,6 +662,7 @@ def status() -> None:
     )
     profile_ok = paths.browser_profile.exists()
     chroma_ok = paths.database_chroma.exists()
+    remote_metadata_ok = paths.database_remote_metadata.exists()
     model_ok = (
         paths.models_embedding.exists() and any(paths.models_embedding.iterdir())
         if paths.models_embedding.exists()
@@ -671,6 +672,7 @@ def status() -> None:
     console.print(f"  {'[green]✓[/green]' if browser_ok else '[dim]—[/dim]'}  浏览器 (Chrome for Testing)")
     console.print(f"  {'[green]✓[/green]' if profile_ok else '[dim]—[/dim]'}  浏览器配置 (persistent profile)")
     console.print(f"  {'[green]✓[/green]' if chroma_ok else '[dim]—[/dim]'}  ChromaDB")
+    console.print(f"  {'[green]✓[/green]' if remote_metadata_ok else '[dim]—[/dim]'}  远程元数据缓存")
     console.print(f"  {'[green]✓[/green]' if model_ok else '[dim]—[/dim]'}  嵌入模型缓存")
     console.print(
         f"  {'[green]✓[/green]' if all(runtime['dependencies'].values()) else '[yellow]![/yellow]'}  "
@@ -810,6 +812,7 @@ def update_db() -> None:
 def reindex() -> None:
     """Rebuild the entire semantic index from scratch for the active embedding config."""
     from grados.storage.embedding import inspect_embedding_runtime
+    from grados.storage.remote_metadata import migrate_remote_metadata_store
     from grados.storage.vector import get_index_stats, index_all_papers
 
     paths = GRaDOSPaths()
@@ -829,6 +832,19 @@ def reindex() -> None:
     console.print()
 
     if paths.database_chroma.exists():
+        try:
+            migrated = migrate_remote_metadata_store(
+                paths.database_chroma,
+                paths.database_remote_metadata,
+                indexing_config=config.indexing,
+            )
+        except Exception as exc:
+            raise click.ClickException(
+                "Failed to migrate legacy remote_metadata before clearing the Chroma index. "
+                f"Preserved the existing index directory. Error: {exc}"
+            ) from exc
+        if migrated:
+            console.print(f"已迁移 [bold]{migrated}[/bold] 条 remote_metadata 到独立目录。")
         shutil.rmtree(paths.database_chroma, ignore_errors=True)
         console.print("已清空旧索引目录。")
 

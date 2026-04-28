@@ -28,7 +28,7 @@ GRaDOS is designed to sit inside an agent research workflow:
 2. Search remote academic sources in configured priority order
 3. Fetch full text through `api -> browser -> oa -> scihub`
 4. Parse PDFs through `Docling -> Marker -> PyMuPDF`
-5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, and semantic data to ChromaDB
+5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, the paper index to `database/chroma/`, and remote metadata to `database/remote_metadata/`
 6. Re-open saved papers with low-token structure cards and deep-reading windows before citing them
 
 ### MCP Tools 🔧
@@ -69,6 +69,7 @@ After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 | `papers/` | Canonical Markdown papers with YAML front-matter | Deep reading, structure cards, and retrieval |
 | `downloads/` | Raw `.pdf` files | Archival copies of fetched or imported papers |
 | `database/chroma/` | ChromaDB collections | Built-in semantic retrieval store |
+| `database/remote_metadata/` | ChromaDB collection | Remote paper metadata, fetch status, and browser-resume cache |
 | `browser/` | Managed Chromium, profile, extensions | Browser fallback for difficult publisher pages |
 | `models/` | Embedding and OCR model caches | Runtime assets warmed by setup |
 
@@ -299,7 +300,8 @@ By default, GRaDOS keeps everything in a visible directory:
 │   └── extensions/
 ├── models/
 ├── database/
-│   └── chroma/
+│   ├── chroma/
+│   └── remote_metadata/
 ├── logs/
 └── cache/
 ```
@@ -350,6 +352,8 @@ Full-text fetch priority:
 ```
 
 Legacy fetch-strategy aliases such as `TDM`, `OA`, `SciHub`, and `Headless` are still accepted while existing configs migrate.
+
+When the `scihub` strategy is enabled, mirror resolution tries Wikipedia infobox candidates first if `extract.sci_hub.auto_update_mirror` is true, then local `mirror_url_file` entries, then `fallback_mirror`. Keep it as a last-resort fallback and prefer publisher, OA, or institutional access where lawful.
 
 The browser strategy is a first-class path for institutional publisher access. If a publisher verification page blocks PDF capture, GRaDOS records a `challenge` with manual-resume metadata in `remote_metadata`; complete the verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true` to continue from the saved browser URL/profile instead of restarting at `api`.
 

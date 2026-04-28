@@ -128,10 +128,26 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
     return result.rstrip()
 
 
-def _load_browser_resume(chroma_dir: Path, doi: str) -> dict[str, str] | None:
+def _remote_metadata_dir(paths: object) -> Path:
+    metadata_dir = getattr(paths, "database_remote_metadata", None)
+    if metadata_dir is not None:
+        return metadata_dir
+    return getattr(paths, "database_chroma")
+
+
+def _load_browser_resume(paths: object, doi: str) -> dict[str, str] | None:
     from grados.storage.remote_metadata import get_remote_metadata_by_doi
 
-    record = get_remote_metadata_by_doi(chroma_dir, doi)
+    metadata_dirs = [_remote_metadata_dir(paths)]
+    legacy_dir = getattr(paths, "database_chroma", None)
+    if legacy_dir is not None and legacy_dir != metadata_dirs[0]:
+        metadata_dirs.append(legacy_dir)
+
+    record = None
+    for metadata_dir in metadata_dirs:
+        record = get_remote_metadata_by_doi(metadata_dir, doi)
+        if record is not None:
+            break
     if record is None or record.fetch_status != "challenge" or not record.fetch_manual:
         return None
     if not record.fetch_resume:
@@ -169,7 +185,7 @@ def _infer_remote_fetch_status(outcome: str, state: str, warnings: list[str]) ->
 
 def _record_remote_metadata_update(
     *,
-    chroma_dir: Path,
+    metadata_dir: Path,
     doi: str,
     fetch_status: str,
     has_fulltext: bool,
@@ -188,7 +204,7 @@ def _record_remote_metadata_update(
 
     try:
         record_remote_fetch_result(
-            chroma_dir,
+            metadata_dir,
             doi=doi,
             fetch_status=fetch_status,
             has_fulltext=has_fulltext,
@@ -265,7 +281,8 @@ async def extract_paper_full_text(
     paths, config = get_paths_and_config()
     indexing_config = getattr(config, "indexing", None)
     api_keys = {k: v for k, v in config.api_keys.model_dump().items() if v}
-    browser_resume = _load_browser_resume(paths.database_chroma, doi) if resume_browser else None
+    metadata_dir = _remote_metadata_dir(paths)
+    browser_resume = _load_browser_resume(paths, doi) if resume_browser else None
     if resume_browser and browser_resume is None:
         browser_resume = {}
 
@@ -289,7 +306,7 @@ async def extract_paper_full_text(
 
     if fetch_result.outcome == "metadata_only":
         remote_warning = _record_remote_metadata_update(
-            chroma_dir=paths.database_chroma,
+            metadata_dir=metadata_dir,
             doi=doi,
             fetch_status="metadata_only",
             has_fulltext=False,
@@ -317,7 +334,7 @@ async def extract_paper_full_text(
 
     if fetch_result.outcome not in ("native_full_text", "pdf_obtained"):
         remote_warning = _record_remote_metadata_update(
-            chroma_dir=paths.database_chroma,
+            metadata_dir=metadata_dir,
             doi=doi,
             fetch_status=_infer_remote_fetch_status(fetch_result.outcome, fetch_result.state, fetch_result.warnings),
             has_fulltext=False,
@@ -351,7 +368,7 @@ async def extract_paper_full_text(
         )
         if not artifact.markdown:
             remote_warning = _record_remote_metadata_update(
-                chroma_dir=paths.database_chroma,
+                metadata_dir=metadata_dir,
                 doi=doi,
                 fetch_status="failed",
                 has_fulltext=True,
@@ -398,7 +415,7 @@ async def extract_paper_full_text(
             if debug_block:
                 result += f"\n\nParser debug:\n{debug_block}"
             remote_warning = _record_remote_metadata_update(
-                chroma_dir=paths.database_chroma,
+                metadata_dir=metadata_dir,
                 doi=doi,
                 fetch_status="failed",
                 has_fulltext=True,
@@ -462,7 +479,7 @@ async def extract_paper_full_text(
         indexing_config=indexing_config,
     )
     remote_warning = _record_remote_metadata_update(
-        chroma_dir=paths.database_chroma,
+        metadata_dir=metadata_dir,
         doi=doi,
         fetch_status="fulltext",
         has_fulltext=True,

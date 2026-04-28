@@ -208,10 +208,10 @@ def test_search_academic_papers_upserts_remote_metadata(tmp_path: Path, monkeypa
             continuation_applied=True,
         )
 
-    def fake_upsert(chroma_dir, records, *, indexing_config=None):  # noqa: ANN001
+    def fake_upsert(metadata_dir, records, *, indexing_config=None):  # noqa: ANN001
         calls.append(
             {
-                "chroma_dir": chroma_dir,
+                "metadata_dir": metadata_dir,
                 "records": records,
                 "indexing_config": indexing_config,
             }
@@ -222,7 +222,10 @@ def test_search_academic_papers_upserts_remote_metadata(tmp_path: Path, monkeypa
         search_tools,
         "get_paths_and_config",
         lambda: (
-            SimpleNamespace(database_chroma=tmp_path / "grados-home" / "database" / "chroma"),
+            SimpleNamespace(
+                database_chroma=tmp_path / "grados-home" / "database" / "chroma",
+                database_remote_metadata=tmp_path / "grados-home" / "database" / "remote_metadata",
+            ),
             SimpleNamespace(
                 search=SimpleNamespace(order=["Crossref"], enabled={"Crossref": True}),
                 academic_etiquette_email="research@example.edu",
@@ -238,6 +241,7 @@ def test_search_academic_papers_upserts_remote_metadata(tmp_path: Path, monkeypa
 
     assert "Composite Damping Study" in result
     assert len(calls) == 1
+    assert calls[0]["metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
     assert calls[0]["records"][0].doi == "10.1234/demo"
 
 
@@ -586,8 +590,8 @@ def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, m
             warnings=["OA lookup failed", "Browser fallback unavailable"],
         )
 
-    def fake_record_remote_fetch_result(chroma_dir, **kwargs):  # noqa: ANN001, ANN003
-        calls.append({"chroma_dir": chroma_dir, **kwargs})
+    def fake_record_remote_fetch_result(metadata_dir, **kwargs):  # noqa: ANN001, ANN003
+        calls.append({"metadata_dir": metadata_dir, **kwargs})
         return 1
 
     monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
@@ -607,6 +611,7 @@ def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, m
     assert "https://example.com/article" in result
     assert not (tmp_path / "grados-home" / "papers" / "10_1234_demo.md").exists()
     assert len(calls) == 1
+    assert calls[0]["metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
     assert calls[0]["fetch_status"] == "metadata_only"
     assert calls[0]["has_fulltext"] is False
 
@@ -643,8 +648,8 @@ def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeyp
             warnings=["Browser automation: publisher_challenge"],
         )
 
-    def fake_record_remote_fetch_result(chroma_dir, **kwargs):  # noqa: ANN001, ANN003
-        calls.append({"chroma_dir": chroma_dir, **kwargs})
+    def fake_record_remote_fetch_result(metadata_dir, **kwargs):  # noqa: ANN001, ANN003
+        calls.append({"metadata_dir": metadata_dir, **kwargs})
         return 1
 
     monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
@@ -656,6 +661,7 @@ def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeyp
     assert "Manual Browser Resume" in result
     assert "www.sciencedirect.com" in result
     assert len(calls) == 1
+    assert calls[0]["metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
     assert calls[0]["fetch_status"] == "challenge"
     assert calls[0]["fetch_via"] == "browser"
     assert calls[0]["fetch_state"] == "challenge"
@@ -675,8 +681,8 @@ def test_extract_paper_full_text_resume_browser_uses_saved_resume(tmp_path: Path
     fetch_calls: list[dict[str, object]] = []
     metadata_calls: list[dict[str, object]] = []
 
-    def fake_get_remote_metadata_by_doi(chroma_dir, doi):  # noqa: ANN001
-        _ = (chroma_dir, doi)
+    def fake_get_remote_metadata_by_doi(metadata_dir, doi):  # noqa: ANN001
+        metadata_calls.append({"metadata_dir": metadata_dir, "doi": doi, "op": "get"})
         return SimpleNamespace(
             fetch_status="challenge",
             fetch_manual=True,
@@ -701,8 +707,8 @@ def test_extract_paper_full_text_resume_browser_uses_saved_resume(tmp_path: Path
             ),
         )
 
-    def fake_record_remote_fetch_result(chroma_dir, **kwargs):  # noqa: ANN001, ANN003
-        metadata_calls.append({"chroma_dir": chroma_dir, **kwargs})
+    def fake_record_remote_fetch_result(metadata_dir, **kwargs):  # noqa: ANN001, ANN003
+        metadata_calls.append({"metadata_dir": metadata_dir, "op": "record", **kwargs})
         return 1
 
     monkeypatch.setattr(remote_metadata, "get_remote_metadata_by_doi", fake_get_remote_metadata_by_doi)
@@ -719,8 +725,11 @@ def test_extract_paper_full_text_resume_browser_uses_saved_resume(tmp_path: Path
         "host": "www.sciencedirect.com",
         "url": "https://www.sciencedirect.com/science/article/pii/S1234567890",
     }
-    assert len(metadata_calls) == 1
-    assert metadata_calls[0]["fetch_via"] == "browser"
+    assert len(metadata_calls) == 2
+    assert metadata_calls[0]["metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
+    assert metadata_calls[0]["op"] == "get"
+    assert metadata_calls[1]["metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
+    assert metadata_calls[1]["fetch_via"] == "browser"
 
 
 def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path: Path, monkeypatch) -> None:
@@ -756,7 +765,7 @@ def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path
     monkeypatch.setattr(
         remote_metadata,
         "record_remote_fetch_result",
-        lambda chroma_dir, **kwargs: calls.append({"chroma_dir": chroma_dir, **kwargs}) or 1,
+        lambda metadata_dir, **kwargs: calls.append({"metadata_dir": metadata_dir, **kwargs}) or 1,
     )
 
     result = asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
@@ -774,6 +783,7 @@ def test_extract_paper_full_text_persists_typed_metadata_in_frontmatter(tmp_path
     assert "Via:** api" in result
     assert "State:** ok" in result
     assert len(calls) == 1
+    assert calls[0]["metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
     assert calls[0]["fetch_status"] == "fulltext"
     assert calls[0]["has_fulltext"] is True
 
