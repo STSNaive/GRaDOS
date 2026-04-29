@@ -197,7 +197,6 @@ def _record_remote_metadata_update(
     fetch_host: str = "",
     fetch_resume: dict[str, str] | None = None,
     fetch_manual: bool = False,
-    fetch_trace: list[dict[str, object]] | None = None,
     indexing_config: object | None = None,
 ) -> str | None:
     from grados.storage.remote_metadata import record_remote_fetch_result
@@ -216,7 +215,6 @@ def _record_remote_metadata_update(
             fetch_host=fetch_host,
             fetch_resume=fetch_resume,
             fetch_manual=fetch_manual,
-            fetch_trace=fetch_trace,
             indexing_config=indexing_config,
         )
     except Exception as exc:
@@ -318,7 +316,6 @@ async def extract_paper_full_text(
             fetch_host=fetch_result.host,
             fetch_resume=fetch_result.resume,
             fetch_manual=fetch_result.manual,
-            fetch_trace=fetch_result.trace,
             indexing_config=indexing_config,
         )
         return _append_remote_metadata_warning(
@@ -346,7 +343,6 @@ async def extract_paper_full_text(
             fetch_host=fetch_result.host,
             fetch_resume=fetch_result.resume,
             fetch_manual=fetch_result.manual,
-            fetch_trace=fetch_result.trace,
             indexing_config=indexing_config,
         )
         failed_result = _append_manual_resume_receipt(
@@ -380,7 +376,6 @@ async def extract_paper_full_text(
                 fetch_host=fetch_result.host,
                 fetch_resume=fetch_result.resume,
                 fetch_manual=fetch_result.manual,
-                fetch_trace=fetch_result.trace,
                 indexing_config=indexing_config,
             )
             return _append_remote_metadata_warning(
@@ -427,7 +422,6 @@ async def extract_paper_full_text(
                 fetch_host=fetch_result.host,
                 fetch_resume=fetch_result.resume,
                 fetch_manual=fetch_result.manual,
-                fetch_trace=fetch_result.trace,
                 indexing_config=indexing_config,
             )
             return _append_remote_metadata_warning(result, remote_warning)
@@ -491,7 +485,6 @@ async def extract_paper_full_text(
         fetch_host=fetch_result.host,
         fetch_resume=fetch_result.resume,
         fetch_manual=fetch_result.manual,
-        fetch_trace=fetch_result.trace,
         indexing_config=indexing_config,
     )
 

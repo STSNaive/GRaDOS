@@ -9,12 +9,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
 
 from grados._retry import current_fetch_timeout, current_pdf_timeout, http_retry
-from grados.config import GRaDOSPaths, HeadlessBrowserConfig
+from grados.config import DEFAULT_SCI_HUB_ENDPOINT, GRaDOSPaths, HeadlessBrowserConfig
 from grados.publisher.common import (
     PublisherMetadata,
     classify_pdf_content,
@@ -32,7 +33,7 @@ class FetchResult:
     outcome: str = ""  # native_full_text | pdf_obtained | metadata_only | failed
     source: str = ""  # e.g. "Elsevier TDM", "Unpaywall OA", "Sci-Hub"
     via: str = ""  # api | browser | oa | scihub
-    state: str = ""  # ok | partial | challenge | timeout | nobrowser | error
+    state: str = ""  # ok | partial | challenge | timeout | nobrowser | not_found | blocked | error
     text_format: str = ""  # markdown | text | html | xml
     metadata: PublisherMetadata | None = None
     asset_hints: list[dict[str, str]] = field(default_factory=list)
@@ -301,10 +302,15 @@ def _is_fetch_partial(result: FetchResult) -> bool:
 
 def _failed_result_priority(result: FetchResult) -> int:
     priority = {
-        "challenge": 5,
-        "timeout": 4,
+        "challenge": 8,
+        "blocked": 7,
+        "timeout": 6,
+        "site_unreachable": 5,
+        "not_found": 4,
         "nobrowser": 3,
         "partial": 2,
+        "parse_error": 2,
+        "invalid_pdf": 2,
         "error": 1,
         "": 0,
     }
@@ -555,10 +561,167 @@ async def _fetch_oa(
 # ── Sci-Hub ──────────────────────────────────────────────────────────────────
 
 
+_SCI_HUB_NOT_FOUND_MARKERS = (
+    "article not found",
+    "paper not found",
+    "doi not found",
+    "not found in sci-hub",
+    "could not be found",
+)
+
+
+def _normalize_scihub_endpoint(endpoint: object) -> str:
+    value = str(endpoint or "").strip()
+    if not value:
+        return ""
+    if "://" in value and not value.lower().startswith(("http://", "https://")):
+        return ""
+    if not value.lower().startswith(("http://", "https://")):
+        value = f"https://{value}"
+    return value.rstrip("/")
+
+
+def _resolve_scihub_endpoints(config: dict[str, Any]) -> list[str]:
+    configured = config.get("endpoints")
+    raw_endpoints = configured if isinstance(configured, list) else []
+    if not raw_endpoints:
+        raw_endpoints = [config.get("fallback_mirror") or DEFAULT_SCI_HUB_ENDPOINT]
+
+    endpoints: list[str] = []
+    seen: set[str] = set()
+    for raw_endpoint in raw_endpoints:
+        endpoint = _normalize_scihub_endpoint(raw_endpoint)
+        if not endpoint or endpoint in seen:
+            continue
+        endpoints.append(endpoint)
+        seen.add(endpoint)
+    fallback_endpoint = _normalize_scihub_endpoint(
+        config.get("fallback_mirror") or DEFAULT_SCI_HUB_ENDPOINT
+    )
+    return endpoints or [fallback_endpoint or DEFAULT_SCI_HUB_ENDPOINT]
+
+
+def _scihub_endpoint_role(index: int) -> str:
+    return "primary" if index == 0 else "fallback"
+
+
+def _scihub_host(url: str) -> str:
+    return urlsplit(url).netloc or url
+
+
+def _scihub_endpoint_label(endpoint: str, index: int) -> str:
+    return f"Sci-Hub {_scihub_endpoint_role(index)} endpoint {_scihub_host(endpoint)}"
+
+
+def _scihub_trace(
+    doi: str,
+    *,
+    endpoint: str,
+    index: int,
+    outcome: str,
+    state: str,
+    status_code: int | None = None,
+    reason: str = "",
+    pdf_url: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "via": "scihub",
+        "outcome": outcome,
+        "state": state,
+        "endpoint_index": index,
+        "endpoint_role": _scihub_endpoint_role(index),
+        "endpoint_host": _scihub_host(endpoint),
+        "http_status": status_code,
+        "reason": reason,
+        "pdf_host": _scihub_host(pdf_url) if pdf_url else "",
+    }
+    digest = hashlib.sha1(
+        json.dumps({"doi": doi, **payload}, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:16]
+    return {
+        **payload,
+        "time": datetime.now(UTC).isoformat(),
+        "hash": digest,
+    }
+
+
+def _scihub_failed_result(
+    doi: str,
+    *,
+    endpoint: str,
+    index: int,
+    state: str,
+    warning: str,
+    status_code: int | None = None,
+    reason: str = "",
+) -> FetchResult:
+    return FetchResult(
+        outcome="failed",
+        source="Sci-Hub",
+        via="scihub",
+        state=state,
+        host=_scihub_host(endpoint),
+        trace=[
+            _scihub_trace(
+                doi,
+                endpoint=endpoint,
+                index=index,
+                outcome="failed",
+                state=state,
+                status_code=status_code,
+                reason=reason,
+            )
+        ],
+        warnings=[warning],
+    )
+
+
+def _classify_scihub_status(status_code: int | None) -> tuple[str, str]:
+    if status_code in {404, 410}:
+        return "not_found", "not_found_status"
+    if status_code in {401, 403, 429}:
+        return "blocked", "blocked_status"
+    if status_code is not None and status_code >= 500:
+        return "site_unreachable", "server_error_status"
+    return "error", "unexpected_status"
+
+
+def _looks_like_scihub_not_found(html: str) -> bool:
+    text = BeautifulSoup(html, "lxml").get_text(" ", strip=True).lower()
+    return any(marker in text for marker in _SCI_HUB_NOT_FOUND_MARKERS)
+
+
+def _scihub_endpoint_failure_priority(result: FetchResult) -> int:
+    priority = {
+        "challenge": 8,
+        "blocked": 7,
+        "parse_error": 6,
+        "invalid_pdf": 6,
+        "site_unreachable": 5,
+        "timeout": 4,
+        "error": 1,
+        "": 0,
+    }
+    return priority.get(result.state, 0)
+
+
+def _prefer_scihub_endpoint_failure(
+    current: FetchResult | None,
+    candidate: FetchResult,
+) -> FetchResult:
+    if current is None:
+        return candidate
+    return (
+        candidate
+        if _scihub_endpoint_failure_priority(candidate) > _scihub_endpoint_failure_priority(current)
+        else current
+    )
+
+
 @http_retry()
-async def _scihub_landing(client: httpx.AsyncClient, mirror: str, doi: str) -> httpx.Response:
+async def _scihub_landing(client: httpx.AsyncClient, endpoint: str, doi: str) -> httpx.Response:
     resp = await client.get(
-        f"{mirror}/{doi}",
+        f"{endpoint}/{doi}",
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0"},
         timeout=current_fetch_timeout(),
     )
@@ -567,92 +730,255 @@ async def _scihub_landing(client: httpx.AsyncClient, mirror: str, doi: str) -> h
     return resp
 
 
+async def _fetch_scihub_endpoint(
+    doi: str,
+    client: httpx.AsyncClient,
+    endpoint: str,
+    index: int,
+) -> FetchResult:
+    label = _scihub_endpoint_label(endpoint, index)
+    try:
+        resp = await _scihub_landing(client, endpoint, doi)
+    except httpx.TimeoutException as exc:
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="timeout",
+            warning=_format_fetch_warning(f"{label} timed out", exc),
+            reason="landing_timeout",
+        )
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        state, reason = _classify_scihub_status(status_code)
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state=state,
+            warning=f"{label} lookup failed: HTTP {status_code}",
+            status_code=status_code,
+            reason=reason,
+        )
+    except httpx.TransportError as exc:
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="site_unreachable",
+            warning=_format_fetch_warning(f"{label} is unreachable", exc),
+            reason="landing_transport_error",
+        )
+    except Exception as exc:
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="error",
+            warning=_format_fetch_warning(f"{label} lookup failed", exc),
+            reason="landing_error",
+        )
+
+    if resp.status_code != 200:
+        state, reason = _classify_scihub_status(resp.status_code)
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state=state,
+            warning=f"{label} lookup failed: HTTP {resp.status_code}",
+            status_code=resp.status_code,
+            reason=reason,
+        )
+
+    landing_url = f"{endpoint}/{doi}"
+    if detect_bot_challenge("", resp.text, landing_url):
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="challenge",
+            warning=f"{label} challenge detected",
+            status_code=resp.status_code,
+            reason="challenge_detected",
+        )
+
+    if _looks_like_scihub_not_found(resp.text):
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="not_found",
+            warning=f"{label} reports no paper for DOI",
+            status_code=resp.status_code,
+            reason="not_found_marker",
+        )
+
+    pdf_url = _extract_scihub_pdf_url(resp.text, endpoint)
+    if not pdf_url:
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="parse_error",
+            warning=f"{label} page did not expose a PDF link",
+            status_code=resp.status_code,
+            reason="pdf_link_missing",
+        )
+
+    try:
+        pdf_resp = await _download_pdf(client, pdf_url)
+    except httpx.TimeoutException as exc:
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="timeout",
+            warning=_format_fetch_warning(f"{label} PDF download timed out", exc),
+            reason="pdf_timeout",
+        )
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        state, reason = _classify_scihub_status(status_code)
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state=state,
+            warning=f"{label} PDF download failed: HTTP {status_code}",
+            status_code=status_code,
+            reason=reason,
+        )
+    except httpx.TransportError as exc:
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="site_unreachable",
+            warning=_format_fetch_warning(f"{label} PDF download failed", exc),
+            reason="pdf_transport_error",
+        )
+    except Exception as exc:
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="error",
+            warning=_format_fetch_warning(f"{label} PDF download failed", exc),
+            reason="pdf_error",
+        )
+
+    if pdf_resp.status_code != 200:
+        state, reason = _classify_scihub_status(pdf_resp.status_code)
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state=state,
+            warning=f"{label} PDF download failed: HTTP {pdf_resp.status_code}",
+            status_code=pdf_resp.status_code,
+            reason=reason,
+        )
+
+    ct = pdf_resp.headers.get("content-type", "")
+    check = classify_pdf_content(pdf_resp.content, ct)
+    if check["is_pdf"]:
+        return FetchResult(
+            pdf_buffer=pdf_resp.content,
+            outcome="pdf_obtained",
+            source="Sci-Hub",
+            via="scihub",
+            state="ok",
+            host=_scihub_host(endpoint),
+            trace=[
+                _scihub_trace(
+                    doi,
+                    endpoint=endpoint,
+                    index=index,
+                    outcome="pdf_obtained",
+                    state="ok",
+                    status_code=pdf_resp.status_code,
+                    reason="pdf_obtained",
+                    pdf_url=pdf_url,
+                )
+            ],
+        )
+    return _scihub_failed_result(
+        doi,
+        endpoint=endpoint,
+        index=index,
+        state="invalid_pdf",
+        warning=f"{label} PDF fetch failed: {check['reason']}",
+        status_code=pdf_resp.status_code,
+        reason="invalid_pdf",
+    )
+
+
 async def _fetch_scihub(
     doi: str,
     client: httpx.AsyncClient,
     config: dict[str, Any],
 ) -> FetchResult:
-    mirror = config.get("fallback_mirror") or "https://sci-hub.se"
     warnings: list[str] = []
+    trace: list[dict[str, Any]] = []
+    failure_result: FetchResult | None = None
 
-    try:
-        resp = await _scihub_landing(client, mirror, doi)
-        if resp.status_code != 200:
-            return FetchResult(
-                outcome="failed",
-                source="Sci-Hub",
-                via="scihub",
-                state="error",
-                warnings=[f"Sci-Hub lookup failed: HTTP {resp.status_code}"],
-            )
+    for index, endpoint in enumerate(_resolve_scihub_endpoints(config)):
+        result = await _fetch_scihub_endpoint(doi, client, endpoint, index)
+        warnings.extend(result.warnings)
+        trace.extend(result.trace or [_trace_fetch_result(doi, result)])
+        if _is_fetch_success(result):
+            result.warnings = warnings.copy()
+            result.trace = trace.copy()
+            return result
+        if result.state == "not_found":
+            result.warnings = warnings.copy()
+            result.trace = trace.copy()
+            return result
+        failure_result = _prefer_scihub_endpoint_failure(failure_result, result)
 
-        if detect_bot_challenge("", resp.text, f"{mirror}/{doi}"):
-            return FetchResult(
-                outcome="failed",
-                source="Sci-Hub",
-                via="scihub",
-                state="challenge",
-                warnings=["Sci-Hub challenge detected"],
-            )
-
-        # Extract PDF link
-        pdf_url = _extract_scihub_pdf_url(resp.text, mirror)
-        if not pdf_url:
-            return FetchResult(
-                outcome="failed",
-                source="Sci-Hub",
-                via="scihub",
-                state="error",
-                warnings=["Sci-Hub lookup failed: no PDF link found"],
-            )
-
-        pdf_resp = await _download_pdf(client, pdf_url)
-        ct = pdf_resp.headers.get("content-type", "")
-        check = classify_pdf_content(pdf_resp.content, ct)
-        if check["is_pdf"]:
-            return FetchResult(
-                pdf_buffer=pdf_resp.content,
-                outcome="pdf_obtained",
-                source="Sci-Hub",
-                via="scihub",
-                state="ok",
-            )
-        warnings.append(f"Sci-Hub PDF fetch failed: {check['reason']}")
-
-    except Exception as exc:
-        warnings.append(_format_fetch_warning("Sci-Hub fetch failed", exc))
-    return FetchResult(outcome="failed", source="Sci-Hub", via="scihub", state="error", warnings=warnings)
+    if failure_result is None:
+        failure_result = FetchResult(
+            outcome="failed",
+            source="Sci-Hub",
+            via="scihub",
+            state="error",
+            warnings=["Sci-Hub lookup failed: no endpoints configured"],
+        )
+    failure_result.warnings = warnings.copy() or failure_result.warnings
+    failure_result.trace = trace.copy()
+    return failure_result
 
 
-def _extract_scihub_pdf_url(html: str, mirror: str) -> str | None:
+def _extract_scihub_pdf_url(html: str, endpoint: str) -> str | None:
     """Extract PDF URL from Sci-Hub page."""
     soup = BeautifulSoup(html, "lxml")
 
     # embed[type=application/pdf]
     embed = soup.find("embed", attrs={"type": "application/pdf"})
     if embed and embed.get("src"):
-        return _normalize_scihub_url(str(embed["src"]), mirror)
+        return _normalize_scihub_url(str(embed["src"]), endpoint)
 
     # iframe src
     iframe = soup.find("iframe")
     if iframe and iframe.get("src"):
-        return _normalize_scihub_url(str(iframe["src"]), mirror)
+        return _normalize_scihub_url(str(iframe["src"]), endpoint)
 
     # button onclick
     button = soup.find("button")
     if button and button.get("onclick"):
         match = re.search(r"location\.href='([^']+\.pdf[^']*)'", str(button["onclick"]))
         if match:
-            return _normalize_scihub_url(match.group(1), mirror)
+            return _normalize_scihub_url(match.group(1), endpoint)
 
     return None
 
 
-def _normalize_scihub_url(url: str, mirror: str) -> str:
+def _normalize_scihub_url(url: str, endpoint: str) -> str:
     if url.startswith("//"):
         return f"https:{url}"
     if url.startswith("/"):
-        return f"{mirror}{url}"
+        return f"{endpoint}{url}"
     if not url.startswith("http"):
-        return f"{mirror}/{url}"
+        return f"{endpoint}/{url}"
     return url

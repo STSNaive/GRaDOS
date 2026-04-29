@@ -44,7 +44,7 @@ GRaDOS is designed to sit inside an agent research workflow:
 | GRaDOS | `parse_pdf_file` | Parse a local PDF into markdown. Without a DOI it returns a truncated preview; with a DOI it saves the paper into the canonical library and returns a save receipt. |
 | GRaDOS | `save_paper_to_zotero` | Save one paper to the configured Zotero library through the Web API, typically for papers that actually support the final answer. |
 | GRaDOS | `save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, and evidence grids in the local SQLite state store. |
-| GRaDOS | `query_research_artifacts` | Query previously saved research artifacts by id, kind, project id, or keyword. `detail=true` returns the full stored content. |
+| GRaDOS | `query_research_artifacts` | Query previously saved research artifacts by id, kind, or keyword. `detail=true` returns the full stored content. |
 | GRaDOS | `manage_failure_cases` | Record, inspect, and summarize failed fetch, parse, search, or citation attempts. Can also suggest conservative retry steps from local failure memory. |
 | GRaDOS | `get_citation_graph` | Return lightweight local citation relationships, including citation neighbors, common references, and reverse citing-paper lookups. |
 | GRaDOS | `get_papers_full_context` | Return structured full-context material for a small paper set, with token estimates or actual section content for CAG-style deep reading. |
@@ -83,8 +83,6 @@ After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 - `plugins/grados/.codex-plugin/`: self-contained Codex plugin bundle used by the marketplace
 - `plugins/grados/plugin.mcp.json`: plugin-scoped MCP config copied into the Codex bundle
 - `skills/grados/SKILL.md`: structured research workflow built on top of the MCP tools
-- `grados-python-implementation-plan.md`: implementation plan and completion ledger
-- `TODO.md`: concise execution snapshot derived from the implementation plan
 
 ## Installation 🚀
 
@@ -351,7 +349,7 @@ Full-text fetch priority:
 }
 ```
 
-Legacy fetch-strategy aliases such as `TDM`, `OA`, `SciHub`, and `Headless` are still accepted while existing configs migrate. The current `scihub` runtime uses `extract.sci_hub.fallback_mirror` as its configured mirror.
+Legacy fetch-strategy aliases such as `TDM`, `OA`, `SciHub`, and `Headless` are still accepted while existing configs migrate. The current `scihub` runtime uses `extract.sci_hub.endpoints` as an ordered access list: the first endpoint is tried first, and later entries are fallbacks. The legacy `extract.sci_hub.fallback_mirror` value is still accepted when `endpoints` is omitted or empty.
 
 The browser strategy is a first-class path for institutional publisher access. If a publisher verification page blocks PDF capture, GRaDOS records a `challenge` with manual-resume metadata in `remote_metadata`; complete the verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true` to continue from the saved browser URL/profile instead of restarting at `api`.
 
@@ -387,8 +385,6 @@ uv build
 
 ## Project Docs 📚
 
-- [TODO.md](./TODO.md)
-  - Tracks only unfinished work and current priorities.
 - [ADR.md](./ADR.md)
   - Records accepted architectural decisions and why the project chose them.
 - [CHANGELOG.md](./CHANGELOG.md)

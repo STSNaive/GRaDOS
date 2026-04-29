@@ -44,7 +44,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `parse_pdf_file` | 把本地 PDF 解析为 markdown。未提供 DOI 时返回截断预览；提供 DOI 时会保存进 canonical 论文库并返回保存回执。 |
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 把单篇论文保存到当前配置的 Zotero 库，通常用于最终答案里实际引用到的论文。 |
 | GRaDOS | `save_research_artifact` | 把 search snapshot、extraction receipt、evidence grid 等可复用中间产物持久化到本地 SQLite 状态库。 |
-| GRaDOS | `query_research_artifacts` | 按 id、kind、project id 或关键词查询已保存的 research artifact；`detail=true` 会返回完整内容。 |
+| GRaDOS | `query_research_artifacts` | 按 id、kind 或关键词查询已保存的 research artifact；`detail=true` 会返回完整内容。 |
 | GRaDOS | `manage_failure_cases` | 记录、查询并总结 fetch、parse、search 或 citation 失败案例，也能给出保守的重试建议。 |
 | GRaDOS | `get_citation_graph` | 返回本地论文库中的轻量引用关系，包括引用邻居、共同参考文献和反向 citing-paper 查询。 |
 | GRaDOS | `get_papers_full_context` | 为少量论文返回结构化全文上下文，可先拿 token 估计，也可直接进入 CAG 风格的深读模式。 |
@@ -83,8 +83,6 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 - `plugins/grados/.codex-plugin/`：给 Codex marketplace 用的自包含 plugin bundle
 - `plugins/grados/plugin.mcp.json`：复制进 Codex plugin bundle 的插件专用 MCP 配置
 - `skills/grados/SKILL.md`：构建在 MCP 工具之上的结构化科研工作流
-- `grados-python-implementation-plan.md`：实施计划与完成度台账
-- `TODO.md`：从实施计划提炼出的简明执行快照
 
 ## 安装 🚀
 
@@ -351,7 +349,7 @@ Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `P
 }
 ```
 
-旧的抓取策略别名 `TDM`、`OA`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。当前 `scihub` 运行时使用 `extract.sci_hub.fallback_mirror` 作为配置镜像。
+旧的抓取策略别名 `TDM`、`OA`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。当前 `scihub` 运行时使用 `extract.sci_hub.endpoints` 作为有序访问列表：第一个 endpoint 优先尝试，后续 endpoint 作为 fallback。旧的 `extract.sci_hub.fallback_mirror` 在 `endpoints` 省略或为空时仍然兼容。
 
 `browser` 是机构权限访问 publisher 全文的一等路径。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
 
@@ -387,8 +385,6 @@ uv build
 
 ## 项目文档 📚
 
-- [TODO.md](./TODO.md)
-  - 只记录当前未完成事项和优先级。
 - [ADR.md](./ADR.md)
   - 记录已经接受的架构决策，以及项目为何这样设计。
 - [CHANGELOG.md](./CHANGELOG.md)

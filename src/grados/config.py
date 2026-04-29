@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from grados.secrets import SecretResolutionSummary, iter_api_key_specs, resolve_api_keys
 
@@ -175,8 +175,22 @@ class FetchStrategyConfig(BaseModel):
     })
 
 
+DEFAULT_SCI_HUB_ENDPOINT = "https://sci-hub.se"
+
+
 class SciHubConfig(BaseModel):
-    fallback_mirror: str = "https://sci-hub.se"
+    endpoints: list[str] = Field(default_factory=lambda: [DEFAULT_SCI_HUB_ENDPOINT])
+    fallback_mirror: str = DEFAULT_SCI_HUB_ENDPOINT
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_fallback_mirror(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if data.get("endpoints"):
+            return data
+        fallback = str(data.get("fallback_mirror") or DEFAULT_SCI_HUB_ENDPOINT)
+        return {**data, "endpoints": [fallback]}
 
 
 class HeadlessBrowserConfig(BaseModel):
@@ -445,8 +459,11 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     data["extract"]["tdm"]["_comment_order"] = (
         "Publisher API/TDM providers tried by the api fetch strategy."
     )
+    data["extract"]["sci_hub"]["_comment_endpoints"] = (
+        "Ordered Sci-Hub access endpoints. The first endpoint is tried first; later endpoints are fallbacks."
+    )
     data["extract"]["sci_hub"]["_comment_fallback_mirror"] = (
-        "Fallback Sci-Hub mirror used only when the scihub strategy is enabled."
+        "Legacy compatibility endpoint used only when endpoints is omitted or empty."
     )
     data["extract"]["headless_browser"]["_comment_browser"] = (
         "Fallback system browser type when the managed browser is unavailable. Supported value: chrome."

@@ -57,3 +57,29 @@ def test_example_config_contains_no_unknown_runtime_keys() -> None:
 
     assert _unknown_model_keys(normalized, GRaDOSConfig) == []
     GRaDOSConfig.model_validate(normalized)
+
+
+def test_scihub_legacy_fallback_mirror_populates_endpoints() -> None:
+    config = GRaDOSConfig.model_validate(
+        {"extract": {"sci_hub": {"fallback_mirror": "https://legacy.example"}}}
+    )
+
+    assert config.extract.sci_hub.endpoints == ["https://legacy.example"]
+
+
+def test_scihub_configured_endpoints_take_priority_over_legacy_fallback() -> None:
+    config = GRaDOSConfig.model_validate(
+        {
+            "extract": {
+                "sci_hub": {
+                    "endpoints": ["https://primary.example", "https://fallback.example"],
+                    "fallback_mirror": "https://legacy.example",
+                }
+            }
+        }
+    )
+
+    assert config.extract.sci_hub.endpoints == [
+        "https://primary.example",
+        "https://fallback.example",
+    ]

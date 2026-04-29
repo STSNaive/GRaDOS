@@ -645,6 +645,7 @@ def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeyp
                 title="Challenge Demo",
                 publisher="Elsevier",
             ),
+            trace=[{"via": "browser", "state": "challenge", "host": "www.sciencedirect.com"}],
             warnings=["Browser automation: publisher_challenge"],
         )
 
@@ -669,6 +670,7 @@ def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeyp
     assert calls[0]["fetch_manual"] is True
     assert isinstance(calls[0]["fetch_resume"], dict)
     assert calls[0]["fetch_resume"]["kind"] == "browser_profile"
+    assert "fetch_trace" not in calls[0]
     assert calls[0]["has_fulltext"] is False
 
 

@@ -48,8 +48,12 @@
             "_comment_order": "Publisher API/TDM providers tried by the api fetch strategy."
         },
         "sci_hub": {
+            "endpoints": [
+                "https://sci-hub.se"
+            ],
             "fallback_mirror": "https://sci-hub.se",
-            "_comment_fallback_mirror": "Fallback Sci-Hub mirror used only when the scihub strategy is enabled."
+            "_comment_endpoints": "Ordered Sci-Hub access endpoints. The first endpoint is tried first; later endpoints are fallbacks.",
+            "_comment_fallback_mirror": "Legacy compatibility endpoint used only when endpoints is omitted or empty."
         },
         "headless_browser": {
             "browser": "chrome",

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
+
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 from grados.extract.fetch import FetchResult, _fetch_tdm, build_fetch_strategies, build_tdm_providers
 from grados.publisher.common import PublisherMetadata
@@ -265,6 +267,49 @@ def test_fetch_paper_stops_after_browser_success(monkeypatch, tmp_path) -> None:
     assert result.state == "ok"
 
 
+def test_fetch_paper_continues_after_scihub_not_found(monkeypatch) -> None:
+    import grados.extract.fetch as fetch_module
+
+    calls: list[str] = []
+
+    async def fake_fetch_scihub(*args, **kwargs):
+        calls.append("scihub")
+        return FetchResult(
+            outcome="failed",
+            source="Sci-Hub",
+            via="scihub",
+            state="not_found",
+            warnings=["Sci-Hub primary endpoint sci-hub.se reports no paper for DOI"],
+        )
+
+    async def fake_fetch_oa(*args, **kwargs):
+        calls.append("oa")
+        return FetchResult(
+            pdf_buffer=b"%PDF-1.4\n%stub",
+            outcome="pdf_obtained",
+            source="Unpaywall OA",
+            via="oa",
+            state="ok",
+        )
+
+    monkeypatch.setattr(fetch_module, "_fetch_scihub", fake_fetch_scihub)
+    monkeypatch.setattr(fetch_module, "_fetch_oa", fake_fetch_oa)
+
+    result = asyncio.run(
+        fetch_module.fetch_paper(
+            doi="10.1234/demo",
+            api_keys={},
+            etiquette_email="test@example.com",
+            fetch_order=["scihub", "oa"],
+        )
+    )
+
+    assert calls == ["scihub", "oa"]
+    assert result.outcome == "pdf_obtained"
+    assert result.via == "oa"
+    assert result.warnings == ["Sci-Hub primary endpoint sci-hub.se reports no paper for DOI"]
+
+
 def test_fetch_paper_resume_starts_at_browser_and_passes_resume(monkeypatch, tmp_path) -> None:
     import grados.extract.fetch as fetch_module
     from grados.browser.generic import BrowserFetchResult
@@ -349,43 +394,146 @@ def test_fetch_oa_surfaces_warning_when_pdf_download_fails() -> None:
     assert result.warnings == ["OA PDF fetch failed: RuntimeError: network down"]
 
 
+def _http_response(
+    url: str,
+    *,
+    status_code: int = 200,
+    text: str = "",
+    content: bytes | None = None,
+    content_type: str = "text/html",
+) -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        content=content if content is not None else text.encode("utf-8"),
+        headers={"content-type": content_type},
+        request=httpx.Request("GET", url),
+    )
+
+
 def test_fetch_scihub_surfaces_warning_when_pdf_link_missing() -> None:
     from grados.extract.fetch import _fetch_scihub
 
-    class FakeResponse:
-        def __init__(self) -> None:
-            self.status_code = 200
-            self.text = "<html><body>no pdf here</body></html>"
-            self.headers: dict[str, str] = {}
-            self.content = self.text.encode("utf-8")
-
     class FakeClient:
         async def get(self, url: str, **kwargs):  # noqa: ANN003
-            return FakeResponse()
+            return _http_response(url, text="<html><body>no pdf here</body></html>")
 
     result = asyncio.run(
         _fetch_scihub(
             "10.1234/demo",
             FakeClient(),  # type: ignore[arg-type]
-            {"fallback_mirror": "https://sci-hub.se"},
+            {"endpoints": ["https://sci-hub.se"]},
         )
     )
 
     assert result.outcome == "failed"
     assert result.via == "scihub"
-    assert result.state == "error"
-    assert result.warnings == ["Sci-Hub lookup failed: no PDF link found"]
+    assert result.state == "parse_error"
+    assert result.warnings == ["Sci-Hub primary endpoint sci-hub.se page did not expose a PDF link"]
+    assert result.trace[0]["endpoint_role"] == "primary"
+    assert result.trace[0]["reason"] == "pdf_link_missing"
 
 
-def test_fetch_scihub_ignores_legacy_fallback_mirror_key() -> None:
+def test_fetch_scihub_uses_fallback_endpoint_when_primary_unreachable() -> None:
     from grados.extract.fetch import _fetch_scihub
 
-    class FakeResponse:
+    class FakeClient:
         def __init__(self) -> None:
-            self.status_code = 200
-            self.text = "<html><body>no pdf here</body></html>"
-            self.headers: dict[str, str] = {}
-            self.content = self.text.encode("utf-8")
+            self.calls: list[str] = []
+
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            self.calls.append(url)
+            if url == "https://primary.example/10.1234/demo":
+                raise httpx.ConnectError("network down", request=httpx.Request("GET", url))
+            if url == "https://fallback.example/10.1234/demo":
+                return _http_response(url, text='<html><iframe src="/paper.pdf"></iframe></html>')
+            if url == "https://fallback.example/paper.pdf":
+                return _http_response(
+                    url,
+                    content=b"%PDF-1.4\n%demo\n",
+                    content_type="application/pdf",
+                )
+            raise AssertionError(f"unexpected URL: {url}")
+
+    client = FakeClient()
+    result = asyncio.run(
+        _fetch_scihub(
+            "10.1234/demo",
+            client,  # type: ignore[arg-type]
+            {"endpoints": ["https://primary.example", "https://fallback.example"]},
+        )
+    )
+
+    assert result.outcome == "pdf_obtained"
+    assert result.state == "ok"
+    assert result.host == "fallback.example"
+    assert client.calls[0] == "https://primary.example/10.1234/demo"
+    assert client.calls[-2:] == [
+        "https://fallback.example/10.1234/demo",
+        "https://fallback.example/paper.pdf",
+    ]
+    assert result.trace[0]["endpoint_role"] == "primary"
+    assert result.trace[0]["state"] == "site_unreachable"
+    assert result.trace[1]["endpoint_role"] == "fallback"
+    assert result.trace[1]["state"] == "ok"
+
+
+def test_fetch_scihub_not_found_does_not_try_fallback_endpoint() -> None:
+    from grados.extract.fetch import _fetch_scihub
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            self.calls.append(url)
+            if url == "https://primary.example/10.1234/demo":
+                return _http_response(url, status_code=404, text="not found")
+            raise AssertionError(f"fallback should not be called: {url}")
+
+    client = FakeClient()
+    result = asyncio.run(
+        _fetch_scihub(
+            "10.1234/demo",
+            client,  # type: ignore[arg-type]
+            {"endpoints": ["https://primary.example", "https://fallback.example"]},
+        )
+    )
+
+    assert result.outcome == "failed"
+    assert result.state == "not_found"
+    assert client.calls == ["https://primary.example/10.1234/demo"]
+    assert result.trace[0]["reason"] == "not_found_status"
+
+
+def test_fetch_scihub_reports_unreachable_after_all_endpoints_fail() -> None:
+    from grados.extract.fetch import _fetch_scihub
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            self.calls.append(url)
+            raise httpx.ConnectError("network down", request=httpx.Request("GET", url))
+
+    client = FakeClient()
+    result = asyncio.run(
+        _fetch_scihub(
+            "10.1234/demo",
+            client,  # type: ignore[arg-type]
+            {"endpoints": ["https://primary.example", "https://fallback.example"]},
+        )
+    )
+
+    assert result.outcome == "failed"
+    assert result.state == "site_unreachable"
+    assert result.trace[0]["endpoint_role"] == "primary"
+    assert result.trace[-1]["endpoint_role"] == "fallback"
+    assert len(result.warnings) == 2
+
+
+def test_fetch_scihub_uses_legacy_fallback_mirror_when_endpoints_missing() -> None:
+    from grados.extract.fetch import _fetch_scihub
 
     class FakeClient:
         def __init__(self) -> None:
@@ -393,7 +541,33 @@ def test_fetch_scihub_ignores_legacy_fallback_mirror_key() -> None:
 
         async def get(self, url: str, **kwargs):  # noqa: ANN003
             self.last_url = url
-            return FakeResponse()
+            return _http_response(url, text="<html><body>no pdf here</body></html>")
+
+    client = FakeClient()
+    result = asyncio.run(
+        _fetch_scihub(
+            "10.1234/demo",
+            client,  # type: ignore[arg-type]
+            {"fallback_mirror": "https://legacy.example"},
+        )
+    )
+
+    assert result.outcome == "failed"
+    assert result.via == "scihub"
+    assert result.state == "parse_error"
+    assert client.last_url == "https://legacy.example/10.1234/demo"
+
+
+def test_fetch_scihub_ignores_legacy_fallback_mirror_key() -> None:
+    from grados.extract.fetch import _fetch_scihub
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.last_url = ""
+
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            self.last_url = url
+            return _http_response(url, text="<html><body>no pdf here</body></html>")
 
     client = FakeClient()
     result = asyncio.run(
@@ -406,7 +580,7 @@ def test_fetch_scihub_ignores_legacy_fallback_mirror_key() -> None:
 
     assert result.outcome == "failed"
     assert result.via == "scihub"
-    assert result.state == "error"
+    assert result.state == "parse_error"
     assert client.last_url == "https://sci-hub.se/10.1234/demo"
 
 
