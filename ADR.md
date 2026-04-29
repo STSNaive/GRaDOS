@@ -302,3 +302,39 @@
 - 新配置和文档统一围绕 `api/browser/oa/scihub` 组织，用户心智更接近真实使用路径。
 - 旧配置不需要一次性重写；legacy alias 仍可运行。
 - Elsevier / ScienceDirect 等需要人工验证的页面不再表现为普通失败；用户完成一次验证后，可以复用项目自己的浏览器 profile 继续同一 DOI 的获取尝试。
+
+---
+
+## ADR-012：`indepth`、`paper_summary` 与 `research_checkpoint` 分层
+
+- 状态：Accepted（分阶段实施中）
+- 日期：2026-04-29
+
+### 背景
+- GRaDOS 的普通搜索流程已经可以先返回远程 metadata / abstract，再按需获取全文；但复杂研究任务经常需要在搜索、全文获取、总结、证据回读和最终综合之间跨多轮对话持续推进。
+- 只依赖聊天上下文保存中间判断时，一旦上下文压缩或任务中断，已经筛选过的论文、全文获取状态、关键证据位置和阶段性结论都可能丢失。
+- 直接把 summary、checkpoint、全文 chunk 和远程 metadata 混在一个存储层里会降低可追溯性：派生总结可能被误当作引用依据，临时任务判断也可能污染长期论文知识。
+- 用户需要一个更深入但默认可关闭的研究模式：它可以在同一个候选数量下继续获取全文和生成论文级总结，同时仍保持“最终回答以全文为准”的证据纪律。
+
+### 决策
+- 新模式统一命名为 `indepth`，包括 CLI、config、MCP schema 与内部字段；不使用 `in-depth` / `--in-depth` 作为主命名。
+- `indepth` 默认关闭，作为第二阶段能力实现；开启后沿用基础搜索模式的同一个 `limit` / `N`，不新增第二套 top-N 概念。实现可以有硬性安全上限和失败降级，但用户可见心智保持为一个候选数量。
+- `paper_summary` 是论文级、query-independent、可复用的派生产物，用于快速理解、导航和恢复上下文；它不是引用依据。最终回答、citation、audit 和比较仍必须回读 canonical `papers/*.md`。
+- 不长期保存独立的 `topic_note`。当前任务相关判断写入 `research_checkpoint.current_findings` / `evidence_anchors`，避免一次任务的视角被误用于另一类问题。
+- `research_checkpoint` 是一次 GRaDOS 研究对话的 durable workflow state，而不是论文全文库。一个 checkpoint 必须支持多篇论文，记录用户问题、搜索式、候选论文、全文获取状态、summary 关联、阶段性发现、证据锚点、失败原因和下一步动作。
+- checkpoint folder 自动命名为 `{started_at}_{slug}_{short_hash}`，默认位于项目内专用目录；该目录必须受 gitignore / public-contract 规则保护，避免泄露本地研究材料或下载状态。
+- 存储职责保持分层：
+  - `remote_metadata` 保存远程发现结果、fetch 状态和 provenance。
+  - `papers/*.md` 保存 canonical 全文，是最终证据源。
+  - `database/chroma/` 保存可重建的全文向量索引。
+  - `paper_summary` 与 `research_checkpoint` 保存派生理解和工作流恢复信息，通过 `doi` / `safe_doi` / `paper_id` / `paper_uri` / hash 与上述层关联。
+- 搜索和提取结果应暴露本地状态，即使未开启 `indepth` 也应能告诉用户论文是否已保存、是否有全文、fetch 状态、summary 状态和 canonical paper URI。
+- Browser challenge、metadata-only、partial success、summary failed 等状态必须被记录为可恢复状态，不应静默折叠成普通失败，也不应阻塞整批任务。
+- 最终综合前必须统一学科专有名词：同一概念在输出中使用一个 canonical term；若论文之间用词冲突或领域规范不清，应结合已读 canonical 论文和必要的权威网络检索选择最常用、最规范的术语。不能为了统一术语而合并本来有差异的概念。
+- 工具面保持最小化，优先复用 ADR-009 的 shared workflow / service core；CLI 与 MCP 只做薄 adapter。除非确有必要，不新增碎片化 checkpoint CRUD 工具组。
+
+### 结果与影响
+- 普通模式继续轻量运行；`indepth` 为需要全文级阅读和总结的研究任务提供显式开关。
+- summary、checkpoint、全文和向量索引之间可以互相定位，但不会混淆谁是 canonical evidence。
+- 上下文压缩或对话中断后，LLM 可以通过 checkpoint 恢复已筛选论文、阶段性发现和证据锚点，再回读全文继续工作。
+- 后续实现细节、schema 字段和迁移步骤由 `TODO.md` 跟踪；本 ADR 只固定长期架构语义与命名边界。
