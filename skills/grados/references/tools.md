@@ -20,8 +20,8 @@
 | `grados:parse_pdf_file` | Parse a local PDF file using the same Python parsing waterfall. If DOI is provided, it writes the canonical paper entry, mirrors `.md` to `papers/`, and returns a compact save receipt. |
 | `grados:read_saved_paper` | Canonical deep-reading tool for previously saved papers. Accepts `doi`, `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis and citation verification. |
 | `grados:save_paper_to_zotero` | Save cited paper metadata to Zotero. Requires `ZOTERO_API_KEY` and Zotero library configuration. |
-| `grados:save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, and evidence grids in the local SQLite state store. |
-| `grados:query_research_artifacts` | Query previously saved research artifacts by id, kind, or keyword. |
+| `grados:save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, and compression-safe evidence checkpoints in the local SQLite state store. |
+| `grados:query_research_artifacts` | Query previously saved research artifacts by id, kind, or keyword. Use `detail=true` to restore full JSON or Markdown content. |
 | `grados:manage_failure_cases` | Record, query, and summarize failed fetch/parse/search/citation attempts. Can also suggest conservative retry steps. |
 | `grados:get_citation_graph` | Return lightweight local citation relationships, including neighbors, common references, and reverse citing-paper lookups. |
 | `grados:get_papers_full_context` | Return structured full-context material for a small paper set, with token estimates or actual section content for CAG-style deep reading. |
@@ -32,6 +32,49 @@
 There is no separate local RAG server in the Python release. Saved-paper canonical storage and semantic retrieval are built directly into GRaDOS through ChromaDB.
 
 When `extract_paper_full_text` returns a browser `challenge`, complete publisher verification in the managed browser profile and call the tool again with `resume_browser=true`. GRaDOS resumes at the browser strategy from the saved URL/profile when available, instead of restarting at the `api` strategy.
+
+## Compression-Safe Evidence Checkpoints
+
+Use `grados:save_research_artifact(kind="evidence_checkpoint")` when evidence has to survive context compression, handoff, or a later drafting pass. This artifact is a recovery and navigation record, not a citation source by itself.
+
+Recommended content schema:
+
+```json
+{
+  "schema_version": 1,
+  "user_question": "The research question or writing task.",
+  "search_queries": ["english query used for discovery"],
+  "evidence_anchors": [
+    {
+      "doi": "10.xxxx/example",
+      "safe_doi": "10_xxxx_example",
+      "canonical_uri": "grados://papers/10_xxxx_example",
+      "section_name": "Results",
+      "paragraph_start": 42,
+      "paragraph_count": 3,
+      "claim": "The claim this evidence supports.",
+      "support_reason": "Why this paragraph window supports or limits the claim."
+    }
+  ],
+  "open_questions": ["Evidence gaps still unresolved."],
+  "next_actions": ["Concrete follow-up reading, extraction, or audit steps."],
+  "warnings": ["Known limitations, weak support, or imprecise coordinates."]
+}
+```
+
+Recommended metadata:
+
+```json
+{
+  "schema_name": "evidence_checkpoint",
+  "schema_version": 1,
+  "query_topic": "short topic label",
+  "paper_count": 3,
+  "anchor_count": 7
+}
+```
+
+Restore with `grados:query_research_artifacts(kind="evidence_checkpoint", detail=true)`. Before citing, auditing, or comparing any restored claim, call `grados:read_saved_paper` with the saved `canonical_uri` or `safe_doi`, `start_paragraph`, and `max_paragraphs=paragraph_count`. Search snippets, summaries, checkpoints, and tool previews are only navigation material; final answers and citations must be checked against canonical `papers/*.md` content.
 
 ## Optional Playwright MCP Tools
 

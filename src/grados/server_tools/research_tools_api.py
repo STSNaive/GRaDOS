@@ -30,7 +30,7 @@ async def save_research_artifact(
             min_length=1,
             description=(
                 "Artifact kind such as `search_snapshot`, "
-                "`extraction_receipt`, or `evidence_table`."
+                "`extraction_receipt`, `evidence_table`, or `evidence_checkpoint`."
             ),
         ),
     ],
@@ -354,7 +354,7 @@ def register_research_tools_api(mcp: FastMCP) -> None:
         description=(
             "Save a structured research artifact produced during search, extraction, reading, or writing. "
             "Use this for reusable intermediate outputs such as search snapshots, "
-            "extraction receipts, and evidence tables."
+            "extraction receipts, evidence tables, and compression-safe evidence checkpoints."
         )
     )(save_research_artifact)
 

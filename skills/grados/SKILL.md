@@ -30,6 +30,33 @@ This skill uses a **four-tier information strategy** to keep your context window
 
 This design keeps screening lightweight while preserving canonical full text for deep reading and citation verification in Step 4.
 
+## Compression-Safe Evidence Protocol
+
+Use this protocol whenever a claim, evidence table, comparison, or draft audit may survive context compression or be reused in a later turn.
+
+1. Treat every citable evidence point as an `evidence_anchor` with these fields:
+   - `doi`: the paper DOI exactly as known.
+   - `safe_doi`: the filesystem-safe DOI used by GRaDOS.
+   - `canonical_uri`: usually `grados://papers/{safe_doi}`.
+   - `section_name`: the paper section used for the claim, or an empty string if unknown.
+   - `paragraph_start`: the 0-based paragraph index to pass back into `grados:read_saved_paper`.
+   - `paragraph_count`: the number of paragraphs to reread.
+   - `claim`: the claim this evidence is meant to support.
+   - `support_reason`: why this paragraph window supports, weakly supports, contradicts, or limits the claim.
+2. Create or confirm anchors from canonical saved-paper reads. Search snippets, extraction receipts, summaries, evidence grids, draft audits, and comparison snippets are navigation material; they are not final citation evidence until you reread the corresponding `papers/*.md` paragraph window with `grados:read_saved_paper`.
+3. If a helper output does not provide exact paragraph coordinates, keep `paragraph_start` / `paragraph_count` empty in your notes and call `grados:get_saved_paper_structure` plus `grados:read_saved_paper` to establish a concrete window before citing.
+4. After context compression, before a final answer, or before revising a citation-heavy draft, reload each key anchor with `grados:read_saved_paper` using `canonical_uri` or `safe_doi`, `start_paragraph=paragraph_start`, and `max_paragraphs=paragraph_count`. Delete or qualify any claim that no longer matches the reread text.
+5. Persist reusable anchor sets with `grados:save_research_artifact(kind="evidence_checkpoint")`. Use structured JSON content with:
+   - `schema_version`: currently `1`.
+   - `user_question`: the user's research question or writing task.
+   - `search_queries`: English queries used to find the papers.
+   - `evidence_anchors`: the `evidence_anchor[]` list.
+   - `open_questions`: gaps that still need search, extraction, or reading.
+   - `next_actions`: concrete follow-up actions.
+   - `warnings`: limitations such as missing full text, weak support, or imprecise paragraph coordinates.
+6. Store checkpoint metadata with `schema_name="evidence_checkpoint"`, `schema_version=1`, `query_topic`, `paper_count`, and `anchor_count` when those values are available.
+7. Recover a checkpoint with `grados:query_research_artifacts(kind="evidence_checkpoint", detail=true)`, then reread the saved anchors before drafting, citing, auditing, or comparing.
+
 ## Current Server Surface
 
 The current Python GRaDOS server exposes:
@@ -116,7 +143,7 @@ If `extract_paper_full_text` fails for a strongly relevant paper (returns error 
    - Before drafting a subsection, prefer calling **`grados:build_evidence_grid`** so the evidence grid is explicit and reusable. Record the claim or subsection, the supporting paper, the exact section or paragraph window used, and why the evidence supports the claim.
    - When comparing multiple studies, call **`grados:compare_papers`** to extract aligned method or result snippets rather than improvising from memory.
    - For **1-8 highly relevant papers**, call **`grados:get_papers_full_context`** with `mode=estimate` first, then `mode=full` only if the context budget is acceptable.
-   - If an intermediate table or comparison is reusable, store it with **`grados:save_research_artifact`**.
+   - If an intermediate table, comparison, or anchor set is reusable, store it with **`grados:save_research_artifact`**. Use `kind="evidence_checkpoint"` for compression-safe claim-to-paragraph anchors.
 4. Synthesize an answer to the user's original question **in Chinese**.
 5. **Citation rule**: Every factual claim MUST include an inline citation, e.g. `[Smith et al., 2023]`. Only cite content you have actually **read with `grados:read_saved_paper`** in this session. No unsupported claims allowed.
 6. After completing the synthesis, for each paper that was **actually cited** in the answer, call `grados:save_paper_to_zotero` with its full metadata (title, DOI, authors, abstract, journal, year, url, tags). Pass the query topic as a tag so papers are organised by research theme.

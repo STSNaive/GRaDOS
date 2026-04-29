@@ -7,6 +7,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
+- Added a compression-safe `evidence_checkpoint` research-artifact convention to the GRaDOS skill and tool reference so claim evidence can be restored after context compression and reread from canonical saved-paper paragraphs before citation.
 - Added `keyring` as a runtime dependency plus a new `grados.secrets` module that resolves API keys with `env -> keychain -> config` precedence, migrates plaintext `config.json` secrets into the OS keychain on first use, and clears migrated plaintext keys with an atomic rewrite.
 - Added `grados auth set/status/migrate/clear` commands for explicit keychain management, masked source-aware API-key inspection, and one-shot migration of legacy plaintext config values.
 - Added a dedicated `database/remote_metadata/` Chroma store plus `grados.storage.remote_metadata` helpers for validated per-DOI metadata caching, semantic title/abstract lookup, and fetch-status backfills outside the rebuildable paper index.
