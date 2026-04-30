@@ -3,6 +3,7 @@
 ## Contents
 
 - [GRaDOS Server Tools](#grados-server-tools)
+- [Indepth Mode](#indepth-mode)
 - [Optional Playwright MCP Tools](#optional-playwright-mcp-tools)
 - [MCP Resources](#mcp-resources)
 
@@ -12,7 +13,7 @@
 
 | Tool | Purpose |
 | --- | --- |
-| `grados:search_academic_papers` | Waterfall search across academic databases. Returns deduplicated paper metadata with DOIs and abstracts. |
+| `grados:search_academic_papers` | Waterfall search across academic databases. Returns deduplicated paper metadata with DOIs, abstracts, continuation state, and local saved/full-text/summary state. Optional `indepth=true` materializes returned candidates with the same `limit`. |
 | `grados:search_saved_papers` | Compact paper-level search over the saved-paper store. Uses metadata prefiltering, ChromaDB chunk retrieval, and optional lightweight lexical reranking over canonical documents. Treat snippets as screening hints, not citation evidence. |
 | `grados:get_saved_paper_structure` | Deterministic low-token paper card for one saved paper. Returns canonical URI, preview excerpt, section headings, section outline, counts, and asset summary. Use this before deep reading. |
 | `grados:extract_paper_full_text` | Fetch full text by DOI via `api -> browser -> oa -> scihub`, then parse via `Docling -> Marker -> PyMuPDF`. Auto-saves to the canonical paper store, mirrors Markdown to `papers/`, and indexes into ChromaDB. Returns a compact, non-citable receipt rather than the full text. |
@@ -32,6 +33,12 @@
 There is no separate local RAG server in the Python release. Saved-paper canonical storage and semantic retrieval are built directly into GRaDOS through ChromaDB.
 
 When `extract_paper_full_text` returns a browser `challenge`, complete publisher verification in the managed browser profile and call the tool again with `resume_browser=true`. GRaDOS resumes at the browser strategy from the saved URL/profile when available, instead of restarting at the `api` strategy.
+
+## Indepth Mode
+
+`indepth` is disabled by default. Use `search_academic_papers(indepth=true)` or `grados search "query" --indepth` to run one opt-in full-text pass over the returned search candidates. The mode uses the same `limit` as metadata search, writes `research_checkpoint` folders under `GRADOS_HOME/research_checkpoints/`, and can generate reusable query-independent `paper_summary` artifacts under `GRADOS_HOME/paper_summaries/`.
+
+See [indepth.md](indepth.md) for the checkpoint schema, paper-summary invalidation rules, and failure semantics.
 
 ## Compression-Safe Evidence Checkpoints
 

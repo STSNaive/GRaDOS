@@ -102,6 +102,14 @@ class GRaDOSPaths:
         return self.database_root / "research.sqlite3"
 
     @property
+    def research_checkpoints(self) -> Path:
+        return self.root / "research_checkpoints"
+
+    @property
+    def paper_summaries(self) -> Path:
+        return self.root / "paper_summaries"
+
+    @property
     def logs(self) -> Path:
         return self.root / "logs"
 
@@ -116,6 +124,8 @@ class GRaDOSPaths:
             self.papers,
             self.downloads,
             self.database_root,
+            self.research_checkpoints,
+            self.paper_summaries,
             self.logs,
             self.cache,
         ]:
@@ -129,6 +139,8 @@ class GRaDOSPaths:
             ("论文目录", self.papers),
             ("下载目录", self.downloads),
             ("状态数据库", self.database_state),
+            ("研究 checkpoint", self.research_checkpoints),
+            ("论文 summary", self.paper_summaries),
             ("浏览器二进制", self.browser_chromium),
             ("浏览器配置", self.browser_profile),
             ("浏览器扩展", self.browser_extensions),
@@ -336,12 +348,28 @@ class RetryPolicyConfig(BaseModel):
     )
 
 
+class IndepthConfig(BaseModel):
+    enabled: bool = Field(
+        default=False,
+        description="Enable indepth search by default. The MCP/CLI flag can override this per request.",
+    )
+    auto_summarize: bool = Field(
+        default=True,
+        description="Generate reusable paper_summary artifacts after successful full-text materialization.",
+    )
+
+
+class ResearchConfig(BaseModel):
+    indepth: IndepthConfig = Field(default_factory=IndepthConfig)
+
+
 class GRaDOSConfig(BaseModel):
     """Root configuration model."""
 
     debug: bool = False
     search: SearchConfig = Field(default_factory=SearchConfig)
     extract: ExtractConfig = Field(default_factory=ExtractConfig)
+    research: ResearchConfig = Field(default_factory=ResearchConfig)
     indexing: IndexingConfig = Field(default_factory=IndexingConfig)
     zotero: ZoteroConfig = Field(default_factory=ZoteroConfig)
     api_keys: ApiKeysConfig = Field(default_factory=ApiKeysConfig)
@@ -437,6 +465,18 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     )
     data["indexing"]["_comment_cache_dir"] = (
         "Optional model cache override. Leave empty to use GRaDOS_HOME/models/embedding."
+    )
+
+    # Research workflow surface
+    data["research"]["_comment_indepth"] = (
+        "Indepth mode is disabled by default. Enable per request with `--indepth` "
+        "or set research.indepth.enabled=true to make search materialize returned candidates."
+    )
+    data["research"]["indepth"]["_comment_enabled"] = (
+        "Default off. When enabled, search uses the same limit for metadata candidates and full-text attempts."
+    )
+    data["research"]["indepth"]["_comment_auto_summarize"] = (
+        "Generate query-independent paper_summary artifacts after successful full-text saves."
     )
 
     # Timeout / retry surface (ADR-008)

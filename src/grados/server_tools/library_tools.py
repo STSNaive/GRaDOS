@@ -10,7 +10,7 @@ from typing import Annotated
 from fastmcp import FastMCP
 from pydantic import Field
 
-from grados.publisher.common import PublisherMetadata, normalize_publisher_metadata
+from grados.publisher.common import PublisherMetadata, normalize_publisher_metadata, safe_doi_filename
 from grados.server_tools.shared import (
     format_paper_index_resource,
     format_paper_overview_resource,
@@ -61,8 +61,12 @@ def _metadata_only_receipt(
         "## Paper Located but Full Text Unavailable",
         "",
         f"- **DOI:** {doi}",
+        f"- **Paper ID:** {safe_doi_filename(doi)}",
+        f"- **Safe DOI:** {safe_doi_filename(doi)}",
         f"- **Source:** {source or 'Unknown'}",
         "- **Outcome:** metadata_only",
+        "- **Fetch Status:** metadata_only",
+        "- **Has Fulltext:** false",
         "- **Canonical Save:** not_written",
         "- **Index Status:** not_requested",
     ]
@@ -472,10 +476,11 @@ async def extract_paper_full_text(
         ),
         indexing_config=indexing_config,
     )
+    fetch_status = "partial_success" if persisted.index_warning_added else "fulltext"
     remote_warning = _record_remote_metadata_update(
         metadata_dir=metadata_dir,
         doi=doi,
-        fetch_status="fulltext",
+        fetch_status=fetch_status,
         has_fulltext=True,
         source=fetch_result.source,
         title=title,
@@ -494,6 +499,8 @@ async def extract_paper_full_text(
         else "## Paper Extracted Successfully\n\n"
     )
     result += f"- **DOI:** {doi}\n"
+    result += f"- **Paper ID:** {persisted.summary.safe_doi}\n"
+    result += f"- **Safe DOI:** {persisted.summary.safe_doi}\n"
     result += f"- **URI:** {persisted.summary.uri}\n"
     result += f"- **File:** {persisted.summary.file_path}\n"
     result += f"- **Words:** {persisted.summary.word_count:,}\n"
@@ -504,6 +511,8 @@ async def extract_paper_full_text(
     result += f"- **Outcome:** {fetch_result.outcome}\n"
     if fetch_result.state:
         result += f"- **State:** {fetch_result.state}\n"
+    result += f"- **Fetch Status:** {fetch_status}\n"
+    result += "- **Has Fulltext:** true\n"
     result += f"- **Index Status:** {persisted.summary.index_status}\n"
     if persisted.artifact.parser_used:
         result += f"- **Parser Used:** {persisted.artifact.parser_used}\n"

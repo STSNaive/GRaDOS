@@ -323,7 +323,9 @@ def _merge_records(existing: RemoteMetadataRecord | None, incoming: RemoteMetada
 
 def _merge_fetch_status(existing: str, incoming: str) -> str:
     priority = {
-        "fulltext": 5,
+        "fulltext": 7,
+        "summary_failed": 6,
+        "partial_success": 5,
         "challenge": 4,
         "failed": 3,
         "metadata_only": 2,

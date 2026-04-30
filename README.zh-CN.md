@@ -35,7 +35,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 | 服务 | 工具 | 说明 |
 | --- | --- | --- |
-| GRaDOS | `search_academic_papers` | 检索远程学术数据库中的论文元数据，支持 DOI 去重与 continuation token 续查。适合先筛选候选 DOI，再进入全文提取。 |
+| GRaDOS | `search_academic_papers` | 检索远程学术数据库中的论文元数据，支持 DOI 去重、continuation token 续查，并暴露本地保存/全文/summary 状态。可选 `indepth=true` 会用同一个 `limit` materialize 返回候选；默认配置关闭。 |
 | GRaDOS | `search_saved_papers` | 检索本地已保存论文库，支持语义检索、metadata 过滤与可选词法 reranking。返回的 snippet 只是筛选线索，不是最终引用证据。 |
 | GRaDOS | `extract_paper_full_text` | 按 DOI 抓取、解析并保存单篇论文的 canonical 全文。返回的是包含 URI、文件路径、章节和 warning 的紧凑保存回执，而不是全文正文。 |
 | GRaDOS | `read_saved_paper` | 从单篇已保存论文中读取段落窗口，用于 canonical 深读与引用核验。可通过 DOI、safe DOI 或 `grados://papers/...` URI 定位论文。 |
@@ -70,6 +70,8 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | `downloads/` | 原始 `.pdf` 文件 | 抓取或导入后的归档副本 |
 | `database/chroma/` | ChromaDB collections | 内置语义检索存储 |
 | `database/remote_metadata/` | ChromaDB collection | 远程论文 metadata、fetch 状态与浏览器恢复缓存 |
+| `research_checkpoints/` | `checkpoint.json` 与渲染后的 `checkpoint.md` | 可恢复的 indepth 研究工作流状态 |
+| `paper_summaries/` | query-independent 的派生论文 summary | 导航与上下文恢复，不能作为引用依据 |
 | `browser/` | 托管 Chromium、profile、extensions | 难处理 publisher 页面的浏览器回退 |
 | `models/` | embedding 与 OCR 模型缓存 | setup 预热的运行时资产 |
 

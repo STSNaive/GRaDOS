@@ -61,6 +61,7 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
     assert "metadata only" in (search_remote.description or "")
     assert search_remote.parameters["properties"]["query"]["minLength"] == 1
     assert search_remote.parameters["properties"]["limit"]["maximum"] == 50
+    assert "indepth" in search_remote.parameters["properties"]
 
     extract = tools["extract_paper_full_text"]
     assert "compact save receipt" in (extract.description or "")
@@ -240,9 +241,164 @@ def test_search_academic_papers_upserts_remote_metadata(tmp_path: Path, monkeypa
     result = asyncio.run(search_academic_papers("composite damping"))
 
     assert "Composite Damping Study" in result
+    assert "Local State:" in result
+    assert "fetch_status=" in result
     assert len(calls) == 1
     assert calls[0]["metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
     assert calls[0]["records"][0].doi == "10.1234/demo"
+
+
+def test_search_academic_papers_indepth_writes_checkpoint_and_summary(tmp_path: Path, monkeypatch) -> None:
+    import grados.server_tools.search_tools as search_tools
+    import grados.storage.remote_metadata as remote_metadata
+    from grados.storage.papers import save_paper_markdown
+
+    home = tmp_path / "grados-home"
+    paths = SimpleNamespace(
+        papers=home / "papers",
+        database_chroma=home / "database" / "chroma",
+        database_remote_metadata=home / "database" / "remote_metadata",
+        research_checkpoints=home / "research_checkpoints",
+        paper_summaries=home / "paper_summaries",
+    )
+    config = SimpleNamespace(
+        search=SimpleNamespace(order=["Crossref"], enabled={"Crossref": True}),
+        research=SimpleNamespace(indepth=SimpleNamespace(enabled=True, auto_summarize=True)),
+        academic_etiquette_email="research@example.edu",
+        indexing=IndexingConfig(),
+    )
+
+    async def fake_run_resumable_search(**kwargs):  # noqa: ANN003
+        return ResumableSearchResult(
+            query=kwargs["query"],
+            limit=kwargs["limit"],
+            results=[
+                PaperMetadata(
+                    title="Indepth Demo",
+                    doi="10.1234/indepth",
+                    abstract="A candidate for indepth extraction.",
+                    year="2026",
+                    source="Crossref",
+                )
+            ],
+            has_more=False,
+            exhausted_sources=["Crossref"],
+            next_continuation_token=None,
+            warnings=[],
+            continuation_applied=True,
+        )
+
+    async def fake_extract_paper_full_text(**kwargs):  # noqa: ANN003
+        save_paper_markdown(
+            doi=kwargs["doi"],
+            markdown=(
+                "# Indepth Demo\n\n"
+                "## Abstract\n\n"
+                "This paper studies composite damping.\n\n"
+                "## Methods\n\n"
+                "The method uses a beam experiment.\n\n"
+                "## Results\n\n"
+                "The results show improved damping.\n\n"
+                "## Limitations\n\n"
+                "Only one material family is tested.\n"
+            ),
+            papers_dir=paths.papers,
+            title="Indepth Demo",
+        )
+        return (
+            "## Paper Extracted Successfully\n\n"
+            "- **DOI:** 10.1234/indepth\n"
+            "- **Paper ID:** 10_1234_indepth\n"
+            "- **Safe DOI:** 10_1234_indepth\n"
+            "- **Fetch Status:** fulltext\n"
+            "- **Has Fulltext:** true\n"
+            "- **Index Status:** indexed\n"
+        )
+
+    monkeypatch.setattr(search_tools, "get_paths_and_config", lambda: (paths, config))
+    monkeypatch.setattr(search_tools, "get_api_keys", lambda loaded_config: {})
+    monkeypatch.setattr("grados.search.resumable.run_resumable_search", fake_run_resumable_search)
+    monkeypatch.setattr("grados.server_tools.library_tools.extract_paper_full_text", fake_extract_paper_full_text)
+    monkeypatch.setattr(remote_metadata, "upsert_remote_metadata", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(remote_metadata, "get_remote_metadata_by_doi", lambda *args, **kwargs: None)
+
+    result = asyncio.run(search_academic_papers("composite damping", limit=1))
+
+    checkpoint_files = list(paths.research_checkpoints.glob("*/checkpoint.json"))
+    assert "Indepth Checkpoint" in result
+    assert checkpoint_files
+    assert (paths.paper_summaries / "10_1234_indepth.json").is_file()
+    checkpoint = checkpoint_files[0].read_text(encoding="utf-8")
+    assert "paper_summary_id" in checkpoint
+    assert "fulltext" in checkpoint
+
+
+def test_search_academic_papers_indepth_records_failed_extraction(tmp_path: Path, monkeypatch) -> None:
+    import grados.server_tools.search_tools as search_tools
+    import grados.storage.remote_metadata as remote_metadata
+
+    home = tmp_path / "grados-home"
+    paths = SimpleNamespace(
+        papers=home / "papers",
+        database_chroma=home / "database" / "chroma",
+        database_remote_metadata=home / "database" / "remote_metadata",
+        research_checkpoints=home / "research_checkpoints",
+        paper_summaries=home / "paper_summaries",
+    )
+    config = SimpleNamespace(
+        search=SimpleNamespace(order=["Crossref"], enabled={"Crossref": True}),
+        research=SimpleNamespace(indepth=SimpleNamespace(enabled=True, auto_summarize=True)),
+        academic_etiquette_email="research@example.edu",
+        indexing=IndexingConfig(),
+    )
+    remote_calls: list[dict[str, object]] = []
+
+    async def fake_run_resumable_search(**kwargs):  # noqa: ANN003
+        return ResumableSearchResult(
+            query=kwargs["query"],
+            limit=kwargs["limit"],
+            results=[
+                PaperMetadata(
+                    title="Failed Indepth Demo",
+                    doi="10.1234/failed-indepth",
+                    abstract="A candidate for failed indepth extraction.",
+                    year="2026",
+                    source="Crossref",
+                )
+            ],
+            has_more=False,
+            exhausted_sources=["Crossref"],
+            next_continuation_token=None,
+            warnings=[],
+            continuation_applied=True,
+        )
+
+    async def fake_extract_paper_full_text(**kwargs):  # noqa: ANN003
+        raise RuntimeError("publisher timeout")
+
+    monkeypatch.setattr(search_tools, "get_paths_and_config", lambda: (paths, config))
+    monkeypatch.setattr(search_tools, "get_api_keys", lambda loaded_config: {})
+    monkeypatch.setattr("grados.search.resumable.run_resumable_search", fake_run_resumable_search)
+    monkeypatch.setattr("grados.server_tools.library_tools.extract_paper_full_text", fake_extract_paper_full_text)
+    monkeypatch.setattr(remote_metadata, "upsert_remote_metadata", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(remote_metadata, "get_remote_metadata_by_doi", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        remote_metadata,
+        "record_remote_fetch_result",
+        lambda metadata_dir, **kwargs: remote_calls.append({"metadata_dir": metadata_dir, **kwargs}) or 1,
+    )
+
+    result = asyncio.run(search_academic_papers("composite damping", limit=1))
+
+    checkpoint_files = list(paths.research_checkpoints.glob("*/checkpoint.json"))
+    assert "indepth extraction failed for 10.1234/failed-indepth" in result
+    assert checkpoint_files
+    checkpoint = checkpoint_files[0].read_text(encoding="utf-8")
+    assert "failed" in checkpoint
+    assert "publisher timeout" in checkpoint
+    assert remote_calls[0]["metadata_dir"] == paths.database_remote_metadata
+    assert remote_calls[0]["fetch_status"] == "failed"
+    assert remote_calls[0]["has_fulltext"] is False
 
 
 def test_search_saved_papers_rejects_invalid_year_range() -> None:
@@ -531,6 +687,7 @@ def test_extract_paper_full_text_reports_partial_success_when_indexing_fails(
 
     import grados.extract.fetch as fetch_module
     import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
     import grados.storage.vector as vector
 
     async def fake_fetch_paper(**kwargs):
@@ -544,6 +701,7 @@ def test_extract_paper_full_text_reports_partial_success_when_indexing_fails(
     monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
 
     captured: dict[str, object] = {}
+    remote_calls: list[dict[str, object]] = []
 
     def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
         _ = args
@@ -551,6 +709,11 @@ def test_extract_paper_full_text_reports_partial_success_when_indexing_fails(
         raise RuntimeError("embedding backend unavailable")
 
     monkeypatch.setattr(vector, "index_paper", fake_index_paper)
+    monkeypatch.setattr(
+        remote_metadata,
+        "record_remote_fetch_result",
+        lambda metadata_dir, **kwargs: remote_calls.append({"metadata_dir": metadata_dir, **kwargs}) or 1,
+    )
 
     result = asyncio.run(
         extract_paper_full_text(
@@ -562,8 +725,10 @@ def test_extract_paper_full_text_reports_partial_success_when_indexing_fails(
 
     assert "Paper Extracted with Partial Success" in result
     assert "Index Status:** failed" in result
+    assert "Fetch Status:** partial_success" in result
     assert "saved to papers/ only" in result
     assert isinstance(captured["indexing_config"], IndexingConfig)
+    assert remote_calls[0]["fetch_status"] == "partial_success"
 
 
 def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, monkeypatch) -> None:

@@ -103,6 +103,15 @@
         "_comment_fetch_connect_timeout": "TCP connect timeout in seconds for api / oa / scihub HTTP calls.",
         "_comment_fetch_read_timeout": "Response read timeout in seconds for PDF and landing-page downloads. Keep generous: large PDFs and intermediate redirects can stream slowly."
     },
+    "research": {
+        "indepth": {
+            "enabled": false,
+            "auto_summarize": true,
+            "_comment_enabled": "Default off. When enabled, search uses the same limit for metadata candidates and full-text attempts.",
+            "_comment_auto_summarize": "Generate query-independent paper_summary artifacts after successful full-text saves."
+        },
+        "_comment_indepth": "Indepth mode is disabled by default. Enable per request with `--indepth` or set research.indepth.enabled=true to make search materialize returned candidates."
+    },
     "indexing": {
         "provider": "harrier",
         "model_id": "microsoft/harrier-oss-v1-270m",

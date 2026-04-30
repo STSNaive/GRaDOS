@@ -583,6 +583,37 @@ def import_pdfs(source: Path, recursive: bool, glob_pattern: str, copy_to_librar
     console.print()
 
 
+# ── grados search ────────────────────────────────────────────────────────────
+
+
+@main.command("search")
+@click.argument("query", nargs=-1, required=True)
+@click.option("--limit", default=15, show_default=True, type=click.IntRange(1, 50), help="Maximum metadata results.")
+@click.option("--continuation-token", default=None, help="Token returned by a previous search.")
+@click.option(
+    "--indepth/--no-indepth",
+    default=None,
+    help=(
+        "Override research.indepth.enabled for this request. "
+        "Default config is off; --indepth materializes returned candidates with the same limit."
+    ),
+)
+def search(query: tuple[str, ...], limit: int, continuation_token: str | None, indepth: bool | None) -> None:
+    """Search academic metadata, optionally running indepth materialization."""
+    from grados.server_tools.search_tools import search_academic_papers
+
+    query_text = " ".join(query).strip()
+    result = asyncio.run(
+        search_academic_papers(
+            query_text,
+            limit=limit,
+            continuation_token=continuation_token,
+            indepth=indepth,
+        )
+    )
+    console.print(result)
+
+
 # ── grados status ────────────────────────────────────────────────────────────
 
 

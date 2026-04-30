@@ -168,6 +168,33 @@ def test_import_pdfs_command_reports_summary(tmp_path: Path, monkeypatch) -> Non
     assert "Demo Paper" in result.output
 
 
+def test_search_command_passes_indepth_override(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_search_academic_papers(query, **kwargs):  # noqa: ANN001, ANN003
+        calls.append({"query": query, **kwargs})
+        return "search result"
+
+    monkeypatch.setattr(
+        "grados.server_tools.search_tools.search_academic_papers",
+        fake_search_academic_papers,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["search", "composite", "damping", "--limit", "3", "--indepth"])
+
+    assert result.exit_code == 0
+    assert "search result" in result.output
+    assert calls == [
+        {
+            "query": "composite damping",
+            "limit": 3,
+            "continuation_token": None,
+            "indepth": True,
+        }
+    ]
+
+
 def test_optional_install_metadata_matches_runtime_backends() -> None:
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))

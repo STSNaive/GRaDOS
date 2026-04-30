@@ -7,6 +7,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
+- Added opt-in `indepth` search mode with default-off config, a `grados search --indepth` CLI surface, per-run `research_checkpoint` folders, and reusable query-independent `paper_summary` artifacts.
 - Added a compression-safe `evidence_checkpoint` research-artifact convention to the GRaDOS skill and tool reference so claim evidence can be restored after context compression and reread from canonical saved-paper paragraphs before citation.
 - Added `keyring` as a runtime dependency plus a new `grados.secrets` module that resolves API keys with `env -> keychain -> config` precedence, migrates plaintext `config.json` secrets into the OS keychain on first use, and clears migrated plaintext keys with an atomic rewrite.
 - Added `grados auth set/status/migrate/clear` commands for explicit keychain management, masked source-aware API-key inspection, and one-shot migration of legacy plaintext config values.
@@ -22,6 +23,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed remote search results to expose local saved/full-text/summary state even when `indepth` is disabled, and changed extraction receipts to include explicit `paper_id`, `safe_doi`, `fetch_status`, and `has_fulltext` fields.
 - Changed `grados setup` and `grados status` to treat the OS keychain as the preferred API-key store: setup now points users to `grados auth set`, status reports keychain health plus each key's source (`env`, `keychain`, or legacy `config`), and both READMEs plus `grados-config.example.json` now describe `config.json` plaintext keys as a temporary import path rather than the long-term source of truth.
 - Changed config normalization to preserve all-caps keys such as `ELSEVIER_API_KEY`, preventing secret-field names and strategy IDs from being mangled during `config.json` loading.
 - Changed `search_academic_papers` to upsert deduplicated remote results into `remote_metadata` before returning the screening list, and changed `extract_paper_full_text` to backfill `metadata_only`, `challenge`, `failed`, and `fulltext` status transitions into the same cache during materialization.

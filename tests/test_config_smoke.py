@@ -83,3 +83,10 @@ def test_scihub_configured_endpoints_take_priority_over_legacy_fallback() -> Non
         "https://primary.example",
         "https://fallback.example",
     ]
+
+
+def test_indepth_defaults_to_disabled() -> None:
+    config = GRaDOSConfig()
+
+    assert config.research.indepth.enabled is False
+    assert config.research.indepth.auto_summarize is True

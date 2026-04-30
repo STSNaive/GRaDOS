@@ -49,6 +49,7 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     mirrored_files = [
         "SKILL.md",
         "agents/openai.yaml",
+        "references/indepth.md",
         "references/tools.md",
     ]
     for relative_path in mirrored_files:

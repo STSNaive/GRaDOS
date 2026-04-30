@@ -35,7 +35,7 @@ GRaDOS is designed to sit inside an agent research workflow:
 
 | Server | Tool | Description |
 | --- | --- | --- |
-| GRaDOS | `search_academic_papers` | Search remote academic databases for paper metadata only, with DOI deduplication and resumable continuation tokens. Use this to screen candidate DOIs before extraction. |
+| GRaDOS | `search_academic_papers` | Search remote academic databases for paper metadata, DOI deduplication, resumable continuation tokens, and local saved/full-text/summary state. Optional `indepth=true` materializes returned candidates with the same `limit`; default config is off. |
 | GRaDOS | `search_saved_papers` | Search the local saved-paper library with semantic retrieval, metadata filters, and optional lexical reranking. Returned snippets are screening hints, not citation evidence. |
 | GRaDOS | `extract_paper_full_text` | Fetch, parse, and save one paper's canonical full text by DOI. Returns a compact save receipt with URI, file path, sections, and warnings rather than the full paper text. |
 | GRaDOS | `read_saved_paper` | Read paragraph windows from one saved paper for canonical deep reading and citation verification. Accepts a DOI, safe DOI, or `grados://papers/...` URI. |
@@ -70,6 +70,8 @@ After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 | `downloads/` | Raw `.pdf` files | Archival copies of fetched or imported papers |
 | `database/chroma/` | ChromaDB collections | Built-in semantic retrieval store |
 | `database/remote_metadata/` | ChromaDB collection | Remote paper metadata, fetch status, and browser-resume cache |
+| `research_checkpoints/` | `checkpoint.json` and rendered `checkpoint.md` files | Recoverable indepth research workflow state |
+| `paper_summaries/` | Query-independent derived paper summaries | Navigation and context recovery, never citation evidence |
 | `browser/` | Managed Chromium, profile, extensions | Browser fallback for difficult publisher pages |
 | `models/` | Embedding and OCR model caches | Runtime assets warmed by setup |
 

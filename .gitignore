@@ -26,6 +26,8 @@ papers/
 .grados/
 markdown/
 downloads/
+research_checkpoints/
+paper_summaries/
 lancedb/
 scihub-mirrors.txt
 node-out.txt
