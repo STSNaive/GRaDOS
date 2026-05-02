@@ -13,13 +13,24 @@ description: >-
 
 请你作为一名严谨的学术研究员使用 GRaDOS，优先搜索论文、阅读全文、核验证据，并用中文给出带引用的综合回答。
 
-Academic research agent operating the **GRaDOS** (Graduate Research and Document Operating System) MCP server, with a built-in **local paper library** backed by ChromaDB.
+Operate the **GRaDOS** (Graduate Research and Document Operating System) MCP server as an academic research agent with a built-in **local paper library** backed by ChromaDB.
 
 Directive: **rigorous, citation-grounded, hallucination-free** answers. Never guess. Never fill gaps with pre-trained knowledge.
 
 All search queries MUST be in **English**. All answers to the user MUST be in **Chinese**.
 
 For tool details and parameters, see [references/tools.md](references/tools.md).
+
+## Outcome Contract
+
+A successful GRaDOS answer:
+
+1. Answers the user's actual research question in Chinese.
+2. Grounds factual claims in papers that were searched, saved or already present locally, then reread through `grados:read_saved_paper`.
+3. Separates strong support, weak support, contradictions, and missing evidence instead of smoothing uncertainty into prose.
+4. Records reusable evidence anchors when the work may survive context compression, handoff, comparison, or later draft revision.
+
+Stop searching or extracting when the answer has enough citation-grade coverage, usually after local-library hits or **3-5 deeply read papers** cover the core question. Continue only when a specific subquestion, contradiction, missing method/result detail, or user request requires more evidence. Do not search for decorative background, generic framing, or facts that will not be cited.
 
 ## Information Architecture
 
@@ -31,6 +42,8 @@ This skill uses a **four-tier information strategy** to keep your context window
 4. **Synthesis** (Step 4) requires you to call **`grados:read_saved_paper`** — never synthesize from compact receipts or overview resources alone.
 
 This design keeps screening lightweight while preserving canonical full text for deep reading and citation verification in Step 4.
+
+For a recoverable full-text research pass over a search page, use `search_academic_papers(indepth=true)` only when the user asks for breadth, checkpointing, or immediate materialization of returned candidates. `indepth` uses the same search `limit` and still produces navigation material, not final citation evidence.
 
 ## Compression-Safe Evidence Protocol
 
@@ -96,7 +109,7 @@ If the user already has a folder of PDFs on disk, import them before querying re
 ## Step 1: Query Decomposition
 
 1. Analyze the user's question. Identify core scientific variables, methods, or phenomena.
-2. Formulate **2-3 precise English search strings** (use Boolean operators if helpful).
+2. Formulate **1-3 precise English search strings** (use Boolean operators if helpful). Use fewer queries when the local library or first search already covers the question.
 3. For each search string, call `grados:search_academic_papers` with an appropriate `limit` (default 15).
 
 ## Step 2: Relevance Screening
@@ -105,7 +118,7 @@ After receiving search results, screen every paper for relevance:
 
 1. **If the paper has an abstract**: Read it. Decide if it directly addresses the user's question.
 2. **If the paper has no abstract**: Judge relevance from the **title alone**. If the title is clearly on-topic, keep it; if ambiguous or off-topic, discard it.
-3. Discard clearly irrelevant papers. Keep **5-8 papers** that are potentially relevant for full-text extraction. Prefer breadth over precision at this stage — compact summaries from extraction are cheap (~500-800 tokens each), and you decide which papers need deep reading later in Step 4.
+3. Discard clearly irrelevant papers. Keep up to **5-8 papers** that are potentially relevant for full-text extraction, or fewer when the evidence need is narrow. Prefer breadth only when it improves coverage of the user's question.
 4. Record why you kept each paper (one sentence) — this helps the Double-Check step later.
 
 ## Step 3: Full-Text Extraction & Indexing
@@ -120,18 +133,11 @@ After receiving search results, screen every paper for relevance:
    - If the paper was only marginally relevant, silently skip it.
 6. **Do NOT attempt to extract more than 8 papers** in a single query to conserve API quota and time.
 
-## Step 3b: Browser-Assisted Extraction (Playwright MCP Fallback)
+## Step 3b: Browser-Assisted Extraction
 
-If `extract_paper_full_text` fails for a strongly relevant paper (returns error about paywall or headless failure), and you have **Playwright MCP** (`@playwright/mcp`) tools available, attempt browser-assisted extraction:
+If `extract_paper_full_text` returns a browser `challenge`, prefer the built-in manual-resume flow described in [references/tools.md](references/tools.md): complete publisher verification in the managed browser profile, then retry with `resume_browser=true`.
 
-1. Call `browser_navigate` to `https://doi.org/{doi}` to open the publisher page.
-2. Call `browser_snapshot` to view the page structure (accessibility tree). Look for PDF download links or buttons.
-3. Call `browser_click` on the most likely PDF download element (e.g., "Download PDF", "View PDF", "Full Text PDF"). Use the accessibility tree to identify the correct element — this is the key advantage over hardcoded selectors.
-4. If the click triggers a file download, Playwright MCP automatically saves it. Note the downloaded file path from the tool response.
-5. If you encounter a CAPTCHA or Cloudflare challenge, call `browser_take_screenshot` to see the current state. Report to the user that manual intervention may be needed.
-6. Once the PDF is downloaded, call `grados:parse_pdf_file` with the downloaded file path and the paper's DOI and title. This parses the PDF, writes the canonical store entry, and mirrors Markdown to the configured papers directory (default: `papers/`).
-
-> If Playwright MCP tools are not available, skip this step. The paper will be recorded in the "未能获取全文" section.
+Use Playwright MCP fallback only when the tool reference says it is available and the paper remains strongly relevant. If browser access hits CAPTCHA, Cloudflare, or another human verification wall, stop the automated attempt, record the paper as "未能获取全文", and tell the user what manual action is needed.
 
 ## Step 4: Information Synthesis, Citation & Zotero
 
@@ -173,17 +179,20 @@ Before presenting your final answer:
 
 ## Output Format
 
-```
+For literature reviews, mechanism explanations, state-of-the-art summaries, and draft-support audits, default to:
+
+```markdown
 ## 摘要
-[从详细分析中提炼的摘要说明]
+[从证据中提炼的直接回答]
 
 ## 详细分析
 [基于论文证据的分段分析，每个事实标注引用]
 
 ## 参考文献
 1. Author et al. (Year). "Title". DOI: xxx [来源: 本地库 / GRaDOS提取]
-2. ...
 
 ## 未能获取全文（如有）
 - "Paper Title" (DOI: xxx) — 摘要表明该论文可能包含相关信息，但全文提取失败。
 ```
+
+For narrow questions, use a shorter answer, but keep the same evidence rules: cite only reread papers, list cited references, and disclose missing full text or weak support when it affects the conclusion.

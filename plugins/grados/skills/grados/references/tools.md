@@ -85,7 +85,7 @@ Restore with `grados:query_research_artifacts(kind="evidence_checkpoint", detail
 
 ## Optional Playwright MCP Tools
 
-If Playwright MCP is registered, the agent can use it when `extract_paper_full_text` fails on a publisher page.
+If Playwright MCP is registered, the agent can use it when `extract_paper_full_text` fails on a publisher page and the paper remains strongly relevant. Prefer the built-in `resume_browser=true` flow for saved browser challenges before trying an external Playwright fallback.
 
 | Tool | Purpose |
 | --- | --- |
@@ -96,7 +96,11 @@ If Playwright MCP is registered, the agent can use it when `extract_paper_full_t
 
 Typical fallback flow:
 
-`browser_navigate` -> `browser_snapshot` -> `browser_click` -> download completes -> `grados:parse_pdf_file`
+1. Call `browser_navigate` for `https://doi.org/{doi}`.
+2. Call `browser_snapshot` and inspect the accessibility tree for PDF or full-text entrypoints.
+3. Call `browser_click` on the most likely "Download PDF", "View PDF", or "Full Text PDF" element.
+4. If a download completes, pass the downloaded file path plus DOI/title to `grados:parse_pdf_file`.
+5. If the page presents CAPTCHA, Cloudflare, or another human verification wall, stop automated fallback and report the required manual action.
 
 ## MCP Resources
 
