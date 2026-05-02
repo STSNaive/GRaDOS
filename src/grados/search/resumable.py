@@ -175,12 +175,12 @@ async def run_resumable_search(
                     if not paper.doi:
                         continue
                     ndoi = normalize_doi(paper.doi)
-                    if ndoi in seen_dois:
-                        continue
                     if ndoi in batch:
                         # Update if we now have an abstract
                         if paper.abstract and not batch[ndoi].abstract:
                             batch[ndoi].abstract = paper.abstract
+                        continue
+                    if ndoi in seen_dois:
                         continue
                     seen_dois.add(ndoi)
                     batch[ndoi] = paper

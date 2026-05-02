@@ -27,7 +27,7 @@ from grados.storage.chunking import (
     resolve_indexing_config,
     strip_frontmatter,
 )
-from grados.storage.corpus import CANONICAL_CORPUS, CANONICAL_TIER
+from grados.storage.corpus import CANONICAL_CORPUS, CANONICAL_TIER, normalize_corpus_metadata
 from grados.storage.embedding import (
     IndexCompatibilityError,
     build_index_manifest,
@@ -567,6 +567,7 @@ def index_all_papers(
             continue
 
         metadata = read_frontmatter_metadata(content)
+        corpus_metadata = normalize_corpus_metadata(metadata)
         safe_doi = md_file.stem
         headings = extract_headings(body)
         total_papers += 1
@@ -583,6 +584,11 @@ def index_all_papers(
             journal=metadata.get("journal", ""),
             section_headings=headings,
             assets_manifest_path=metadata.get("assets_manifest_path", ""),
+            corpus=corpus_metadata["corpus"],
+            tier=corpus_metadata["tier"],
+            workset_id=corpus_metadata["workset_id"],
+            promoted_at=corpus_metadata["promoted_at"],
+            promote_reason=corpus_metadata["promote_reason"],
             indexing_config=config,
         )
 

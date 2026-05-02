@@ -24,7 +24,14 @@ from grados.storage.embedding import clear_embedding_backend_cache, load_embeddi
 from grados.storage.hydration import PaperDocument, PaperDocumentSummary
 from grados.storage.papers import save_paper_markdown
 from grados.storage.paths import resolve_papers_dir
-from grados.storage.vector import PaperSearchResult, _chunk_text, get_index_stats, index_paper, search_papers
+from grados.storage.vector import (
+    PaperSearchResult,
+    _chunk_text,
+    get_index_stats,
+    index_all_papers,
+    index_paper,
+    search_papers,
+)
 
 
 def test_continuation_token_round_trip() -> None:
@@ -135,6 +142,75 @@ def test_run_resumable_search_handles_dedup_and_continuation(monkeypatch) -> Non
     assert [paper.doi for paper in second.results] == ["10.1000/c"]
     assert second.continuation_applied is True
     assert second.next_continuation_token is None
+
+
+def test_run_resumable_search_enriches_duplicate_batch_abstract(monkeypatch) -> None:
+    async def fake_crossref(query, limit, state, client):
+        _ = query, limit, client
+        return (
+            SearchPageResult(
+                papers=[
+                    PaperMetadata(
+                        title="Paper A",
+                        doi="10.1000/a",
+                        abstract="",
+                        source="Crossref",
+                    )
+                ],
+                exhausted=True,
+            ),
+            state,
+        )
+
+    async def fake_pubmed(query, limit, state, client):
+        _ = query, limit, client
+        return (
+            SearchPageResult(
+                papers=[
+                    PaperMetadata(
+                        title="Paper A with abstract",
+                        doi="10.1000/a",
+                        abstract="Detailed abstract from PubMed.",
+                        source="PubMed",
+                    ),
+                    PaperMetadata(title="Paper B", doi="10.1000/b", source="PubMed"),
+                ],
+                exhausted=True,
+            ),
+            state,
+        )
+
+    def fake_build_search_adapters(api_keys, etiquette_email, limit):
+        _ = api_keys, etiquette_email, limit
+        issued_at = datetime.now(UTC).isoformat()
+        return {
+            "Crossref": {
+                "init": lambda: CrossrefState(cursor="*", rows=5, pages_fetched=0, cursor_issued_at=issued_at),
+                "fetch": fake_crossref,
+                "max_page_size": 100,
+            },
+            "PubMed": {
+                "init": lambda: PubMedState(retstart=0, page_size=5, total_count=2),
+                "fetch": fake_pubmed,
+                "max_page_size": 100,
+            },
+        }
+
+    monkeypatch.setattr("grados.search.resumable.build_search_adapters", fake_build_search_adapters)
+
+    result = asyncio.run(
+        run_resumable_search(
+            query="composite vibration",
+            limit=5,
+            continuation_token=None,
+            search_order=["Crossref", "PubMed"],
+            api_keys={},
+            etiquette_email="research@example.edu",
+        )
+    )
+
+    assert [paper.doi for paper in result.results] == ["10.1000/a", "10.1000/b"]
+    assert result.results[0].abstract == "Detailed abstract from PubMed."
 
 
 def test_build_search_adapters_threads_pubmed_api_key(monkeypatch) -> None:
@@ -813,6 +889,50 @@ def test_index_paper_writes_real_embeddings_and_section_metadata(tmp_path: Path,
     stats = get_index_stats(tmp_path / "chroma", indexing_config=IndexingConfig())
     assert stats.index_manifest_present is True
     assert stats.embedding_model == "microsoft/harrier-oss-v1-270m"
+
+
+def test_index_all_papers_preserves_frontmatter_corpus_metadata(tmp_path: Path, monkeypatch) -> None:
+    import grados.storage.vector as vector
+
+    papers_dir = tmp_path / "papers"
+    chroma_dir = tmp_path / "database" / "chroma"
+    captured_kwargs: dict[str, object] = {}
+
+    save_paper_markdown(
+        doi="10.1234/demo",
+        markdown="# Demo\n\n## Abstract\n\n" + ("content " * 40),
+        papers_dir=papers_dir,
+        title="Demo",
+        source="Local PDF Library",
+        extra_frontmatter={
+            "corpus": "working",
+            "tier": "candidate",
+            "workset_id": "topic-1",
+            "promoted_at": "2026-05-02T00:00:00+00:00",
+            "promote_reason": "screened for review",
+        },
+    )
+
+    def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = args
+        captured_kwargs.update(kwargs)
+        return 3
+
+    monkeypatch.setattr(vector, "index_paper", fake_index_paper)
+
+    papers_indexed, total_chunks = index_all_papers(
+        chroma_dir,
+        papers_dir,
+        indexing_config=IndexingConfig(),
+    )
+
+    assert papers_indexed == 1
+    assert total_chunks == 3
+    assert captured_kwargs["corpus"] == "working"
+    assert captured_kwargs["tier"] == "candidate"
+    assert captured_kwargs["workset_id"] == "topic-1"
+    assert captured_kwargs["promoted_at"] == "2026-05-02T00:00:00+00:00"
+    assert captured_kwargs["promote_reason"] == "screened for review"
 
 
 def test_get_index_stats_reports_reindex_when_manifest_mismatches(tmp_path: Path) -> None:

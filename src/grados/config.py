@@ -388,9 +388,15 @@ def _preserve_literal_config_key(key: str) -> bool:
     return any(ch.isalpha() for ch in key) and key.upper() == key
 
 
-def _snake_to_camel_keys(data: Any) -> Any:
+_LITERAL_MAP_PARENT_KEYS = {"enabled"}
+
+
+def _snake_to_camel_keys(data: Any, *, _parent_key: str = "") -> Any:
     """Recursively convert camelCase JSON keys to snake_case for Pydantic."""
     if isinstance(data, dict):
+        if _parent_key in _LITERAL_MAP_PARENT_KEYS:
+            return {str(k): _snake_to_camel_keys(v) for k, v in data.items()}
+
         out: dict[str, Any] = {}
         for k, v in data.items():
             # Strip _comment fields
@@ -398,7 +404,7 @@ def _snake_to_camel_keys(data: Any) -> Any:
                 continue
             # Preserve literal keys such as API-key env names and strategy IDs.
             if _preserve_literal_config_key(k):
-                out[k] = _snake_to_camel_keys(v)
+                out[k] = _snake_to_camel_keys(v, _parent_key=k)
                 continue
             # camelCase → snake_case
             snake = ""
@@ -406,10 +412,10 @@ def _snake_to_camel_keys(data: Any) -> Any:
                 if ch.isupper() and i > 0:
                     snake += "_"
                 snake += ch.lower()
-            out[snake] = _snake_to_camel_keys(v)
+            out[snake] = _snake_to_camel_keys(v, _parent_key=snake)
         return out
     if isinstance(data, list):
-        return [_snake_to_camel_keys(item) for item in data]
+        return [_snake_to_camel_keys(item, _parent_key=_parent_key) for item in data]
     return data
 
 

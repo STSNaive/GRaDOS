@@ -59,6 +59,50 @@ def test_example_config_contains_no_unknown_runtime_keys() -> None:
     GRaDOSConfig.model_validate(normalized)
 
 
+def test_config_normalization_preserves_literal_enabled_map_keys() -> None:
+    raw = {
+        "search": {
+            "enabled": {
+                "Elsevier": False,
+                "WebOfScience": True,
+            }
+        },
+        "extract": {
+            "fetchStrategy": {
+                "enabled": {
+                    "api": True,
+                    "browser": False,
+                }
+            },
+            "tdm": {
+                "enabled": {
+                    "Elsevier": False,
+                    "Springer": True,
+                }
+            },
+            "parsing": {
+                "enabled": {
+                    "Docling": True,
+                    "PyMuPDF": True,
+                    "Marker": False,
+                }
+            },
+        },
+    }
+
+    normalized = _snake_to_camel_keys(raw)
+    config = GRaDOSConfig.model_validate(normalized)
+
+    assert config.search.enabled["Elsevier"] is False
+    assert config.search.enabled["WebOfScience"] is True
+    assert "web_of_science" not in config.search.enabled
+    assert config.extract.fetch_strategy.enabled["browser"] is False
+    assert config.extract.tdm.enabled["Elsevier"] is False
+    assert config.extract.parsing.enabled["Docling"] is True
+    assert config.extract.parsing.enabled["PyMuPDF"] is True
+    assert "py_mu_p_d_f" not in config.extract.parsing.enabled
+
+
 def test_scihub_legacy_fallback_mirror_populates_endpoints() -> None:
     config = GRaDOSConfig.model_validate(
         {"extract": {"sci_hub": {"fallback_mirror": "https://legacy.example"}}}
