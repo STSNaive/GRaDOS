@@ -9,7 +9,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from grados.publisher.common import safe_doi_filename
+from grados.publisher.common import (
+    is_safe_doi_filename,
+    normalize_doi,
+    safe_doi_filename,
+    safe_doi_filename_candidates,
+)
 from grados.storage.chunking import split_paragraphs, strip_frontmatter
 from grados.storage.corpus import normalize_corpus_metadata
 from grados.storage.frontmatter import (
@@ -61,8 +66,10 @@ def save_paper_markdown(
     `papers/` is the canonical source of truth. If `chroma_dir` is provided,
     the search index is refreshed from the same markdown body.
     """
-    safe = safe_doi_filename(doi)
-    file_path = papers_dir / f"{safe}.md"
+    safe = _safe_doi_for_write(papers_dir, doi)
+    file_path = _paper_file_for_safe_doi(papers_dir, safe)
+    if file_path is None:
+        raise ValueError(f"Unsafe safe DOI generated for {doi!r}")
     headings = re.findall(r"^#{1,6}\s+(.+)$", markdown, re.MULTILINE)
     mirror_written = False
     index_status = "not_requested"
@@ -152,7 +159,7 @@ def save_asset_manifest(
     if not hints:
         return ""
 
-    safe = safe_doi_filename(doi)
+    safe = _safe_doi_for_write(papers_dir, doi)
     assets_dir = papers_dir / "_assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = assets_dir / f"{safe}.json"
@@ -265,12 +272,10 @@ def load_paper_record(
     uri: str | None = None,
 ) -> PaperRecord | None:
     """Load the canonical markdown-backed paper record from `papers/*.md`."""
-    safe_doi = _resolve_safe_doi(doi=doi, safe_doi=safe_doi, uri=uri)
-    if not safe_doi:
+    resolved = _resolve_paper_file(papers_dir, doi=doi, safe_doi=safe_doi, uri=uri)
+    if not resolved:
         return None
-    file_path = papers_dir / f"{safe_doi}.md"
-    if not file_path.is_file():
-        return None
+    safe_doi, file_path = resolved
 
     raw_content = file_path.read_text(encoding="utf-8")
     metadata = read_frontmatter_metadata(raw_content)
@@ -318,17 +323,10 @@ def read_paper(
     include_front_matter: bool = False,
 ) -> PaperReadResult | None:
     """Read a saved paper with paragraph windowing."""
-    if uri and uri.startswith("grados://papers/"):
-        safe_doi = uri.replace("grados://papers/", "").strip("/")
-    elif doi and not safe_doi:
-        safe_doi = safe_doi_filename(doi)
-
-    if not safe_doi:
+    resolved = _resolve_paper_file(papers_dir, doi=doi, safe_doi=safe_doi, uri=uri)
+    if not resolved:
         return None
-
-    file_path = papers_dir / f"{safe_doi}.md"
-    if not file_path.is_file():
-        return None
+    safe_doi, file_path = resolved
 
     content = file_path.read_text(encoding="utf-8")
     paragraphs = split_paragraphs(content, include_front_matter=include_front_matter)
@@ -436,14 +434,66 @@ def _normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", "", s.lower())).strip()
 
 
-def _resolve_safe_doi(doi: str | None, safe_doi: str | None, uri: str | None) -> str | None:
+def _selector_safe_doi(safe_doi: str | None, uri: str | None) -> str | None:
     if uri and uri.startswith("grados://papers/"):
         return uri.replace("grados://papers/", "").strip("/")
     if safe_doi:
         return safe_doi
-    if doi:
-        return safe_doi_filename(doi)
     return None
+
+
+def _candidate_safe_dois(doi: str | None, safe_doi: str | None, uri: str | None) -> list[str]:
+    selected = _selector_safe_doi(safe_doi, uri)
+    if selected:
+        selected = selected.strip()
+        return [selected] if is_safe_doi_filename(selected) else []
+    if doi:
+        return safe_doi_filename_candidates(doi)
+    return []
+
+
+def _paper_file_for_safe_doi(papers_dir: Path, safe_doi: str) -> Path | None:
+    safe_doi = safe_doi.strip()
+    if not is_safe_doi_filename(safe_doi):
+        return None
+    root = papers_dir.resolve()
+    file_path = (papers_dir / f"{safe_doi}.md").resolve()
+    try:
+        file_path.relative_to(root)
+    except ValueError:
+        return None
+    return file_path
+
+
+def _resolve_paper_file(
+    papers_dir: Path,
+    *,
+    doi: str | None = None,
+    safe_doi: str | None = None,
+    uri: str | None = None,
+) -> tuple[str, Path] | None:
+    for candidate in _candidate_safe_dois(doi, safe_doi, uri):
+        file_path = _paper_file_for_safe_doi(papers_dir, candidate)
+        if file_path is not None and file_path.is_file():
+            return candidate, file_path
+    return None
+
+
+def _safe_doi_for_write(papers_dir: Path, doi: str) -> str:
+    """Prefer an existing same-DOI id, otherwise use the current collision-safe id."""
+    for candidate in safe_doi_filename_candidates(doi):
+        file_path = _paper_file_for_safe_doi(papers_dir, candidate)
+        if file_path is not None and file_path.is_file() and _paper_file_matches_doi(file_path, doi):
+            return candidate
+    return safe_doi_filename(doi)
+
+
+def _paper_file_matches_doi(file_path: Path, doi: str) -> bool:
+    try:
+        metadata = read_frontmatter_metadata_from_file(file_path)
+    except OSError:
+        return False
+    return normalize_doi(metadata.get("doi", "")) == normalize_doi(doi)
 
 
 def _infer_title_from_paragraphs(paragraphs: list[str]) -> str:

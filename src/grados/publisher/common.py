@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -110,6 +111,32 @@ def normalize_doi(doi: str) -> str:
     return doi.strip().lower()
 
 
-def safe_doi_filename(doi: str) -> str:
-    """Convert DOI to a filesystem-safe filename."""
+SAFE_DOI_SELECTOR_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
+
+
+def legacy_safe_doi_filename(doi: str) -> str:
+    """Return the pre-v2 readable DOI slug used by older GRaDOS libraries."""
     return re.sub(r"[^a-zA-Z0-9]", "_", doi)
+
+
+def safe_doi_filename(doi: str) -> str:
+    """Convert DOI to a collision-resistant filesystem-safe paper id."""
+    normalized = normalize_doi(doi)
+    legacy_slug = legacy_safe_doi_filename(normalized).strip("_") or "doi"
+    if len(legacy_slug) > 180:
+        legacy_slug = legacy_slug[:180].rstrip("_") or "doi"
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
+    return f"{legacy_slug}__{digest}"
+
+
+def safe_doi_filename_candidates(doi: str) -> list[str]:
+    """Return current and legacy safe DOI ids for backward-compatible lookups."""
+    normalized = normalize_doi(doi)
+    current = safe_doi_filename(normalized)
+    legacy = legacy_safe_doi_filename(normalized)
+    return [current] if current == legacy else [current, legacy]
+
+
+def is_safe_doi_filename(value: str) -> bool:
+    """Return true if a selector is a filename token, not a path fragment."""
+    return bool(SAFE_DOI_SELECTOR_PATTERN.fullmatch(value.strip()))

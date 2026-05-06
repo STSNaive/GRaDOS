@@ -51,7 +51,7 @@ Use this protocol whenever a claim, evidence table, comparison, or draft audit m
 
 1. Treat every citable evidence point as an `evidence_anchor` with these fields:
    - `doi`: the paper DOI exactly as known.
-   - `safe_doi`: the filesystem-safe DOI used by GRaDOS.
+   - `safe_doi`: the opaque paper ID returned by GRaDOS; do not derive it by replacing DOI punctuation.
    - `canonical_uri`: usually `grados://papers/{safe_doi}`.
    - `section_name`: the paper section used for the claim, or an empty string if unknown.
    - `paragraph_start`: the 0-based paragraph index to pass back into `grados:read_saved_paper`.

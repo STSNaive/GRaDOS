@@ -707,7 +707,7 @@ def test_search_papers_end_to_end_rereads_updated_canonical_mirror(monkeypatch, 
     papers_dir = tmp_path / "papers"
     chroma_dir = tmp_path / "database" / "chroma"
 
-    save_paper_markdown(
+    saved = save_paper_markdown(
         doi="10.1234/demo-e2e",
         markdown=(
             "# Composite Damping Study\n\n"
@@ -724,7 +724,7 @@ def test_search_papers_end_to_end_rereads_updated_canonical_mirror(monkeypatch, 
         chroma_dir=chroma_dir,
     )
 
-    (papers_dir / "10_1234_demo_e2e.md").write_text(
+    Path(saved.file_path).write_text(
         '---\n'
         'doi: "10.1234/demo-e2e"\n'
         'title: "Composite Damping Study"\n'

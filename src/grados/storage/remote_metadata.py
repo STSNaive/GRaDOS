@@ -11,7 +11,12 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from grados.config import IndexingConfig
-from grados.publisher.common import PublisherMetadata, normalize_doi, safe_doi_filename
+from grados.publisher.common import (
+    PublisherMetadata,
+    normalize_doi,
+    safe_doi_filename,
+    safe_doi_filename_candidates,
+)
 from grados.search.academic import PaperMetadata
 from grados.storage.chroma_client import (
     collection_get,
@@ -96,6 +101,24 @@ def _stable_paper_id(*, doi: str, title: str, year: str, source: str, source_id:
     ])
     digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:16]
     return f"remote_{digest}"
+
+
+def _remote_record_lookup_ids(record: RemoteMetadataRecord) -> list[str]:
+    ids: list[str] = []
+    for value in [record.paper_id, *(safe_doi_filename_candidates(record.doi) if record.doi else [])]:
+        if value and value not in ids:
+            ids.append(value)
+    return ids
+
+
+def _existing_record_for(
+    existing: dict[str, RemoteMetadataRecord],
+    record: RemoteMetadataRecord,
+) -> RemoteMetadataRecord | None:
+    for lookup_id in _remote_record_lookup_ids(record):
+        if lookup_id in existing:
+            return existing[lookup_id]
+    return None
 
 
 def _build_document(title: str, abstract: str) -> str:
@@ -410,9 +433,14 @@ def upsert_remote_metadata(
     config = resolve_indexing_config(indexing_config)
     client = get_client(metadata_dir)
     collection = get_remote_metadata_collection(client)
-    existing = _existing_records_by_id(collection, [record.paper_id for record in normalized])
+    lookup_ids: list[str] = []
+    for record in normalized:
+        for lookup_id in _remote_record_lookup_ids(record):
+            if lookup_id not in lookup_ids:
+                lookup_ids.append(lookup_id)
+    existing = _existing_records_by_id(collection, lookup_ids)
 
-    merged_records = [_merge_records(existing.get(record.paper_id), record) for record in normalized]
+    merged_records = [_merge_records(_existing_record_for(existing, record), record) for record in normalized]
     documents = [_build_document(record.title, record.abstract) for record in merged_records]
     backend = load_embedding_backend(config=config)
     embeddings = backend.embed_documents(documents)
@@ -436,11 +464,14 @@ def get_remote_metadata_by_doi(
     normalized_doi = normalize_doi(doi)
     if not normalized_doi:
         return None
-    paper_id = safe_doi_filename(normalized_doi)
+    paper_ids = safe_doi_filename_candidates(normalized_doi)
     client = get_client(metadata_dir)
     collection = get_remote_metadata_collection(client)
-    existing = _existing_records_by_id(collection, [paper_id])
-    return existing.get(paper_id)
+    existing = _existing_records_by_id(collection, paper_ids)
+    for paper_id in paper_ids:
+        if paper_id in existing:
+            return existing[paper_id]
+    return None
 
 
 def query_remote_metadata(

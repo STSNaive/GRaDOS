@@ -59,6 +59,8 @@ GRaDOS is designed to sit inside an agent research workflow:
 | `grados://papers/index` | Low-token index of all saved papers. |
 | `grados://papers/{safe_doi}` | Canonical overview card for one saved paper. |
 
+`safe_doi` is an opaque GRaDOS paper ID returned by save receipts, search results, or resource URIs. New saves include a short normalized-DOI hash suffix to avoid filename collisions; older IDs such as `10_1234_demo` still resolve. Prefer passing the DOI itself or the returned URI instead of deriving a paper ID by replacing DOI punctuation.
+
 ### Local Paper Library 🗂️
 
 After extraction or import, GRaDOS keeps papers in a visible on-disk layout:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grados.publisher.common import PublisherMetadata
+from grados.publisher.common import PublisherMetadata, safe_doi_filename
 from grados.search.academic import PaperMetadata
 from grados.storage.remote_metadata import (
     get_remote_metadata_by_doi,
@@ -107,7 +107,7 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     record = get_remote_metadata_by_doi(tmp_path / "chroma", "10.1234/demo")
 
     assert record is not None
-    assert record.paper_id == "10_1234_demo"
+    assert record.paper_id == safe_doi_filename("10.1234/demo")
     assert record.fetch_status == "metadata_only"
     assert record.has_fulltext is False
 

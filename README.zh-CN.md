@@ -59,6 +59,8 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | `grados://papers/index` | 所有已保存论文的低 token 索引。 |
 | `grados://papers/{safe_doi}` | 单篇已保存论文的 canonical 概览卡片。 |
 
+`safe_doi` 是 GRaDOS 在保存回执、搜索结果或 resource URI 中返回的 opaque paper ID。新保存的论文会在可读 slug 后追加一段 normalized DOI hash，避免文件名碰撞；旧的 `10_1234_demo` 形式仍可读取。优先传 DOI 本身或工具返回的 URI，不要自己把 DOI 标点替换成 paper ID。
+
 ### 本地论文库 🗂️
 
 提取或导入之后，GRaDOS 会把论文保存在一套可见的目录结构里：

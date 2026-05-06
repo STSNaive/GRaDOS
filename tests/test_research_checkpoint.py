@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from grados.publisher.common import safe_doi_filename
 from grados.research_checkpoint import (
     EvidenceAnchor,
     ResearchCheckpointPaper,
@@ -59,7 +60,7 @@ def test_paper_summary_generation_and_stale_detection(tmp_path: Path, monkeypatc
     monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: 1)
     papers_dir = tmp_path / "papers"
     summary_root = tmp_path / "paper_summaries"
-    save_paper_markdown(
+    saved = save_paper_markdown(
         doi="10.1234/demo",
         markdown=(
             "# Demo\n\n"
@@ -83,10 +84,10 @@ def test_paper_summary_generation_and_stale_detection(tmp_path: Path, monkeypatc
     assert summary.methods
     assert summary.key_findings
     assert summary.limitations
-    assert summary.evidence_anchors[0].canonical_uri == "grados://papers/10_1234_demo"
+    assert summary.evidence_anchors[0].canonical_uri == f"grados://papers/{safe_doi_filename('10.1234/demo')}"
     assert paper_summary_status(summary_root, papers_dir, doi="10.1234/demo") == "valid"
 
-    paper_file = papers_dir / "10_1234_demo.md"
+    paper_file = Path(saved.file_path)
     paper_file.write_text(paper_file.read_text(encoding="utf-8") + "\n\nNew paragraph.", encoding="utf-8")
 
     assert paper_summary_status(summary_root, papers_dir, doi="10.1234/demo") == "stale"

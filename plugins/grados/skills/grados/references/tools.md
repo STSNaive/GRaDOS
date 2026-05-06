@@ -19,7 +19,7 @@
 | `grados:extract_paper_full_text` | Fetch full text by DOI via `api -> browser -> oa -> scihub`, then parse via `Docling -> Marker -> PyMuPDF`. Auto-saves to the canonical paper store, mirrors Markdown to `papers/`, and indexes into ChromaDB. Returns a compact, non-citable receipt rather than the full text. |
 | `grados:import_local_pdf_library` | Import one local PDF file or a directory of PDFs into the canonical paper store. Supports recursive scanning, glob filtering, and optional raw-PDF archiving into `downloads/`. |
 | `grados:parse_pdf_file` | Parse a local PDF file using the same Python parsing waterfall. If DOI is provided, it writes the canonical paper entry, mirrors `.md` to `papers/`, and returns a compact save receipt. |
-| `grados:read_saved_paper` | Canonical deep-reading tool for previously saved papers. Accepts `doi`, `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis and citation verification. |
+| `grados:read_saved_paper` | Canonical deep-reading tool for previously saved papers. Accepts `doi`, a GRaDOS-returned opaque `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis and citation verification. |
 | `grados:save_paper_to_zotero` | Save cited paper metadata to Zotero. Requires `ZOTERO_API_KEY` and Zotero library configuration. |
 | `grados:save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, and compression-safe evidence checkpoints in the local SQLite state store. |
 | `grados:query_research_artifacts` | Query previously saved research artifacts by id, kind, or keyword. Use `detail=true` to restore full JSON or Markdown content. |
@@ -54,8 +54,8 @@ Recommended content schema:
   "evidence_anchors": [
     {
       "doi": "10.xxxx/example",
-      "safe_doi": "10_xxxx_example",
-      "canonical_uri": "grados://papers/10_xxxx_example",
+      "safe_doi": "10_xxxx_example__abc123def456",
+      "canonical_uri": "grados://papers/10_xxxx_example__abc123def456",
       "section_name": "Results",
       "paragraph_start": 42,
       "paragraph_count": 3,
@@ -110,3 +110,5 @@ If your client supports resource reading:
 | --- | --- |
 | `grados://papers/index` | Lightweight index of saved papers in the canonical local paper store |
 | `grados://papers/{safe_doi}` | Low-token overview resource for one saved paper: metadata, preview, section list, and asset counts |
+
+Treat `safe_doi` as an opaque paper ID returned by GRaDOS receipts, search results, or resources. New IDs include a short normalized-DOI hash suffix for collision resistance; legacy pure-slug IDs remain readable, but agents should prefer DOI lookup or returned URIs over guessing IDs from DOI punctuation.

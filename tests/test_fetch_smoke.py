@@ -477,7 +477,7 @@ def test_fetch_scihub_uses_fallback_endpoint_when_primary_unreachable() -> None:
     assert result.trace[1]["state"] == "ok"
 
 
-def test_fetch_scihub_not_found_does_not_try_fallback_endpoint() -> None:
+def test_fetch_scihub_not_found_tries_fallback_endpoint() -> None:
     from grados.extract.fetch import _fetch_scihub
 
     class FakeClient:
@@ -488,7 +488,15 @@ def test_fetch_scihub_not_found_does_not_try_fallback_endpoint() -> None:
             self.calls.append(url)
             if url == "https://primary.example/10.1234/demo":
                 return _http_response(url, status_code=404, text="not found")
-            raise AssertionError(f"fallback should not be called: {url}")
+            if url == "https://fallback.example/10.1234/demo":
+                return _http_response(url, text='<html><iframe src="/paper.pdf"></iframe></html>')
+            if url == "https://fallback.example/paper.pdf":
+                return _http_response(
+                    url,
+                    content=b"%PDF-1.4\n%demo\n",
+                    content_type="application/pdf",
+                )
+            raise AssertionError(f"unexpected URL: {url}")
 
     client = FakeClient()
     result = asyncio.run(
@@ -499,10 +507,15 @@ def test_fetch_scihub_not_found_does_not_try_fallback_endpoint() -> None:
         )
     )
 
-    assert result.outcome == "failed"
-    assert result.state == "not_found"
-    assert client.calls == ["https://primary.example/10.1234/demo"]
+    assert result.outcome == "pdf_obtained"
+    assert result.state == "ok"
+    assert client.calls == [
+        "https://primary.example/10.1234/demo",
+        "https://fallback.example/10.1234/demo",
+        "https://fallback.example/paper.pdf",
+    ]
     assert result.trace[0]["reason"] == "not_found_status"
+    assert result.trace[1]["state"] == "ok"
 
 
 def test_fetch_scihub_reports_unreachable_after_all_endpoints_fail() -> None:

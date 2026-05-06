@@ -8,7 +8,7 @@ from typing import Any
 from grados.config import GRaDOSPaths, generate_default_config
 from grados.extract.parse import ParsePipelineResult
 from grados.importing import import_local_pdf_library
-from grados.publisher.common import classify_pdf_content, detect_bot_challenge
+from grados.publisher.common import classify_pdf_content, detect_bot_challenge, safe_doi_filename
 from grados.publisher.elsevier import fetch_elsevier_article
 from grados.publisher.springer import fetch_springer_article
 
@@ -169,6 +169,65 @@ def test_springer_contract_falls_through_xml_html_to_pdf() -> None:
     ]
 
 
+def test_springer_contract_preserves_metadata_when_full_text_unavailable() -> None:
+    doi = "10.1007/s-contract-2026-0002"
+    client = FakeAsyncClient(
+        {
+            (
+                "https://api.springernature.com/meta/v2/json",
+                json.dumps({"api_key": "meta-key", "q": f"doi:{doi}"}, sort_keys=True),
+            ): FakeResponse(
+                status_code=200,
+                json_payload={
+                    "records": [
+                        {
+                            "doi": doi,
+                            "title": "Springer Metadata Only Contract",
+                            "abstract": "Metadata survives when no full text is available.",
+                            "publisher": "Springer Nature",
+                            "openaccess": "true",
+                            "url": [
+                                {"format": "html", "value": "https://springer.example/no-fulltext"},
+                                {"format": "pdf", "value": "https://springer.example/no-fulltext.pdf"},
+                            ],
+                        }
+                    ]
+                },
+            ),
+            (
+                "https://api.springernature.com/openaccess/jats",
+                json.dumps({"api_key": "oa-key", "q": f"doi:{doi}"}, sort_keys=True),
+            ): FakeResponse(status_code=200, text="<article>short xml</article>"),
+            ("https://springer.example/no-fulltext", json.dumps({}, sort_keys=True)): FakeResponse(
+                status_code=200,
+                text="<html><body>short html</body></html>",
+            ),
+            ("https://springer.example/no-fulltext.pdf", json.dumps({}, sort_keys=True)): FakeResponse(
+                status_code=404,
+                content=b"not found",
+            ),
+        }
+    )
+
+    result = asyncio.run(fetch_springer_article(doi, "meta-key", "oa-key", client))  # type: ignore[arg-type]
+
+    assert result.outcome == "metadata_only"
+    assert result.metadata is not None
+    assert result.metadata.title == "Springer Metadata Only Contract"
+    assert result.asset_hints == [
+        {
+            "kind": "article_html",
+            "label": "Springer HTML landing page",
+            "url": "https://springer.example/no-fulltext",
+        },
+        {
+            "kind": "article_pdf",
+            "label": "Springer PDF",
+            "url": "https://springer.example/no-fulltext.pdf",
+        },
+    ]
+
+
 def test_browser_contract_rejects_html_disguised_as_pdf_and_detects_challenge() -> None:
     disguised_html = (
         b"<html><head><title>Just a moment</title></head>"
@@ -241,4 +300,4 @@ def test_local_import_contract_uses_recursive_fixture_and_surfaces_warning_mix(
         "QA validation failed — imported anyway.",
     ]
     assert recursive.items[0].debug == ["fallback:pymupdf"]
-    assert (paths.papers / "10_1234_fixture_a.md").is_file()
+    assert (paths.papers / f"{safe_doi_filename('10.1234/fixture-a')}.md").is_file()

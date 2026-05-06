@@ -699,6 +699,7 @@ def _scihub_endpoint_failure_priority(result: FetchResult) -> int:
         "invalid_pdf": 6,
         "site_unreachable": 5,
         "timeout": 4,
+        "not_found": 3,
         "error": 1,
         "": 0,
     }
@@ -928,10 +929,6 @@ async def _fetch_scihub(
         warnings.extend(result.warnings)
         trace.extend(result.trace or [_trace_fetch_result(doi, result)])
         if _is_fetch_success(result):
-            result.warnings = warnings.copy()
-            result.trace = trace.copy()
-            return result
-        if result.state == "not_found":
             result.warnings = warnings.copy()
             result.trace = trace.copy()
             return result

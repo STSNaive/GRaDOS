@@ -338,3 +338,31 @@
 - summary、checkpoint、全文和向量索引之间可以互相定位，但不会混淆谁是 canonical evidence。
 - 上下文压缩或对话中断后，LLM 可以通过 checkpoint 恢复已筛选论文、阶段性发现和证据锚点，再回读全文继续工作。
 - 后续实现细节、schema 字段和迁移步骤由 `TODO.md` 跟踪；本 ADR 只固定长期架构语义与命名边界。
+
+---
+
+## ADR-013：saved-paper selector 与 DOI-derived paper id 采用 opaque identifier 语义
+
+- 状态：Accepted
+- 日期：2026-05-06
+
+### 背景
+- `read_saved_paper`、`get_saved_paper_structure` 和 `grados://papers/{safe_doi}` 允许调用方直接提供 saved-paper selector。
+- 旧实现把 selector 直接拼进 `papers_dir / f"{safe_doi}.md"`，会把 `../` 之类路径片段带入文件系统解析。
+- 旧 `safe_doi_filename()` 还把所有非字母数字字符替换为 `_`，导致不同 DOI 可能得到同一个 paper id、Markdown 文件名、PDF 文件名、asset manifest 和 remote-metadata id。
+
+### 决策
+- `safe_doi` / `grados://papers/{safe_doi}` 是 GRaDOS 返回的 opaque paper id，不是让调用方自行按 DOI 标点推导的路径片段。
+- 所有 caller-provided saved-paper selectors 必须先通过 filename-token allowlist；最终路径再用 `Path.resolve()` 解析，并确认仍位于 canonical `papers/` 目录下。
+- 新写入的 DOI-derived id 使用“可读 slug + normalized DOI hash”格式。slug 方便人工扫读，hash 承担唯一性；不得再把纯下划线 slug 当唯一主键。
+- DOI lookup 保持向后兼容：按 DOI 读取时先尝试当前 hash id，再尝试旧版纯下划线 id；如果旧文件已经存在且 frontmatter DOI 匹配，写入同一 DOI 时继续使用旧 id，避免无意义迁移。
+- remote metadata、paper summary、raw PDF 和 asset manifest 等 DOI-derived artifact 统一复用当前 collision-resistant id；调用方应优先使用保存回执、搜索结果或 resource URI 返回的 id。
+- Springer acquisition 保持 metadata 与 full-text 分层：Meta API 命中但 OA JATS / HTML / PDF 都不可用时，结果仍是可缓存、可展示的 `metadata_only`，而不是 generic failure。
+- `extract.sci_hub.endpoints` 表示 ordered fallback list。单个 endpoint 的 `not_found` 只说明该 endpoint 未命中；只有全部 endpoints 都未命中时才返回最终 `not_found`。
+
+### 结果与影响
+- saved-paper 读取不再允许路径穿越到 `papers/` 之外。
+- 新保存的 paper id 会比旧版多一个短 hash 后缀；旧的 `10_1234_demo` 形式仍可通过 DOI lookup 或明确 legacy selector 读取。
+- 用户文档和 tool reference 应避免暗示 safe DOI 可以从 DOI 简单替换标点得到；示例应把它描述为“GRaDOS 返回的 paper id”。
+- DOI collision 不再能覆盖 canonical Markdown、PDF、asset manifest、Chroma join key 或 remote metadata 记录。
+- Springer metadata-only 与 Sci-Hub endpoint fallback 都保持可观测，不把可恢复/可缓存状态折叠为普通失败。

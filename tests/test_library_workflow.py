@@ -5,6 +5,7 @@ from pathlib import Path
 
 from grados.config import GRaDOSPaths, IndexingConfig
 from grados.extract.parse import ParsePipelineResult
+from grados.publisher.common import safe_doi_filename
 from grados.workflows.library import (
     LibraryDocumentArtifact,
     build_library_document_artifact,
@@ -41,7 +42,7 @@ def test_build_library_document_artifact_and_save_pdf(tmp_path: Path) -> None:
         debug=["docling:ok"],
     )
     assert Path(saved_pdf).is_file()
-    assert Path(saved_pdf).name == "10_1234_demo.pdf"
+    assert Path(saved_pdf).name == f"{safe_doi_filename('10.1234/demo')}.pdf"
 
 
 def test_review_and_persist_library_document_applies_shared_contracts(
@@ -94,7 +95,7 @@ def test_review_and_persist_library_document_applies_shared_contracts(
     assert persisted.qa_warning_added is True
     assert persisted.index_warning_added is True
     assert Path(persisted.summary.file_path).is_file()
-    assert persisted.asset_manifest_path == "_assets/10_1234_demo.json"
+    assert persisted.asset_manifest_path == f"_assets/{safe_doi_filename('10.1234/demo')}.json"
     assert persisted.warnings == [
         "fetch warning",
         "parser emitted partial text",

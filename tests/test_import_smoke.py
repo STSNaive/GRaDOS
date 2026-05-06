@@ -7,6 +7,7 @@ from pathlib import Path
 from grados.config import GRaDOSPaths, IndexingConfig, generate_default_config
 from grados.extract.parse import ParsePipelineResult
 from grados.importing import import_local_pdf_library
+from grados.publisher.common import safe_doi_filename
 
 
 def test_import_local_pdf_library_imports_and_skips_duplicates(tmp_path: Path, monkeypatch) -> None:
@@ -61,7 +62,7 @@ def test_import_local_pdf_library_imports_and_skips_duplicates(tmp_path: Path, m
     assert first.failed == 0
     assert any(item.doi == "10.1234/demo-a" for item in first.items)
     assert any(item.doi.startswith("local-pdf/") for item in first.items if item.status.startswith("imported"))
-    assert (paths.papers / "10_1234_demo_a.md").is_file()
+    assert (paths.papers / f"{safe_doi_filename('10.1234/demo-a')}.md").is_file()
     assert len(list(paths.downloads.glob("*.pdf"))) == 2
 
     second = asyncio.run(
@@ -123,5 +124,5 @@ def test_import_local_pdf_library_surfaces_index_warning(tmp_path: Path, monkeyp
     assert result.items[0].status == "imported_with_warnings"
     assert "index_warning" in result.items[0].detail
     assert any("index refresh failed" in warning.lower() for warning in result.warnings)
-    assert (paths.papers / "10_1234_demo_a.md").is_file()
+    assert (paths.papers / f"{safe_doi_filename('10.1234/demo-a')}.md").is_file()
     assert isinstance(captured["indexing_config"], IndexingConfig)

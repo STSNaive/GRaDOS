@@ -529,11 +529,11 @@ async def read_saved_paper(
     doi: Annotated[str | None, Field(description="Paper DOI. Provide this, safe_doi, or uri.")] = None,
     safe_doi: Annotated[
         str | None,
-        Field(description="Sanitized DOI filename such as `10_1234_demo`. Provide this, doi, or uri."),
+        Field(description="Opaque GRaDOS paper ID such as `10_1234_demo__51facb5bc98d`. Provide this, doi, or uri."),
     ] = None,
     uri: Annotated[
         str | None,
-        Field(description="Canonical paper URI such as `grados://papers/10_1234_demo`."),
+        Field(description="Canonical paper URI such as `grados://papers/10_1234_demo__51facb5bc98d`."),
     ] = None,
     start_paragraph: Annotated[
         int,
@@ -592,11 +592,11 @@ async def get_saved_paper_structure(
     doi: Annotated[str | None, Field(description="Paper DOI. Provide this, safe_doi, or uri.")] = None,
     safe_doi: Annotated[
         str | None,
-        Field(description="Sanitized DOI filename such as `10_1234_demo`. Provide this, doi, or uri."),
+        Field(description="Opaque GRaDOS paper ID such as `10_1234_demo__51facb5bc98d`. Provide this, doi, or uri."),
     ] = None,
     uri: Annotated[
         str | None,
-        Field(description="Canonical paper URI such as `grados://papers/10_1234_demo`."),
+        Field(description="Canonical paper URI such as `grados://papers/10_1234_demo__51facb5bc98d`."),
     ] = None,
 ) -> dict[str, object]:
     """Return a compact structure card for a saved paper."""

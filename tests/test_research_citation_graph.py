@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import grados.research.citation_graph as citation_graph
+from grados.publisher.common import safe_doi_filename
 from grados.research.citation_graph import get_citation_graph
 from grados.storage.papers import save_paper_markdown
 
@@ -89,7 +90,7 @@ def test_citation_graph_reuses_cached_local_records_until_papers_change(
     assert second.summary is not None
     assert first.summary.cited_local[0].doi == "10.1000/b"
     assert second.summary.cited_local[0].doi == "10.1000/b"
-    assert load_calls == ["10_1000_a", "10_1000_b"]
+    assert load_calls == [safe_doi_filename("10.1000/a"), safe_doi_filename("10.1000/b")]
 
 
 def test_citation_graph_cache_invalidates_when_any_saved_paper_changes(
@@ -117,9 +118,9 @@ def test_citation_graph_cache_invalidates_when_any_saved_paper_changes(
     first = get_citation_graph(chroma_dir, mode="neighbors", doi="10.1000/a")
     assert first.summary is not None
     assert first.summary.cited_by_local == []
-    assert load_calls == ["10_1000_a", "10_1000_b"]
+    assert load_calls == [safe_doi_filename("10.1000/a"), safe_doi_filename("10.1000/b")]
 
-    paper_b_path = papers_dir / "10_1000_b.md"
+    paper_b_path = papers_dir / f"{safe_doi_filename('10.1000/b')}.md"
     previous_mtime = paper_b_path.stat().st_mtime_ns
     save_paper_markdown(
         "10.1000/b",
@@ -143,4 +144,9 @@ def test_citation_graph_cache_invalidates_when_any_saved_paper_changes(
 
     assert second.summary is not None
     assert [item.doi for item in second.summary.cited_by_local] == ["10.1000/b"]
-    assert load_calls == ["10_1000_a", "10_1000_b", "10_1000_a", "10_1000_b"]
+    assert load_calls == [
+        safe_doi_filename("10.1000/a"),
+        safe_doi_filename("10.1000/b"),
+        safe_doi_filename("10.1000/a"),
+        safe_doi_filename("10.1000/b"),
+    ]

@@ -38,13 +38,13 @@ Required shape:
   "papers": [
     {
       "doi": "10.xxxx/example",
-      "safe_doi": "10_xxxx_example",
-      "paper_id": "10_xxxx_example",
+      "safe_doi": "10_xxxx_example__abc123def456",
+      "paper_id": "10_xxxx_example__abc123def456",
       "title": "Paper title",
       "screening_status": "candidate",
       "fetch_status": "fulltext",
-      "paper_uri": "grados://papers/10_xxxx_example",
-      "paper_summary_id": "summary_10_xxxx_example_abcdef",
+      "paper_uri": "grados://papers/10_xxxx_example__abc123def456",
+      "paper_summary_id": "summary_10_xxxx_example__abc123def456_abcdef",
       "index_status": "indexed",
       "failure_reason": ""
     }
@@ -68,11 +68,11 @@ Required shape:
 ```json
 {
   "schema_version": 1,
-  "summary_id": "summary_10_xxxx_example_abcdef",
+  "summary_id": "summary_10_xxxx_example__abc123def456_abcdef",
   "doi": "10.xxxx/example",
-  "safe_doi": "10_xxxx_example",
-  "paper_id": "10_xxxx_example",
-  "paper_uri": "grados://papers/10_xxxx_example",
+  "safe_doi": "10_xxxx_example__abc123def456",
+  "paper_id": "10_xxxx_example__abc123def456",
+  "paper_uri": "grados://papers/10_xxxx_example__abc123def456",
   "content_hash": "sha256-of-canonical-markdown",
   "summary_prompt_version": "paper-summary-extractive-v1",
   "summary_model": "grados-extractive-v1",

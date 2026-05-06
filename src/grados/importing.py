@@ -60,11 +60,9 @@ async def import_local_pdf_library(
     result = ImportLibraryResult(source_path=str(source_path))
 
     pdf_files = _discover_pdf_files(source_path, recursive=recursive, glob_pattern=glob_pattern)
-    existing_safe_dois = {
-        item.safe_doi
-        for item in list_saved_papers(paths.papers, chroma_dir=paths.database_chroma)
-        if item.safe_doi
-    }
+    existing_papers = list_saved_papers(paths.papers, chroma_dir=paths.database_chroma)
+    existing_safe_dois = {item.safe_doi for item in existing_papers if item.safe_doi}
+    existing_dois = {normalize_doi(item.doi) for item in existing_papers if item.doi}
     seen_hashes: set[str] = set()
 
     for pdf_file in pdf_files:
@@ -123,7 +121,7 @@ async def import_local_pdf_library(
 
         doi = _infer_doi(parsed, pdf_file) or f"local-pdf/{pdf_hash[:16]}"
         safe_doi = safe_doi_filename(doi)
-        if safe_doi in existing_safe_dois:
+        if safe_doi in existing_safe_dois or normalize_doi(doi) in existing_dois:
             result.skipped += 1
             result.items.append(
                 ImportItemResult(
@@ -177,6 +175,7 @@ async def import_local_pdf_library(
             indexing_config=config.indexing,
         )
         existing_safe_dois.add(persisted.summary.safe_doi)
+        existing_dois.add(normalize_doi(doi))
         if persisted.index_warning_added:
             warning = (
                 f"{pdf_file.name}: search index refresh failed after canonical mirror save. "

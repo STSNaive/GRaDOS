@@ -25,7 +25,7 @@ class SpringerFetchResult:
     text: str = ""
     pdf_buffer: bytes = b""
     metadata: SpringerMetaRecord | None = None
-    outcome: str = ""  # native_full_text | pdf_obtained | failed
+    outcome: str = ""  # native_full_text | pdf_obtained | metadata_only | failed
     text_format: str = ""  # xml | html | markdown | text
     asset_hints: list[dict[str, str]] = field(default_factory=list)
 
@@ -191,4 +191,8 @@ async def fetch_springer_article(
         except Exception:
             pass
 
-    return SpringerFetchResult(outcome="failed")
+    return SpringerFetchResult(
+        metadata=meta,
+        outcome="metadata_only",
+        asset_hints=_build_asset_hints(meta),
+    )

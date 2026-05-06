@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from grados.config import IndexingConfig
-from grados.publisher.common import PublisherMetadata
+from grados.publisher.common import PublisherMetadata, safe_doi_filename
 from grados.search.academic import PaperMetadata
 from grados.search.resumable import ResumableSearchResult
 from grados.server import (
@@ -289,6 +289,7 @@ def test_search_academic_papers_indepth_writes_checkpoint_and_summary(tmp_path: 
         )
 
     async def fake_extract_paper_full_text(**kwargs):  # noqa: ANN003
+        expected_safe = safe_doi_filename(kwargs["doi"])
         save_paper_markdown(
             doi=kwargs["doi"],
             markdown=(
@@ -308,8 +309,8 @@ def test_search_academic_papers_indepth_writes_checkpoint_and_summary(tmp_path: 
         return (
             "## Paper Extracted Successfully\n\n"
             "- **DOI:** 10.1234/indepth\n"
-            "- **Paper ID:** 10_1234_indepth\n"
-            "- **Safe DOI:** 10_1234_indepth\n"
+            f"- **Paper ID:** {expected_safe}\n"
+            f"- **Safe DOI:** {expected_safe}\n"
             "- **Fetch Status:** fulltext\n"
             "- **Has Fulltext:** true\n"
             "- **Index Status:** indexed\n"
@@ -327,7 +328,7 @@ def test_search_academic_papers_indepth_writes_checkpoint_and_summary(tmp_path: 
     checkpoint_files = list(paths.research_checkpoints.glob("*/checkpoint.json"))
     assert "Indepth Checkpoint" in result
     assert checkpoint_files
-    assert (paths.paper_summaries / "10_1234_indepth.json").is_file()
+    assert (paths.paper_summaries / f"{safe_doi_filename('10.1234/indepth')}.json").is_file()
     checkpoint = checkpoint_files[0].read_text(encoding="utf-8")
     assert "paper_summary_id" in checkpoint
     assert "fulltext" in checkpoint
@@ -593,7 +594,7 @@ def test_search_saved_papers_end_to_end_rereads_updated_canonical_excerpt(
     papers_dir = tmp_path / "grados-home" / "papers"
     chroma_dir = tmp_path / "grados-home" / "database" / "chroma"
 
-    save_paper_markdown(
+    saved = save_paper_markdown(
         doi="10.1234/demo-server",
         markdown=(
             "# Composite Damping Study\n\n"
@@ -610,7 +611,7 @@ def test_search_saved_papers_end_to_end_rereads_updated_canonical_excerpt(
         chroma_dir=chroma_dir,
     )
 
-    (papers_dir / "10_1234_demo_server.md").write_text(
+    Path(saved.file_path).write_text(
         '---\n'
         'doi: "10.1234/demo-server"\n'
         'title: "Composite Damping Study"\n'
@@ -673,7 +674,13 @@ def test_extract_paper_full_text_writes_asset_manifest(tmp_path: Path, monkeypat
         )
     )
 
-    manifest_file = tmp_path / "grados-home" / "papers" / "_assets" / "10_1234_demo.json"
+    manifest_file = (
+        tmp_path
+        / "grados-home"
+        / "papers"
+        / "_assets"
+        / f"{safe_doi_filename('10.1234/demo')}.json"
+    )
     assert "Paper Extracted Successfully" in result
     assert manifest_file.is_file()
     assert isinstance(captured["indexing_config"], IndexingConfig)

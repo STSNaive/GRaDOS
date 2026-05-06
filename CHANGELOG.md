@@ -23,6 +23,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed new saved-paper, PDF, asset-manifest, and remote-metadata DOI identifiers to append a short hash of the normalized DOI to the readable slug, preventing distinct DOIs from collapsing to the same `safe_doi` while keeping legacy IDs readable by DOI lookup.
 - Changed remote search results to expose local saved/full-text/summary state even when `indepth` is disabled, and changed extraction receipts to include explicit `paper_id`, `safe_doi`, `fetch_status`, and `has_fulltext` fields.
 - Changed `grados setup` and `grados status` to treat the OS keychain as the preferred API-key store: setup now points users to `grados auth set`, status reports keychain health plus each key's source (`env`, `keychain`, or legacy `config`), and both READMEs plus `grados-config.example.json` now describe `config.json` plaintext keys as a temporary import path rather than the long-term source of truth.
 - Changed config normalization to preserve all-caps keys such as `ELSEVIER_API_KEY`, preventing secret-field names and strategy IDs from being mangled during `config.json` loading.
@@ -52,6 +53,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed Stage B research helper layout so `src/grados/research_tools.py` is now a thin public facade over `src/grados/research/` (`models`, `common`, `full_context`, `citation_graph`, `evidence_grid`, `compare`, `draft_audit`), reducing cross-responsibility coupling while keeping MCP/server payloads stable.
 
 ### Fixed
+- Fixed saved-paper selector handling so caller-provided `safe_doi` values and `grados://papers/...` suffixes are treated as opaque IDs, validated against a filename-token allowlist, and resolved under the canonical `papers/` directory before reading.
+- Fixed Springer metadata-only fetches so a successful Meta API record is preserved as `metadata_only` with metadata and asset hints when JATS, HTML, and PDF full text are unavailable.
+- Fixed Sci-Hub endpoint fallback behavior so one endpoint returning `not_found` no longer prevents later configured endpoints from being tried; a final `not_found` is returned only after all endpoints miss.
 - Fixed plaintext API-key import for mixed-case secret fields such as `SPRINGER_meta_API_KEY`, so `config.json` one-shot keys are migrated into the OS keychain and then cleared instead of being dropped by config-key normalization.
 - Fixed canonical paper saves from `extract_paper_full_text`, `parse_pdf_file`, and `import_local_pdf_library` to pass the active `IndexingConfig` through to Chroma indexing, preventing newly saved papers from being indexed with default embedding/chunking settings after users customize config.
 - Fixed the bundled GRaDOS skill tool reference to describe the current `api -> browser -> oa -> scihub` fetch order and `Docling -> Marker -> PyMuPDF` parse order.
@@ -68,6 +72,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Removed unused `extract.sci_hub.auto_update_mirror` and `mirror_url_file` config fields; the current `scihub` runtime uses ordered `endpoints` with `fallback_mirror` retained for legacy configs.
 
 ### Tests
+- Added regression coverage for safe saved-paper selector validation, DOI slug-collision avoidance, legacy safe DOI lookup, Springer metadata-only fallback, Sci-Hub `not_found` endpoint fallthrough, and the existing config/search/reindex review fixes.
 - Added regression coverage for browser fallback warnings, local Chroma timeout guards, repeated-query deduplication and citation-graph cache invalidation in `research_tools`, typed paper-document accessors, shared `papers_dir` resolution, narrow storage helper boundaries (DOI extraction / frontmatter stripping / paragraph splitting), and the dropped raw `fallbackMirror` Sci-Hub fetch shim.
 - Added workflow coverage for the shared library ingest pipeline plus `parse_pdf_file` smoke coverage for QA-warning and index-partial-success receipts.
 - Added browser regression coverage for retained-session teardown, listener cleanup, and challenge/timeout paths after splitting `browser/generic.py` into runtime/strategy layers.
