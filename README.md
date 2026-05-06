@@ -31,26 +31,28 @@ GRaDOS is designed to sit inside an agent research workflow:
 5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, the paper index to `database/chroma/`, and remote metadata to `database/remote_metadata/`
 6. Re-open saved papers with low-token structure cards and deep-reading windows before citing them
 
+Host agents may use their own reasoning model to plan queries, screen candidates, rerank anchors, judge support, and synthesize prose. GRaDOS does not call that model directly: snippets, scores, evidence grids, comparisons, and audits are navigation material until the agent rereads the canonical paragraph window with `read_saved_paper`.
+
 ### MCP Tools 🔧
 
 | Server | Tool | Description |
 | --- | --- | --- |
 | GRaDOS | `search_academic_papers` | Search remote academic databases for paper metadata, DOI deduplication, resumable continuation tokens, and local saved/full-text/summary state. Optional `indepth=true` materializes returned candidates with the same `limit`; default config is off. |
-| GRaDOS | `search_saved_papers` | Search the local saved-paper library with semantic retrieval, metadata filters, and optional lexical reranking. Returned snippets are screening hints, not citation evidence. |
+| GRaDOS | `search_saved_papers` | Search the local saved-paper library with semantic retrieval, metadata filters, and optional lexical reranking. Returned snippets and Evidence Anchor JSON blocks are screening/reranking material, not citation evidence. |
 | GRaDOS | `extract_paper_full_text` | Fetch, parse, and save one paper's canonical full text by DOI. Returns a compact save receipt with URI, file path, sections, and warnings rather than the full paper text. |
 | GRaDOS | `read_saved_paper` | Read paragraph windows from one saved paper for canonical deep reading and citation verification. Accepts a DOI, safe DOI, or `grados://papers/...` URI. |
 | GRaDOS | `get_saved_paper_structure` | Return a low-token structure card for one saved paper with preview text, headings, and asset summary. Use it for screening before deep reading, not as the final citation source. |
 | GRaDOS | `import_local_pdf_library` | Import a local PDF file or directory into the canonical paper store and retrieval index. Returns an import summary plus the first 25 item results. |
 | GRaDOS | `parse_pdf_file` | Parse a local PDF into markdown. Without a DOI it returns a truncated preview; with a DOI it saves the paper into the canonical library and returns a save receipt. |
 | GRaDOS | `save_paper_to_zotero` | Save one paper to the configured Zotero library through the Web API, typically for papers that actually support the final answer. |
-| GRaDOS | `save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, and evidence grids in the local SQLite state store. |
+| GRaDOS | `save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, and compression-safe evidence checkpoints in the local SQLite state store. |
 | GRaDOS | `query_research_artifacts` | Query previously saved research artifacts by id, kind, or keyword. `detail=true` returns the full stored content. |
 | GRaDOS | `manage_failure_cases` | Record, inspect, and summarize failed fetch, parse, search, or citation attempts. Can also suggest conservative retry steps from local failure memory. |
 | GRaDOS | `get_citation_graph` | Return lightweight local citation relationships, including citation neighbors, common references, and reverse citing-paper lookups. |
 | GRaDOS | `get_papers_full_context` | Return structured full-context material for a small paper set, with token estimates or actual section content for CAG-style deep reading. |
-| GRaDOS | `build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. |
-| GRaDOS | `compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. |
-| GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return `supported`, `weak`, `unsupported`, or `misattributed` statuses with candidate evidence. `misattributed` is currently reliable for resolvable Latin-script or Chinese author-year citations; numeric citations stay support-only until bibliography mapping exists. |
+| GRaDOS | `build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. Rows carry reread anchors for agent-side reranking before citation verification. |
+| GRaDOS | `compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. Returned excerpts carry per-axis reread anchors. |
+| GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return first-pass `supported`, `weak`, `unsupported`, or `misattributed` statuses with candidate evidence snippets and anchors. `candidate_limit` controls candidates per claim. `misattributed` is currently reliable for resolvable Latin-script or Chinese author-year citations; numeric citations stay support-only until bibliography mapping exists. |
 
 ### MCP Resources 📚
 

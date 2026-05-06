@@ -31,26 +31,28 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把论文索引写入 `database/chroma/`，把远程元数据写入 `database/remote_metadata/`
 6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
 
+外层 agent 可以用自己的 host model 规划查询、筛选候选、重排 anchor、判断支持关系并综合写作。GRaDOS 工具不会直接调用该模型：snippet、score、evidence grid、comparison 和 audit 结果都只是导航材料，只有用 `read_saved_paper` 回读 canonical 段落窗口后，才能作为引用证据。
+
 ### MCP 工具 🔧
 
 | 服务 | 工具 | 说明 |
 | --- | --- | --- |
 | GRaDOS | `search_academic_papers` | 检索远程学术数据库中的论文元数据，支持 DOI 去重、continuation token 续查，并暴露本地保存/全文/summary 状态。可选 `indepth=true` 会用同一个 `limit` materialize 返回候选；默认配置关闭。 |
-| GRaDOS | `search_saved_papers` | 检索本地已保存论文库，支持语义检索、metadata 过滤与可选词法 reranking。返回的 snippet 只是筛选线索，不是最终引用证据。 |
+| GRaDOS | `search_saved_papers` | 检索本地已保存论文库，支持语义检索、metadata 过滤与可选词法 reranking。返回的 snippet 和 Evidence Anchor JSON block 只是筛选/重排线索，不是最终引用证据。 |
 | GRaDOS | `extract_paper_full_text` | 按 DOI 抓取、解析并保存单篇论文的 canonical 全文。返回的是包含 URI、文件路径、章节和 warning 的紧凑保存回执，而不是全文正文。 |
 | GRaDOS | `read_saved_paper` | 从单篇已保存论文中读取段落窗口，用于 canonical 深读与引用核验。可通过 DOI、safe DOI 或 `grados://papers/...` URI 定位论文。 |
 | GRaDOS | `get_saved_paper_structure` | 返回单篇论文的低 token 结构卡片，包含预览、章节标题与资产摘要。适合深读前筛选，不应替代最终引用依据。 |
 | GRaDOS | `import_local_pdf_library` | 把本地 PDF 文件或目录导入 canonical 论文库与检索索引。返回导入摘要以及前 25 条条目结果。 |
 | GRaDOS | `parse_pdf_file` | 把本地 PDF 解析为 markdown。未提供 DOI 时返回截断预览；提供 DOI 时会保存进 canonical 论文库并返回保存回执。 |
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 把单篇论文保存到当前配置的 Zotero 库，通常用于最终答案里实际引用到的论文。 |
-| GRaDOS | `save_research_artifact` | 把 search snapshot、extraction receipt、evidence grid 等可复用中间产物持久化到本地 SQLite 状态库。 |
+| GRaDOS | `save_research_artifact` | 把 search snapshot、extraction receipt、evidence grid、compression-safe evidence checkpoint 等可复用中间产物持久化到本地 SQLite 状态库。 |
 | GRaDOS | `query_research_artifacts` | 按 id、kind 或关键词查询已保存的 research artifact；`detail=true` 会返回完整内容。 |
 | GRaDOS | `manage_failure_cases` | 记录、查询并总结 fetch、parse、search 或 citation 失败案例，也能给出保守的重试建议。 |
 | GRaDOS | `get_citation_graph` | 返回本地论文库中的轻量引用关系，包括引用邻居、共同参考文献和反向 citing-paper 查询。 |
 | GRaDOS | `get_papers_full_context` | 为少量论文返回结构化全文上下文，可先拿 token 估计，也可直接进入 CAG 风格的深读模式。 |
-| GRaDOS | `build_evidence_grid` | 围绕主题或子问题，从本地论文库构建写作前的证据网格。 |
-| GRaDOS | `compare_papers` | 跨多篇已保存论文抽取并行对比材料，聚焦 methods、results 或 full text。 |
-| GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 `supported`、`weak`、`unsupported` 或 `misattributed` 状态。当前可解析的拉丁字母或中文 author-year 引文都能较可靠判定 `misattributed`；numeric citation 在建立 bibliography 映射前仍只做 support 检查。 |
+| GRaDOS | `build_evidence_grid` | 围绕主题或子问题，从本地论文库构建写作前的证据网格；行内带可回读 anchor，供 agent-side reranking 后再核验引用。 |
+| GRaDOS | `compare_papers` | 跨多篇已保存论文抽取并行对比材料，聚焦 methods、results 或 full text；返回 excerpt 会带每个对比轴的回读 anchor。 |
+| GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 first-pass `supported`、`weak`、`unsupported` 或 `misattributed` 状态以及候选 evidence snippet/anchor；`candidate_limit` 控制每条 claim 的候选数。当前可解析的拉丁字母或中文 author-year 引文都能较可靠判定 `misattributed`；numeric citation 在建立 bibliography 映射前仍只做 support 检查。 |
 
 ### MCP 资源 📚
 

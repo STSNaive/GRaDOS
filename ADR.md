@@ -44,11 +44,14 @@
 - research tools 与 user-facing read/search 工具统一遵循这条闭环。
 - 对单次命中的相关段落，不额外做人为截断；应优先返回 canonical 原文中的相关段落窗口。
 - 多论文聚合型工具仍可保留总预算控制，避免单次调用把过多全文一次性灌入上下文。
+- `search_saved_papers`、`build_evidence_grid`、`compare_papers`、`audit_draft_support` 等 helper 可以返回 compact snippet、score、reread anchor 和 first-pass audit 状态，供外层 agent model 做 query planning、reranking、support judgment 和 synthesis；这些 helper 输出仍不是 citation evidence。
+- GRaDOS server 不直接调用外层 agent model。模型判断停留在 MCP client / host agent 层，GRaDOS 只提供 deterministic retrieval、anchor 和 canonical reread entrypoint。
 
 ### 结果与影响
 - 最终证据来自 canonical 原文，而不是索引副本。
 - paragraph 切分规则必须保持稳定，否则命中的段落坐标会漂移。
 - Chroma 中即使仍保留 derived document copy，也不再作为最终证据源；canonical reread 具有更高优先级。
+- 可能跨上下文压缩或跨工具复用的 helper 输出，应在可用时携带 `canonical_uri`、`paragraph_start`、`paragraph_count`；没有精确坐标时必须显式降级，不能暗示 snippet 已经 citation-ready。
 - 后续优化重点包括 overlap chunk 去重、上下文扩窗和更强的闭环回归测试。
 
 ## ADR-003：默认归一化层采用 Docling；Elsevier 走 XML-first 确定性解析
@@ -307,7 +310,7 @@
 
 ## ADR-012：`indepth`、`paper_summary` 与 `research_checkpoint` 分层
 
-- 状态：Accepted（分阶段实施中）
+- 状态：Accepted
 - 日期：2026-04-29
 
 ### 背景
@@ -337,7 +340,7 @@
 - 普通模式继续轻量运行；`indepth` 为需要全文级阅读和总结的研究任务提供显式开关。
 - summary、checkpoint、全文和向量索引之间可以互相定位，但不会混淆谁是 canonical evidence。
 - 上下文压缩或对话中断后，LLM 可以通过 checkpoint 恢复已筛选论文、阶段性发现和证据锚点，再回读全文继续工作。
-- 后续实现细节、schema 字段和迁移步骤由 `TODO.md` 跟踪；本 ADR 只固定长期架构语义与命名边界。
+- 运行面、schema 字段和恢复规则由 README、skill reference、`skills/grados/references/indepth.md` 与回归测试共同守护；`TODO.md` 不再重复维护已完成清单。
 
 ---
 
@@ -366,3 +369,26 @@
 - 用户文档和 tool reference 应避免暗示 safe DOI 可以从 DOI 简单替换标点得到；示例应把它描述为“GRaDOS 返回的 paper id”。
 - DOI collision 不再能覆盖 canonical Markdown、PDF、asset manifest、Chroma join key 或 remote metadata 记录。
 - Springer metadata-only 与 Sci-Hub endpoint fallback 都保持可观测，不把可恢复/可缓存状态折叠为普通失败。
+
+---
+
+## ADR-014：Codex in-app browser 不作为 PDF acquisition backend
+
+- 状态：Accepted
+- 日期：2026-05-06
+
+### 背景
+- GRaDOS 已把 `browser` 作为机构权限 PDF download 的一等获取路径，并通过 managed Chrome / Patchright 维护 persistent profile、download capture、challenge resume 和 `BrowserFetchResult` 契约。
+- 曾评估过把 Codex Browser Use 的 in-app browser 作为另一个 PDF acquisition backend。
+- 本地 runtime probe 已证明该 in-app browser 在当前 Codex 环境中不支持文件下载，触发下载时返回 `Downloads are not supported by Codex In-app Browser.`。
+
+### 决策
+- Codex Browser Use 的 in-app browser 不进入 GRaDOS 的 PDF acquisition backend 或默认 `extract.fetch_strategy.order`。
+- 现有 managed Chrome / Patchright 继续作为 GRaDOS 内部 browser strategy 的主路径。
+- Codex in-app browser 只可作为页面观察、调试或预览表面；不能被文档或代码描述为可稳定产出 PDF artifact 的获取后端。
+- 如果未来评估 Codex host 侧桌面能力，必须设计为 host-agent fallback：由 host agent 在 GRaDOS 进程外拿到本地 PDF 路径，再调用现有 `parse_pdf_file` / import 流程；不得伪装成 server 内部 fetch strategy。
+
+### 结果与影响
+- GRaDOS 的 acquisition contract 继续围绕可由 Python runtime 控制和验证的后端组织。
+- 不保留 speculative in-app browser backend TODO，避免再次把不可下载的 UI surface 误写成获取路径。
+- 后续只在 `TODO.md` 追踪尚未实现的 host-agent fallback 方案。

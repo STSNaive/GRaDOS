@@ -7,6 +7,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
+- Added agent-side evidence anchors to saved-paper search and Stage B research helpers so snippets, grids, comparisons, and audits can point agents back to canonical `read_saved_paper` paragraph windows before citation.
+- Added `candidate_limit` to `audit_draft_support` so draft audits can return more candidate evidence items for host-agent reranking before final support judgment.
 - Added opt-in `indepth` search mode with default-off config, a `grados search --indepth` CLI surface, per-run `research_checkpoint` folders, and reusable query-independent `paper_summary` artifacts.
 - Added a compression-safe `evidence_checkpoint` research-artifact convention to the GRaDOS skill and tool reference so claim evidence can be restored after context compression and reread from canonical saved-paper paragraphs before citation.
 - Added `keyring` as a runtime dependency plus a new `grados.secrets` module that resolves API keys with `env -> keychain -> config` precedence, migrates plaintext `config.json` secrets into the OS keychain on first use, and clears migrated plaintext keys with an atomic rewrite.
@@ -23,6 +25,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed `search_saved_papers` to include an `Evidence Anchor` JSON block with `canonical_uri`, paragraph coordinates, query, and score breakdown while preserving the existing human-readable Markdown output.
+- Changed `build_evidence_grid`, `compare_papers`, and `audit_draft_support` typed payloads to carry reusable reread anchors and score metadata; comparison excerpts now include per-axis section-level evidence items.
 - Changed new saved-paper, PDF, asset-manifest, and remote-metadata DOI identifiers to append a short hash of the normalized DOI to the readable slug, preventing distinct DOIs from collapsing to the same `safe_doi` while keeping legacy IDs readable by DOI lookup.
 - Changed remote search results to expose local saved/full-text/summary state even when `indepth` is disabled, and changed extraction receipts to include explicit `paper_id`, `safe_doi`, `fetch_status`, and `has_fulltext` fields.
 - Changed `grados setup` and `grados status` to treat the OS keychain as the preferred API-key store: setup now points users to `grados auth set`, status reports keychain health plus each key's source (`env`, `keychain`, or legacy `config`), and both READMEs plus `grados-config.example.json` now describe `config.json` plaintext keys as a temporary import path rather than the long-term source of truth.
@@ -72,6 +76,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Removed unused `extract.sci_hub.auto_update_mirror` and `mirror_url_file` config fields; the current `scihub` runtime uses ordered `endpoints` with `fallback_mirror` retained for legacy configs.
 
 ### Tests
+- Added regression coverage for saved-paper Evidence Anchor payloads, evidence-grid and draft-audit anchor propagation, configurable audit candidate limits, comparison evidence items, and MCP schema exposure.
 - Added regression coverage for safe saved-paper selector validation, DOI slug-collision avoidance, legacy safe DOI lookup, Springer metadata-only fallback, Sci-Hub `not_found` endpoint fallthrough, and the existing config/search/reindex review fixes.
 - Added regression coverage for browser fallback warnings, local Chroma timeout guards, repeated-query deduplication and citation-graph cache invalidation in `research_tools`, typed paper-document accessors, shared `papers_dir` resolution, narrow storage helper boundaries (DOI extraction / frontmatter stripping / paragraph splitting), and the dropped raw `fallbackMirror` Sci-Hub fetch shim.
 - Added workflow coverage for the shared library ingest pipeline plus `parse_pdf_file` smoke coverage for QA-warning and index-partial-success receipts.
