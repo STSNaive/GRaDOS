@@ -88,6 +88,10 @@ def _audit_query_cache_key(query: str) -> str:
     return re.sub(r"\s+", " ", query).strip().lower()
 
 
+def _canonical_uri(safe_doi: str) -> str:
+    return f"grados://papers/{safe_doi}" if safe_doi else ""
+
+
 def _citation_matches_result(marker: AuditCitationMarker, result: PaperSearchResult) -> bool:
     if marker.style != "author_year":
         return True
@@ -107,11 +111,13 @@ def audit_draft_support(
     draft_text: str,
     citation_style: str = "author_year",
     strictness: str = "strict",
+    candidate_limit: int = 3,
     return_claim_map: bool = True,
 ) -> DraftAuditResult:
     """Audit draft claims against the local evidence store."""
     papers_dir = resolve_papers_dir(chroma_dir)
     claims = _split_claims(draft_text)
+    candidate_limit = max(1, candidate_limit)
     audited_claims: list[AuditedClaim] = []
     status_counts: Counter[str] = Counter()
     evidence_cache: dict[str, list[PaperSearchResult]] = {}
@@ -127,7 +133,7 @@ def audit_draft_support(
                 cached = search_papers(
                     chroma_dir,
                     search_query,
-                    limit=3,
+                    limit=candidate_limit,
                     papers_dir=papers_dir,
                     use_reranking=True,
                 )
@@ -160,11 +166,16 @@ def audit_draft_support(
                 AuditEvidenceItem(
                     doi=item.doi,
                     safe_doi=item.safe_doi,
+                    canonical_uri=_canonical_uri(item.safe_doi),
                     title=item.title,
                     year=item.year,
                     section_name=item.section_name,
+                    paragraph_start=item.paragraph_start if item.paragraph_count > 0 else None,
+                    paragraph_count=item.paragraph_count if item.paragraph_count > 0 else None,
                     snippet=item.snippet,
                     score=item.score,
+                    dense_score=item.dense_score,
+                    lexical_score=item.lexical_score,
                 )
                 for item in evidence
             ],

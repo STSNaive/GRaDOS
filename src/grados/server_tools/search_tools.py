@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Annotated
 
@@ -27,6 +28,22 @@ def _indepth_auto_summarize(config: object) -> bool:
     research = getattr(config, "research", None)
     indepth = getattr(research, "indepth", None)
     return bool(getattr(indepth, "auto_summarize", True))
+
+
+def _saved_paper_anchor_payload(query: str, paper: object) -> dict[str, object]:
+    safe_doi = str(getattr(paper, "safe_doi", "") or "")
+    paragraph_count = int(getattr(paper, "paragraph_count", 0) or 0)
+    paragraph_start = int(getattr(paper, "paragraph_start", 0) or 0)
+    return {
+        "query_used": query,
+        "canonical_uri": f"grados://papers/{safe_doi}" if safe_doi else "",
+        "section_name": str(getattr(paper, "section_name", "") or ""),
+        "paragraph_start": paragraph_start if paragraph_count > 0 else None,
+        "paragraph_count": paragraph_count if paragraph_count > 0 else None,
+        "score": round(float(getattr(paper, "score", 0.0) or 0.0), 6),
+        "dense_score": round(float(getattr(paper, "dense_score", 0.0) or 0.0), 6),
+        "lexical_score": round(float(getattr(paper, "lexical_score", 0.0) or 0.0), 6),
+    }
 
 
 def _local_state_for_paper(
@@ -565,6 +582,11 @@ async def search_saved_papers(
             start_label = paragraph_start + 1
             end_label = paragraph_start + paragraph_count
             lines.append(f"   - Paragraphs: {start_label}–{end_label}")
+        anchor_payload = _saved_paper_anchor_payload(query, paper)
+        lines.append(
+            "   - Evidence Anchor: "
+            f"`{json.dumps(anchor_payload, ensure_ascii=False, sort_keys=True)}`"
+        )
         if canonical_excerpt:
             excerpt = canonical_excerpt[:280]
             if len(canonical_excerpt) > 280:
@@ -590,6 +612,7 @@ def register_search_tools(mcp: FastMCP) -> None:
         description=(
             "Search the local saved-paper library with semantic retrieval, metadata filters, "
             "and optional lexical reranking. "
-            "Returned snippets are screening hints, not citation evidence; use `read_saved_paper` before citing."
+            "Returned snippets and evidence anchors are screening/reranking material, not citation evidence; "
+            "use `read_saved_paper` before citing."
         )
     )(search_saved_papers)

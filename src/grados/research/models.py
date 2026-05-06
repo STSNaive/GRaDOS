@@ -122,13 +122,18 @@ class EvidenceGridRow:
     query_used: str
     doi: str
     safe_doi: str
+    canonical_uri: str
     title: str
     year: str
     journal: str
     section_name: str
+    paragraph_start: int | None
+    paragraph_count: int | None
     snippet: str
     score: float
     support_strength: str
+    dense_score: float = 0.0
+    lexical_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -151,12 +156,25 @@ class EvidenceGridResult:
 class PaperComparisonRow:
     doi: str
     safe_doi: str
+    canonical_uri: str
     title: str
     year: str
     journal: str
     focus: str
     sections_used: list[str]
     comparisons: dict[str, str]
+    evidence: list[ComparisonEvidenceItem] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ComparisonEvidenceItem:
+    axis: str
+    section_name: str
+    excerpt: str
+    canonical_uri: str
+    paragraph_start: int | None = None
+    paragraph_count: int | None = None
+    warning: str = ""
 
 
 @dataclass(frozen=True)
@@ -181,11 +199,16 @@ class AuditCitationMarker:
 class AuditEvidenceItem:
     doi: str
     safe_doi: str
+    canonical_uri: str
     title: str
     year: str
     section_name: str
+    paragraph_start: int | None
+    paragraph_count: int | None
     snippet: str
     score: float
+    dense_score: float = 0.0
+    lexical_score: float = 0.0
 
 
 @dataclass(frozen=True)

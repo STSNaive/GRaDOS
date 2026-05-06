@@ -11,6 +11,10 @@ from grados.storage.paths import resolve_papers_dir
 from grados.storage.vector import search_papers
 
 
+def _canonical_uri(safe_doi: str) -> str:
+    return f"grados://papers/{safe_doi}" if safe_doi else ""
+
+
 def build_evidence_grid(
     chroma_dir: Path,
     *,
@@ -55,13 +59,18 @@ def build_evidence_grid(
                             query_used=query_text,
                             doi=match.doi,
                             safe_doi=match.safe_doi,
+                            canonical_uri=_canonical_uri(match.safe_doi),
                             title=match.title,
                             year=match.year,
                             journal=match.journal,
                             section_name=match.section_name,
+                            paragraph_start=match.paragraph_start if match.paragraph_count > 0 else None,
+                            paragraph_count=match.paragraph_count if match.paragraph_count > 0 else None,
                             snippet=match.snippet,
                             score=match.score,
                             support_strength=_support_strength(match.score),
+                            dense_score=match.dense_score,
+                            lexical_score=match.lexical_score,
                         )
                     )
                     paper_counter[match.doi] += 1
@@ -87,13 +96,18 @@ def build_evidence_grid(
                             query_used=query_text,
                             doi=match.doi,
                             safe_doi=match.safe_doi,
+                            canonical_uri=_canonical_uri(match.safe_doi),
                             title=match.title,
                             year=match.year,
                             journal=match.journal,
                             section_name=match.section_name,
+                            paragraph_start=match.paragraph_start if match.paragraph_count > 0 else None,
+                            paragraph_count=match.paragraph_count if match.paragraph_count > 0 else None,
                             snippet=match.snippet,
                             score=match.score,
                             support_strength=_support_strength(match.score),
+                            dense_score=match.dense_score,
+                            lexical_score=match.lexical_score,
                         )
                     )
                     paper_counter[match.doi] += 1

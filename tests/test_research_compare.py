@@ -58,6 +58,12 @@ def test_compare_papers_aligns_saved_methods_sections(tmp_path: Path) -> None:
     assert "| Paper | method |" in comparison.rendered
     assert "Paper A (2025)" in comparison.rendered
     assert "Paper B (2024)" in comparison.rendered
+    assert comparison.papers[0].canonical_uri.startswith("grados://papers/")
+    assert comparison.papers[0].evidence[0].axis == "method"
+    assert comparison.papers[0].evidence[0].section_name == "Methods"
+    assert comparison.papers[0].evidence[0].paragraph_start is not None
+    assert comparison.papers[0].evidence[0].paragraph_count is not None
+    assert "reread" in comparison.papers[0].evidence[0].warning
 
 
 def test_compare_papers_escapes_markdown_table_cells(monkeypatch, tmp_path: Path) -> None:
@@ -80,7 +86,14 @@ def test_compare_papers_escapes_markdown_table_cells(monkeypatch, tmp_path: Path
     monkeypatch.setattr(
         compare_module,
         "_select_sections",
-        lambda record, focus="methods": [{"name": "Methods", "text": "Method paragraph"}],
+        lambda record, focus="methods": [
+            {
+                "name": "Methods",
+                "text": "Method paragraph",
+                "paragraph_start": 3,
+                "paragraph_count": 2,
+            }
+        ],
     )
     monkeypatch.setattr(
         compare_module,
@@ -100,3 +113,6 @@ def test_compare_papers_escapes_markdown_table_cells(monkeypatch, tmp_path: Path
         "| --- | --- |\n"
         "| Paper \\| A (2025) | Line one \\| <br> Line two |"
     )
+    assert comparison.papers[0].canonical_uri == "grados://papers/10_1234_demo"
+    assert comparison.papers[0].evidence[0].paragraph_start == 3
+    assert comparison.papers[0].evidence[0].paragraph_count == 2

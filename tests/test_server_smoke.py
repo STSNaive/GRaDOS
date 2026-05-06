@@ -73,7 +73,7 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
     assert read_tool.parameters["properties"]["max_paragraphs"]["maximum"] == 100
 
     search_saved = tools["search_saved_papers"]
-    assert "screening hints" in (search_saved.description or "")
+    assert "screening/reranking material" in (search_saved.description or "")
     assert search_saved.parameters["properties"]["limit"]["maximum"] == 25
 
     artifact = tools["save_research_artifact"]
@@ -89,6 +89,7 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
     assert "claim-level `supported`, `weak`, `unsupported`, or `misattributed`" in (audit.description or "")
     assert "author-year citations" in (audit.description or "")
     assert audit.parameters["properties"]["draft_text"]["minLength"] == 1
+    assert audit.parameters["properties"]["candidate_limit"]["maximum"] == 25
     assert "project_id" not in tools["query_research_artifacts"].parameters["properties"]
     assert "project_id" not in audit.parameters["properties"]
 
@@ -534,6 +535,8 @@ def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path,
                 journal="Composite Structures",
                 source="Crossref",
                 score=2.1,
+                dense_score=1.2,
+                lexical_score=0.9,
                 paragraph_start=2,
                 paragraph_count=2,
                 snippet="Composite vibration damping is discussed in detail.",
@@ -567,6 +570,11 @@ def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path,
     assert "filters: authors~alice, year=2024..-, journal~Composite" in result
     assert "Composite Structures" in result
     assert "Paragraphs: 3–4" in result
+    assert '"canonical_uri": "grados://papers/10_1234_demo"' in result
+    assert '"paragraph_start": 2' in result
+    assert '"paragraph_count": 2' in result
+    assert '"dense_score": 1.2' in result
+    assert '"lexical_score": 0.9' in result
     assert "Canonical Excerpt: ## Methods Canonical paragraph window from papers mirror." in result
 
 

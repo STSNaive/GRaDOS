@@ -6,7 +6,11 @@ import re
 from pathlib import Path
 
 from grados.research.common import _excerpt_for_axis, _resolve_documents, _select_sections
-from grados.research.models import PaperComparisonResult, PaperComparisonRow
+from grados.research.models import ComparisonEvidenceItem, PaperComparisonResult, PaperComparisonRow
+
+
+def _canonical_uri(safe_doi: str) -> str:
+    return f"grados://papers/{safe_doi}" if safe_doi else ""
 
 
 def _escape_markdown_table_cell(value: str) -> str:
@@ -16,6 +20,48 @@ def _escape_markdown_table_cell(value: str) -> str:
     ]
     normalized = " <br> ".join(line for line in lines if line)
     return normalized.replace("|", r"\|")
+
+
+def _axis_evidence(
+    *,
+    axis: str,
+    sections: list[dict[str, object]],
+    canonical_uri: str,
+) -> ComparisonEvidenceItem:
+    axis_terms = re.findall(r"[a-z0-9]{3,}", axis.lower())
+    best_section: dict[str, object] | None = None
+    best_excerpt = ""
+    best_score = -1
+
+    for section in sections:
+        excerpt = _excerpt_for_axis(str(section.get("text", "")), axis)
+        if not excerpt:
+            continue
+        score = sum(excerpt.lower().count(term) for term in axis_terms)
+        if score > best_score:
+            best_section = section
+            best_excerpt = excerpt
+            best_score = score
+
+    if best_section is None:
+        return ComparisonEvidenceItem(
+            axis=axis,
+            section_name="",
+            excerpt="",
+            canonical_uri=canonical_uri,
+            warning="No comparable excerpt could be located.",
+        )
+
+    paragraph_count = int(best_section.get("paragraph_count", 0) or 0)
+    return ComparisonEvidenceItem(
+        axis=axis,
+        section_name=str(best_section.get("name", "")),
+        excerpt=best_excerpt,
+        canonical_uri=canonical_uri,
+        paragraph_start=int(best_section.get("paragraph_start", 0) or 0) if paragraph_count > 0 else None,
+        paragraph_count=paragraph_count if paragraph_count > 0 else None,
+        warning="Section-level anchor; reread the canonical paragraph window before citing.",
+    )
 
 
 def compare_papers(
@@ -40,21 +86,21 @@ def compare_papers(
     paper_rows: list[PaperComparisonRow] = []
     for record in resolved:
         sections = _select_sections(record, focus=focus)
-        joined_text = "\n\n".join(str(section["text"]).strip() for section in sections)
-        comparisons = {
-            axis: _excerpt_for_axis(joined_text, axis)
-            for axis in axes
-        }
+        canonical_uri = _canonical_uri(record.safe_doi)
+        evidence = [_axis_evidence(axis=axis, sections=sections, canonical_uri=canonical_uri) for axis in axes]
+        comparisons = {item.axis: item.excerpt for item in evidence}
         paper_rows.append(
             PaperComparisonRow(
                 doi=record.doi,
                 safe_doi=record.safe_doi,
+                canonical_uri=canonical_uri,
                 title=record.title,
                 year=record.year,
                 journal=record.journal,
                 focus=focus,
                 sections_used=[str(section["name"]) for section in sections],
                 comparisons=comparisons,
+                evidence=evidence,
             )
         )
 

@@ -45,6 +45,12 @@ This design keeps screening lightweight while preserving canonical full text for
 
 For a recoverable full-text research pass over a search page, use `search_academic_papers(indepth=true)` only when the user asks for breadth, checkpointing, or immediate materialization of returned candidates. `indepth` uses the same search `limit` and still produces navigation material, not final citation evidence.
 
+## Host Agent Reasoning Boundary
+
+The host agent model performs query planning, candidate screening, agent-side reranking, support judgment, and synthesis. GRaDOS provides deterministic search, storage, indexing, retrieval anchors, low-token structure cards, and canonical saved-paper reads.
+
+Do not assume GRaDOS server tools can call the host agent model. When a tool returns snippets, scores, summaries, or compact comparison material, treat them as material for the host agent model to inspect, rerank, and verify. Final citation decisions still require canonical `grados:read_saved_paper` paragraph windows.
+
 ## Compression-Safe Evidence Protocol
 
 Use this protocol whenever a claim, evidence table, comparison, or draft audit may survive context compression or be reused in a later turn.
@@ -108,7 +114,7 @@ If the user already has a folder of PDFs on disk, import them before querying re
 
 ## Step 1: Query Decomposition
 
-1. Analyze the user's question. Identify core scientific variables, methods, or phenomena.
+1. Use the host agent model to analyze the user's question. Identify core scientific variables, methods, phenomena, synonyms, exclusions, and metadata filters.
 2. Formulate **1-3 precise English search strings** (use Boolean operators if helpful). Use fewer queries when the local library or first search already covers the question.
 3. For each search string, call `grados:search_academic_papers` with an appropriate `limit` (default 15).
 
@@ -116,7 +122,7 @@ If the user already has a folder of PDFs on disk, import them before querying re
 
 After receiving search results, screen every paper for relevance:
 
-1. **If the paper has an abstract**: Read it. Decide if it directly addresses the user's question.
+1. **If the paper has an abstract**: Read it. Use the host agent model to decide if it directly addresses the user's question.
 2. **If the paper has no abstract**: Judge relevance from the **title alone**. If the title is clearly on-topic, keep it; if ambiguous or off-topic, discard it.
 3. Discard clearly irrelevant papers. Keep up to **5-8 papers** that are potentially relevant for full-text extraction, or fewer when the evidence need is narrow. Prefer breadth only when it improves coverage of the user's question.
 4. Record why you kept each paper (one sentence) — this helps the Double-Check step later.
@@ -148,8 +154,8 @@ Use Playwright MCP fallback only when the tool reference says it is available an
    - If your context has been compacted, earlier tool outputs may be gone entirely. The saved paper files and **`grados:read_saved_paper`** are your authoritative source.
    - Also incorporate any relevant content from the local library (Step 0).
 3. When the user is already writing or revising a literature-grounded section, treat the following Stage B tools as **structure and audit helpers**, not as a substitute for canonical reading:
-   - Before drafting a subsection, prefer calling **`grados:build_evidence_grid`** so the evidence grid is explicit and reusable. Record the claim or subsection, the supporting paper, the exact section or paragraph window used, and why the evidence supports the claim.
-   - When comparing multiple studies, call **`grados:compare_papers`** to extract aligned method or result snippets rather than improvising from memory.
+   - Before drafting a subsection, prefer calling **`grados:build_evidence_grid`** so the evidence grid is explicit and reusable. Use the host agent model to rerank rows, record the claim or subsection, the supporting paper, the exact section or paragraph window used, and why the evidence supports the claim.
+   - When comparing multiple studies, call **`grados:compare_papers`** to extract aligned method or result snippets rather than improvising from memory. Use the returned anchors only to choose what to reread, not as citation-ready proof.
    - For **1-8 highly relevant papers**, call **`grados:get_papers_full_context`** with `mode=estimate` first, then `mode=full` only if the context budget is acceptable.
    - If an intermediate table, comparison, or anchor set is reusable, store it with **`grados:save_research_artifact`**. Use `kind="evidence_checkpoint"` for compression-safe claim-to-paragraph anchors.
 4. Before writing the final answer, normalize domain terminology across the papers you read:
@@ -170,7 +176,7 @@ Use Playwright MCP fallback only when the tool reference says it is available an
 Before presenting your final answer:
 
 1. Re-examine every claim in your synthesis.
-2. For each claim, use **`grados:audit_draft_support`** for a first-pass claim audit, then use **`grados:read_saved_paper`** to verify the underlying saved paper content. Do not rely on your memory of the paper or stale context.
+2. For each claim, use **`grados:audit_draft_support`** for a first-pass claim audit, then use the host agent model to judge support only after calling **`grados:read_saved_paper`** for the underlying saved paper content. Do not rely on your memory of the paper or stale context.
 3. Check terminology consistency: the same concept should not appear under multiple names in the final answer unless you explicitly define a distinction. If you used web search to choose a canonical term, mention the basis briefly only when it affects interpretation.
 4. **Delete** any claim not explicitly supported by the extracted papers.
 5. When revising a draft, explicitly label weak spots as `supported`, `weak`, `unsupported`, or `misattributed` instead of smoothing them over in prose.

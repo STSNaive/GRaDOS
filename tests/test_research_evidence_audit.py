@@ -27,8 +27,12 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
                     year="2025",
                     journal="Composite Structures",
                     section_name="Results",
+                    paragraph_start=4,
+                    paragraph_count=2,
                     snippet="Composite damping improved vibration attenuation by 18%.",
                     score=1.35,
+                    dense_score=1.1,
+                    lexical_score=0.25,
                 )
             ]
         if "baseline mismatch" in query.lower():
@@ -41,8 +45,12 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
                     year="2024",
                     journal="Mechanical Systems",
                     section_name="Discussion",
+                    paragraph_start=7,
+                    paragraph_count=1,
                     snippet="A different baseline was evaluated.",
                     score=0.9,
+                    dense_score=0.7,
+                    lexical_score=0.2,
                 )
             ]
         return []
@@ -73,7 +81,15 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
     )
 
     assert grid.grids[0].rows[0].support_strength == "high"
+    assert grid.grids[0].rows[0].canonical_uri == "grados://papers/10_1234_demo"
+    assert grid.grids[0].rows[0].paragraph_start == 4
+    assert grid.grids[0].rows[0].paragraph_count == 2
+    assert grid.grids[0].rows[0].dense_score == 1.1
+    assert grid.grids[0].rows[0].lexical_score == 0.25
     assert supported.claims[0].status == "supported"
+    assert supported.claims[0].evidence[0].canonical_uri == "grados://papers/10_1234_demo"
+    assert supported.claims[0].evidence[0].paragraph_start == 4
+    assert supported.claims[0].evidence[0].paragraph_count == 2
     assert misattributed.claims[0].status == "misattributed"
     assert numeric.claims[0].status == "weak"
 
@@ -97,6 +113,8 @@ def test_audit_draft_support_handles_chinese_claims_and_author_year_citations(
                     year="2025",
                     journal="Composite Structures",
                     section_name="Results",
+                    paragraph_start=3,
+                    paragraph_count=1,
                     snippet="复合阻尼将振动衰减提高了18%。",
                     score=1.35,
                 )
@@ -111,6 +129,8 @@ def test_audit_draft_support_handles_chinese_claims_and_author_year_citations(
                     year="2025",
                     journal="Mechanical Systems",
                     section_name="Discussion",
+                    paragraph_start=6,
+                    paragraph_count=2,
                     snippet="该方法在低资源场景下仍然稳定。",
                     score=1.2,
                 )
@@ -158,6 +178,8 @@ def test_audit_draft_support_deduplicates_repeated_queries(monkeypatch, tmp_path
                 year="2025",
                 journal="Composite Structures",
                 section_name="Results",
+                paragraph_start=4,
+                paragraph_count=2,
                 snippet="Composite damping improved vibration attenuation by 18%.",
                 score=1.35,
             )
@@ -177,3 +199,23 @@ def test_audit_draft_support_deduplicates_repeated_queries(monkeypatch, tmp_path
     assert result.claims_checked == 20
     assert all(claim.status == "supported" for claim in result.claims)
     assert calls == ["Composite damping improves vibration attenuation by 18% ."]
+
+
+def test_audit_draft_support_uses_configurable_candidate_limit(monkeypatch, tmp_path: Path) -> None:
+    captured_limits: list[int] = []
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, kwargs)
+        captured_limits.append(limit)
+        return []
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    result = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text="Composite damping improves vibration attenuation by 18%.",
+        candidate_limit=9,
+    )
+
+    assert result.claims_checked == 1
+    assert captured_limits == [9]

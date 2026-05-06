@@ -329,6 +329,17 @@ async def audit_draft_support(
             )
         ),
     ] = "strict",
+    candidate_limit: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=25,
+            description=(
+                "Maximum candidate evidence items to retrieve per claim. "
+                "Use a larger value when the host agent will rerank evidence before judgment."
+            ),
+        ),
+    ] = 3,
     return_claim_map: Annotated[
         bool,
         Field(description="Include a compact claim-to-evidence map in addition to the full claim audit."),
@@ -344,6 +355,7 @@ async def audit_draft_support(
             draft_text=draft_text,
             citation_style=citation_style,
             strictness=strictness,
+            candidate_limit=candidate_limit,
             return_claim_map=return_claim_map,
         )
     )
@@ -391,7 +403,8 @@ def register_research_tools_api(mcp: FastMCP) -> None:
     mcp.tool(
         description=(
             "Build an evidence grid for a research topic or subquestions. "
-            "Returns aligned paper-section-snippet rows so the agent can plan writing before drafting prose."
+            "Returns aligned paper-section-snippet rows and reread anchors so the host agent can rerank "
+            "evidence before drafting prose."
         )
     )(build_evidence_grid)
 
@@ -399,8 +412,8 @@ def register_research_tools_api(mcp: FastMCP) -> None:
         description=(
             "Extract parallel comparison material across saved papers. "
             "It aligns methods, results, or full-text excerpts into a table "
-            "or bullet view, leaving higher-level comparison reasoning to "
-            "the agent."
+            "or bullet view with reread anchors, leaving higher-level comparison reasoning to "
+            "the host agent."
         )
     )(compare_papers)
 
@@ -408,7 +421,7 @@ def register_research_tools_api(mcp: FastMCP) -> None:
         description=(
             "Audit draft claims against the local paper library. "
             "Returns claim-level `supported`, `weak`, `unsupported`, or "
-            "`misattributed` statuses plus candidate evidence snippets; "
+            "`misattributed` statuses plus candidate evidence snippets and reread anchors; "
             "`misattributed` currently requires resolvable author-year citations."
         )
     )(audit_draft_support)

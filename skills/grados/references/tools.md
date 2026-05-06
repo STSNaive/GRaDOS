@@ -14,7 +14,7 @@
 | Tool | Purpose |
 | --- | --- |
 | `grados:search_academic_papers` | Waterfall search across academic databases. Returns deduplicated paper metadata with DOIs, abstracts, continuation state, and local saved/full-text/summary state. Optional `indepth=true` materializes returned candidates with the same `limit`. |
-| `grados:search_saved_papers` | Compact paper-level search over the saved-paper store. Uses metadata prefiltering, ChromaDB chunk retrieval, and optional lightweight lexical reranking over canonical documents. Treat snippets as screening hints, not citation evidence. |
+| `grados:search_saved_papers` | Compact paper-level search over the saved-paper store. Uses metadata prefiltering, ChromaDB chunk retrieval, and optional lightweight lexical reranking over canonical documents. Treat snippets and evidence anchors as screening/reranking material, not citation evidence. |
 | `grados:get_saved_paper_structure` | Deterministic low-token paper card for one saved paper. Returns canonical URI, preview excerpt, section headings, section outline, counts, and asset summary. Use this before deep reading. |
 | `grados:extract_paper_full_text` | Fetch full text by DOI via `api -> browser -> oa -> scihub`, then parse via `Docling -> Marker -> PyMuPDF`. Auto-saves to the canonical paper store, mirrors Markdown to `papers/`, and indexes into ChromaDB. Returns a compact, non-citable receipt rather than the full text. |
 | `grados:import_local_pdf_library` | Import one local PDF file or a directory of PDFs into the canonical paper store. Supports recursive scanning, glob filtering, and optional raw-PDF archiving into `downloads/`. |
@@ -26,11 +26,17 @@
 | `grados:manage_failure_cases` | Record, query, and summarize failed fetch/parse/search/citation attempts. Can also suggest conservative retry steps. |
 | `grados:get_citation_graph` | Return lightweight local citation relationships, including neighbors, common references, and reverse citing-paper lookups. |
 | `grados:get_papers_full_context` | Return structured full-context material for a small paper set, with token estimates or actual section content for CAG-style deep reading. |
-| `grados:build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. |
-| `grados:compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. |
-| `grados:audit_draft_support` | Audit draft claims against the local paper library and return `supported`, `weak`, `unsupported`, or `misattributed` statuses. |
+| `grados:build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. Rows are agent-side reranking material until reread through `grados:read_saved_paper`. |
+| `grados:compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. Returned excerpts and anchors guide rereading; they are not citation-ready proof. |
+| `grados:audit_draft_support` | Audit draft claims against the local paper library and return first-pass `supported`, `weak`, `unsupported`, or `misattributed` statuses plus candidate evidence snippets and anchors. The host agent model must reread canonical paragraph windows before final support judgment. |
 
 There is no separate local RAG server in the Python release. Saved-paper canonical storage and semantic retrieval are built directly into GRaDOS through ChromaDB.
+
+## Host Agent Reasoning Boundary
+
+GRaDOS tools do not call the host agent model. They provide deterministic search, storage, indexing, retrieval anchors, low-token structure cards, and canonical saved-paper reads. The host agent model is responsible for query planning, candidate screening, agent-side reranking, support judgment, and synthesis.
+
+Outputs from `search_saved_papers`, `build_evidence_grid`, `compare_papers`, and `audit_draft_support` are navigation and audit material. They may include `canonical_uri`, `paragraph_start`, and `paragraph_count` so the agent can reread the source, but they are not final citation evidence until `grados:read_saved_paper` returns the canonical paragraph window.
 
 When `extract_paper_full_text` returns a browser `challenge`, complete publisher verification in the managed browser profile and call the tool again with `resume_browser=true`. GRaDOS resumes at the browser strategy from the saved URL/profile when available, instead of restarting at the `api` strategy.
 
