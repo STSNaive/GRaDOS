@@ -4,6 +4,7 @@
 
 - [GRaDOS Server Tools](#grados-server-tools)
 - [Indepth Mode](#indepth-mode)
+- [Optional Codex Computer Use](#optional-codex-computer-use)
 - [Optional Playwright MCP Tools](#optional-playwright-mcp-tools)
 - [MCP Resources](#mcp-resources)
 
@@ -16,7 +17,7 @@
 | `grados:search_academic_papers` | Waterfall search across academic databases. Returns deduplicated paper metadata with DOIs, abstracts, continuation state, and local saved/full-text/summary state. Optional `indepth=true` materializes returned candidates with the same `limit`. |
 | `grados:search_saved_papers` | Compact paper-level search over the saved-paper store. Uses metadata prefiltering, ChromaDB chunk retrieval, and optional lightweight lexical reranking over canonical documents. Treat snippets and evidence anchors as screening/reranking material, not citation evidence. |
 | `grados:get_saved_paper_structure` | Deterministic low-token paper card for one saved paper. Returns canonical URI, preview excerpt, section headings, section outline, counts, and asset summary. Use this before deep reading. |
-| `grados:extract_paper_full_text` | Fetch full text by DOI via `api -> browser -> oa -> scihub`, then parse via `Docling -> Marker -> PyMuPDF`. Auto-saves to the canonical paper store, mirrors Markdown to `papers/`, and indexes into ChromaDB. Returns a compact, non-citable receipt rather than the full text. |
+| `grados:extract_paper_full_text` | Fetch full text by DOI via the configured `api`, `browser`, `oa`, `scihub`, and optional `codex` order, then parse via `Docling -> Marker -> PyMuPDF`. Successful fetches auto-save to the canonical paper store, mirror Markdown to `papers/`, and index into ChromaDB; `codex` returns a host-action receipt. |
 | `grados:import_local_pdf_library` | Import one local PDF file or a directory of PDFs into the canonical paper store. Supports recursive scanning, glob filtering, and optional raw-PDF archiving into `downloads/`. |
 | `grados:parse_pdf_file` | Parse a local PDF file using the same Python parsing waterfall. If DOI is provided, it writes the canonical paper entry, mirrors `.md` to `papers/`, and returns a compact save receipt. |
 | `grados:read_saved_paper` | Canonical deep-reading tool for previously saved papers. Accepts `doi`, a GRaDOS-returned opaque `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis and citation verification. |
@@ -37,6 +38,8 @@ There is no separate local RAG server in the Python release. Saved-paper canonic
 GRaDOS tools do not call the host agent model. They provide deterministic search, storage, indexing, retrieval anchors, low-token structure cards, and canonical saved-paper reads. The host agent model is responsible for query planning, candidate screening, agent-side reranking, support judgment, and synthesis.
 
 Outputs from `search_saved_papers`, `build_evidence_grid`, `compare_papers`, and `audit_draft_support` are navigation and audit material. They may include `canonical_uri`, `paragraph_start`, and `paragraph_count` so the agent can reread the source, but they are not final citation evidence until `grados:read_saved_paper` returns the canonical paragraph window.
+
+For broad tasks, a host client may use subagents to triage independent paper sets, claim sets, or subquestions. Subagents are not GRaDOS server tools; their output should be limited to candidate anchors, rejected/weak items, gaps, warnings, and exact reread selectors such as `canonical_uri`, `paragraph_start`, and `paragraph_count`. The main host agent must reread accepted anchors through `grados:read_saved_paper` before citation or final support judgment.
 
 When `extract_paper_full_text` returns a browser `challenge`, complete publisher verification in the managed browser profile and call the tool again with `resume_browser=true`. GRaDOS resumes at the browser strategy from the saved URL/profile when available, instead of restarting at the `api` strategy.
 
@@ -88,6 +91,36 @@ Recommended metadata:
 ```
 
 Restore with `grados:query_research_artifacts(kind="evidence_checkpoint", detail=true)`. Before citing, auditing, or comparing any restored claim, call `grados:read_saved_paper` with the saved `canonical_uri` or `safe_doi`, `start_paragraph`, and `max_paragraphs=paragraph_count`. Search snippets, summaries, checkpoints, and tool previews are only navigation material; final answers and citations must be checked against canonical `papers/*.md` content.
+
+## Optional Codex Computer Use
+
+`codex` is a disabled-by-default fetch-strategy entry for Codex host agents that have the Computer Use plugin. It is not a GRaDOS server-internal browser backend. When enabled and placed in `extract.fetch_strategy.order`, GRaDOS stops at that position and returns a host-action receipt for Microsoft Edge.
+
+Config shape:
+
+```json
+{
+  "extract": {
+    "fetch_strategy": {
+      "order": ["api", "browser", "codex", "oa", "scihub"],
+      "enabled": {
+        "api": true,
+        "browser": true,
+        "codex": true,
+        "oa": true,
+        "scihub": true
+      }
+    }
+  }
+}
+```
+
+Typical host-agent flow:
+
+1. Call `grados:extract_paper_full_text` with the DOI.
+2. If the receipt asks for `codex`, use Codex Computer Use with Microsoft Edge and start from the receipt URL, normally `https://doi.org/{doi}`.
+3. After Microsoft Edge downloads the PDF, identify the downloaded `.pdf` path and validate it is a PDF.
+4. Call `grados:parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.
 
 ## Optional Playwright MCP Tools
 
