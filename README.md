@@ -26,7 +26,7 @@ GRaDOS is designed to sit inside an agent research workflow:
 
 1. Check the local paper library first with `search_saved_papers`, `get_saved_paper_structure`, or `grados://papers/{safe_doi}`
 2. Search remote academic sources in configured priority order
-3. Fetch full text through `api -> browser -> oa -> scihub`
+3. Fetch full text through the configured `api`, `browser`, `oa`, `scihub`, and optional `codex` routes
 4. Parse PDFs through `Docling -> Marker -> PyMuPDF`
 5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, the paper index to `database/chroma/`, and remote metadata to `database/remote_metadata/`
 6. Re-open saved papers with low-token structure cards and deep-reading windows before citing them
@@ -349,7 +349,14 @@ Full-text fetch priority:
 {
   "extract": {
     "fetch_strategy": {
-      "order": ["api", "browser", "oa", "scihub"]
+      "order": ["api", "browser", "codex", "oa", "scihub"],
+      "enabled": {
+        "api": true,
+        "browser": true,
+        "codex": false,
+        "oa": true,
+        "scihub": true
+      }
     }
   }
 }
@@ -358,6 +365,8 @@ Full-text fetch priority:
 Legacy fetch-strategy aliases such as `TDM`, `OA`, `SciHub`, and `Headless` are still accepted while existing configs migrate. The current `scihub` runtime uses `extract.sci_hub.endpoints` as an ordered access list: the first endpoint is tried first, and later entries are fallbacks. The legacy `extract.sci_hub.fallback_mirror` value is still accepted when `endpoints` is omitted or empty.
 
 The browser strategy is a first-class path for institutional publisher access. If a publisher verification page blocks PDF capture, GRaDOS records a `challenge` with manual-resume metadata in `remote_metadata`; complete the verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true` to continue from the saved browser URL/profile instead of restarting at `api`.
+
+`codex` is disabled by default. When enabled and placed in `extract.fetch_strategy.order`, it acts as a Codex host-agent handoff at that exact point in the order: `extract_paper_full_text` returns a Codex Computer Use download action, then the host agent downloads the PDF in Microsoft Edge and calls `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.
 
 PDF parsing priority:
 

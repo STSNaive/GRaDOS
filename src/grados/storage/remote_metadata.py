@@ -349,6 +349,7 @@ def _merge_fetch_status(existing: str, incoming: str) -> str:
         "fulltext": 7,
         "summary_failed": 6,
         "partial_success": 5,
+        "host_action_required": 4,
         "challenge": 4,
         "failed": 3,
         "metadata_only": 2,

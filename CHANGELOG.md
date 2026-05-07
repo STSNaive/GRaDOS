@@ -7,6 +7,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
+- Added disabled-by-default `codex` fetch-strategy support so Codex host agents can place the Microsoft Edge Computer Use download handoff anywhere in `extract.fetch_strategy.order`.
 - Added agent-side evidence anchors to saved-paper search and Stage B research helpers so snippets, grids, comparisons, and audits can point agents back to canonical `read_saved_paper` paragraph windows before citation.
 - Added `candidate_limit` to `audit_draft_support` so draft audits can return more candidate evidence items for host-agent reranking before final support judgment.
 - Added opt-in `indepth` search mode with default-off config, a `grados search --indepth` CLI surface, per-run `research_checkpoint` folders, and reusable query-independent `paper_summary` artifacts.
@@ -25,6 +26,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed `parse_pdf_file` to support `copy_to_library` and `acquisition_via` for explicit-DOI local PDF handoffs, including raw-PDF archiving and `remote_metadata` backfill after a successful parse/save.
 - Changed `search_saved_papers` to include an `Evidence Anchor` JSON block with `canonical_uri`, paragraph coordinates, query, and score breakdown while preserving the existing human-readable Markdown output.
 - Changed `build_evidence_grid`, `compare_papers`, and `audit_draft_support` typed payloads to carry reusable reread anchors and score metadata; comparison excerpts now include per-axis section-level evidence items.
 - Changed new saved-paper, PDF, asset-manifest, and remote-metadata DOI identifiers to append a short hash of the normalized DOI to the readable slug, preventing distinct DOIs from collapsing to the same `safe_doi` while keeping legacy IDs readable by DOI lookup.
@@ -149,7 +151,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed local citation-graph analysis so `research_tools.get_citation_graph` now rebuilds local citation relationships from canonical records in `papers/*.md` instead of depending on Chroma doc listings as an internal source.
 - Changed the canonical paper-store boundary so `load_paper_record()` and `list_saved_papers()` now return explicit dataclasses, with `server`, `importing`, and `research_tools` migrated to attribute-based access instead of loose dict payloads.
 - Changed typed local-search results from transitional dict-compatible wrappers to plain `PaperSearchResult` dataclasses, removing temporary `.get(...)` / item-access compatibility shims after callers were migrated.
-- Changed Stage B research helpers so their internal result boundaries are now explicit dataclasses, with MCP-facing handlers serializing them only at the outer edge instead of propagating nested dict payloads through the service layer.
+- Changed Stage B research helpers so their internal result boundaries are now explicit dataclasses, with MCP-facing handlers serializing them only at the outer boundary instead of propagating nested dict payloads through the service layer.
 - Changed browser fetch and local index-stat payloads to typed result objects, reducing remaining high-frequency `dict[str, Any]` contracts in fetch/search orchestration paths.
 - Changed the MCP server layout from one monolithic `server.py` file to a thin entrypoint plus domain registration modules: `search_tools`, `library_tools`, `research_tools_api`, and `admin_tools`.
 - Changed `fetch`, `parse`, and browser automation orchestration from hard-coded `if/elif` waterfalls to static strategy registries, so new publishers, parsers, and browser flows can be added without inflating the core dispatch loops.

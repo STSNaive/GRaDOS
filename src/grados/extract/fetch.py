@@ -1,4 +1,4 @@
-"""PDF fetch waterfall: api -> browser -> oa -> scihub."""
+"""PDF fetch waterfall: api -> browser -> oa -> scihub, plus optional host handoff."""
 
 from __future__ import annotations
 
@@ -30,10 +30,10 @@ from grados.publisher.springer import SpringerFetchResult, fetch_springer_articl
 class FetchResult:
     text: str = ""
     pdf_buffer: bytes = b""
-    outcome: str = ""  # native_full_text | pdf_obtained | metadata_only | failed
+    outcome: str = ""  # native_full_text | pdf_obtained | metadata_only | host_action_required | failed
     source: str = ""  # e.g. "Elsevier TDM", "Unpaywall OA", "Sci-Hub"
-    via: str = ""  # api | browser | oa | scihub
-    state: str = ""  # ok | partial | challenge | timeout | nobrowser | not_found | blocked | error
+    via: str = ""  # api | browser | oa | scihub | codex
+    state: str = ""
     text_format: str = ""  # markdown | text | html | xml
     metadata: PublisherMetadata | None = None
     asset_hints: list[dict[str, str]] = field(default_factory=list)
@@ -156,6 +156,31 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
     )
 
 
+async def _run_codex_fetch_strategy(context: FetchStrategyContext) -> FetchResult:
+    start_url = f"https://doi.org/{context.doi}"
+    return FetchResult(
+        outcome="host_action_required",
+        source="Codex Computer Use",
+        via="codex",
+        state="host_action_required",
+        manual=True,
+        host="Microsoft Edge",
+        resume={
+            "kind": "codex",
+            "doi": context.doi,
+            "browser": "Microsoft Edge",
+            "start_url": start_url,
+            "action": "download_pdf_with_edge_then_call_parse_pdf_file",
+        },
+        warnings=[
+            (
+                "Codex Computer Use is a host-agent step. Use Microsoft Edge to download the PDF, "
+                "then call parse_pdf_file with the downloaded file path and the same DOI."
+            )
+        ],
+    )
+
+
 async def _run_elsevier_tdm_provider(context: TDMProviderContext) -> FetchResult:
     key = context.api_keys.get("ELSEVIER_API_KEY", "")
     if not key:
@@ -224,6 +249,7 @@ async def _run_springer_tdm_provider(context: TDMProviderContext) -> FetchResult
 FETCH_STRATEGY_REGISTRY: dict[str, FetchStrategy] = {
     "api": _FunctionFetchStrategy("api", _run_tdm_fetch_strategy),
     "browser": _FunctionFetchStrategy("browser", _run_browser_fetch_strategy),
+    "codex": _FunctionFetchStrategy("codex", _run_codex_fetch_strategy),
     "oa": _FunctionFetchStrategy("oa", _run_oa_fetch_strategy),
     "scihub": _FunctionFetchStrategy("scihub", _run_scihub_fetch_strategy),
 }
@@ -239,6 +265,7 @@ _FETCH_STRATEGY_ALIASES: dict[str, str] = {
     "tdm": "api",
     "browser": "browser",
     "headless": "browser",
+    "codex": "codex",
     "oa": "oa",
     "scihub": "scihub",
 }
@@ -300,8 +327,13 @@ def _is_fetch_partial(result: FetchResult) -> bool:
     return result.outcome == "metadata_only"
 
 
+def _is_host_action_required(result: FetchResult) -> bool:
+    return result.outcome == "host_action_required"
+
+
 def _failed_result_priority(result: FetchResult) -> int:
     priority = {
+        "host_action_required": 9,
         "challenge": 8,
         "blocked": 7,
         "timeout": 6,
@@ -434,6 +466,13 @@ async def fetch_paper(
             result = await strategy.run(context)
             warnings.extend(result.warnings)
             trace.extend(result.trace or [_trace_fetch_result(doi, result)])
+            if _is_host_action_required(result):
+                if partial_result is not None and result.metadata is None:
+                    result.metadata = partial_result.metadata
+                    result.asset_hints = partial_result.asset_hints
+                result.warnings = warnings.copy()
+                result.trace = trace.copy()
+                return result
             if _is_fetch_success(result):
                 result.warnings = warnings.copy()
                 result.trace = trace.copy()

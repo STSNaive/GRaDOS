@@ -25,16 +25,18 @@
             "order": [
                 "api",
                 "browser",
+                "codex",
                 "oa",
                 "scihub"
             ],
             "enabled": {
                 "api": true,
                 "browser": true,
+                "codex": false,
                 "oa": true,
                 "scihub": true
             },
-            "_comment_order": "PDF/full-text retrieval order. Browser is first-class for institutional publisher access."
+            "_comment_order": "PDF/full-text retrieval order. `codex` is a disabled-by-default Codex host handoff."
         },
         "tdm": {
             "order": [

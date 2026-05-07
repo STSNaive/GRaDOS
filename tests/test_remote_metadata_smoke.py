@@ -206,6 +206,45 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     assert '"state": "ok"' in refreshed.fetch_trace
 
 
+def test_remote_metadata_preserves_computer_use_host_action(tmp_path: Path) -> None:
+    record_remote_fetch_result(
+        tmp_path / "chroma",
+        doi="10.1234/demo",
+        fetch_status="failed",
+        has_fulltext=False,
+        source="API",
+        fetch_via="api",
+        fetch_state="error",
+    )
+
+    record_remote_fetch_result(
+        tmp_path / "chroma",
+        doi="10.1234/demo",
+        fetch_status="host_action_required",
+        has_fulltext=False,
+        source="Codex Computer Use",
+        fetch_via="codex",
+        fetch_state="host_action_required",
+        fetch_host="Microsoft Edge",
+        fetch_resume={
+            "kind": "codex",
+            "doi": "10.1234/demo",
+            "start_url": "https://doi.org/10.1234/demo",
+        },
+        fetch_manual=True,
+    )
+
+    record = get_remote_metadata_by_doi(tmp_path / "chroma", "10.1234/demo")
+
+    assert record is not None
+    assert record.fetch_status == "host_action_required"
+    assert record.fetch_via == "codex"
+    assert record.fetch_state == "host_action_required"
+    assert record.fetch_host == "Microsoft Edge"
+    assert record.fetch_manual is True
+    assert '"kind": "codex"' in record.fetch_resume
+
+
 def test_migrate_remote_metadata_store_copies_legacy_records(tmp_path: Path, monkeypatch) -> None:
     import grados.storage.remote_metadata as remote_metadata
 

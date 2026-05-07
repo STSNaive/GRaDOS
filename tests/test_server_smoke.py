@@ -26,6 +26,7 @@ from grados.server import (
     search_academic_papers,
     search_saved_papers,
 )
+from grados.storage.frontmatter import read_frontmatter_metadata_from_file
 from grados.storage.papers import PaperListEntry, load_paper_record, save_paper_markdown
 from grados.storage.vector import PaperSearchResult
 
@@ -854,6 +855,58 @@ def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeyp
     assert calls[0]["has_fulltext"] is False
 
 
+def test_extract_paper_full_text_returns_codex_action(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.extract.fetch as fetch_module
+    import grados.storage.remote_metadata as remote_metadata
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_fetch_paper(**kwargs):
+        return fetch_module.FetchResult(
+            outcome="host_action_required",
+            source="Codex Computer Use",
+            via="codex",
+            state="host_action_required",
+            manual=True,
+            host="Microsoft Edge",
+            resume={
+                "kind": "codex",
+                "doi": "10.1234/demo",
+                "browser": "Microsoft Edge",
+                "start_url": "https://doi.org/10.1234/demo",
+                "action": "download_pdf_with_edge_then_call_parse_pdf_file",
+            },
+            warnings=["Codex Computer Use host action required"],
+        )
+
+    def fake_record_remote_fetch_result(metadata_dir, **kwargs):  # noqa: ANN001, ANN003
+        calls.append({"metadata_dir": metadata_dir, **kwargs})
+        return 1
+
+    monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", fake_record_remote_fetch_result)
+
+    result = asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
+
+    assert "Codex Computer Use Download" in result
+    assert "Microsoft Edge" in result
+    assert "parse_pdf_file(file_path=..., doi=..., copy_to_library=true" in result
+    assert "Manual Browser Resume" not in result
+    assert len(calls) == 1
+    assert calls[0]["fetch_status"] == "host_action_required"
+    assert calls[0]["fetch_via"] == "codex"
+    assert calls[0]["fetch_state"] == "host_action_required"
+    assert calls[0]["fetch_manual"] is True
+    assert isinstance(calls[0]["fetch_resume"], dict)
+    assert calls[0]["fetch_resume"]["kind"] == "codex"
+    assert calls[0]["has_fulltext"] is False
+
+
 def test_extract_paper_full_text_resume_browser_uses_saved_resume(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
 
@@ -1008,6 +1061,7 @@ def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
 
     import grados.extract.parse as parse_module
     import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
     import grados.storage.vector as vector
 
     async def fake_parse_pdf(*args, **kwargs):
@@ -1023,8 +1077,14 @@ def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
         captured["indexing_config"] = kwargs.get("indexing_config")
         raise RuntimeError("embedding backend unavailable")
 
+    def fake_record_remote_fetch_result(metadata_dir, **kwargs):  # noqa: ANN001, ANN003
+        captured["remote_metadata_dir"] = metadata_dir
+        captured["remote_metadata"] = kwargs
+        return 1
+
     monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
     monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", fake_record_remote_fetch_result)
     monkeypatch.setattr(vector, "index_paper", fake_index_paper)
 
     result = asyncio.run(
@@ -1032,17 +1092,29 @@ def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
             file_path=str(pdf_path),
             expected_title="Saved Demo",
             doi="10.1234/local-parse",
+            copy_to_library=True,
+            acquisition_via="codex",
         )
     )
 
     assert "PDF Parsed & Saved with Partial Success" in result
+    assert "Copied PDF:**" in result
+    assert "Acquisition Via:** codex" in result
     assert "Index Status:** failed" in result
     assert "saved to papers/ only" in result
     assert isinstance(captured["indexing_config"], IndexingConfig)
+    assert captured["remote_metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
+    assert captured["remote_metadata"]["fetch_status"] == "partial_success"
+    assert captured["remote_metadata"]["fetch_via"] == "codex"
 
     record = load_paper_record(tmp_path / "grados-home" / "papers", doi="10.1234/local-parse")
     assert record is not None
     assert record.title == "Saved Demo"
+    frontmatter = read_frontmatter_metadata_from_file(
+        tmp_path / "grados-home" / "papers" / f"{record.safe_doi}.md"
+    )
+    assert frontmatter["acquisition_via"] == "codex"
+    assert (tmp_path / "grados-home" / "downloads" / f"{record.safe_doi}.pdf").is_file()
 
 
 def test_stage_b_state_tools_round_trip(tmp_path: Path, monkeypatch) -> None:

@@ -26,7 +26,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 1. 先用 `search_saved_papers`、`get_saved_paper_structure` 或 `grados://papers/{safe_doi}` 检查本地论文库
 2. 按配置好的优先级检索远程学术数据库
-3. 按 `api -> browser -> oa -> scihub` 瀑布抓取全文
+3. 按配置好的 `api`、`browser`、`oa`、`scihub` 与可选 `codex` 路径抓取全文
 4. 按 `Docling -> Marker -> PyMuPDF` 瀑布解析 PDF
 5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把论文索引写入 `database/chroma/`，把远程元数据写入 `database/remote_metadata/`
 6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
@@ -349,7 +349,14 @@ Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `P
 {
   "extract": {
     "fetch_strategy": {
-      "order": ["api", "browser", "oa", "scihub"]
+      "order": ["api", "browser", "codex", "oa", "scihub"],
+      "enabled": {
+        "api": true,
+        "browser": true,
+        "codex": false,
+        "oa": true,
+        "scihub": true
+      }
     }
   }
 }
@@ -358,6 +365,8 @@ Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `P
 旧的抓取策略别名 `TDM`、`OA`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。当前 `scihub` 运行时使用 `extract.sci_hub.endpoints` 作为有序访问列表：第一个 endpoint 优先尝试，后续 endpoint 作为 fallback。旧的 `extract.sci_hub.fallback_mirror` 在 `endpoints` 省略或为空时仍然兼容。
 
 `browser` 是机构权限访问 publisher 全文的一等路径。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
+
+`codex` 默认关闭。启用并放入 `extract.fetch_strategy.order` 后，它会在该顺序位置作为 Codex host-agent handoff：`extract_paper_full_text` 返回 Codex Computer Use 下载动作，外层 agent 用 Microsoft Edge 下载 PDF，再调用 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")` 回到 GRaDOS 入库。
 
 PDF 解析优先级：
 

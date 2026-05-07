@@ -178,10 +178,11 @@ class SearchConfig(BaseModel):
 
 
 class FetchStrategyConfig(BaseModel):
-    order: list[str] = Field(default=["api", "browser", "oa", "scihub"])
+    order: list[str] = Field(default=["api", "browser", "codex", "oa", "scihub"])
     enabled: dict[str, bool] = Field(default_factory=lambda: {
         "api": True,
         "browser": True,
+        "codex": False,
         "oa": True,
         "scihub": True,
     })
@@ -500,7 +501,7 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "Keep generous: large PDFs and intermediate redirects can stream slowly."
     )
     data["extract"]["fetch_strategy"]["_comment_order"] = (
-        "PDF/full-text retrieval order. Browser is first-class for institutional publisher access."
+        "PDF/full-text retrieval order. `codex` is a disabled-by-default Codex host handoff."
     )
     data["extract"]["tdm"]["_comment_order"] = (
         "Publisher API/TDM providers tried by the api fetch strategy."

@@ -103,6 +103,19 @@ def test_config_normalization_preserves_literal_enabled_map_keys() -> None:
     assert "py_mu_p_d_f" not in config.extract.parsing.enabled
 
 
+def test_default_config_exposes_disabled_edge_strategy() -> None:
+    config = GRaDOSConfig()
+
+    assert config.extract.fetch_strategy.order == [
+        "api",
+        "browser",
+        "codex",
+        "oa",
+        "scihub",
+    ]
+    assert config.extract.fetch_strategy.enabled["codex"] is False
+
+
 def test_scihub_legacy_fallback_mirror_populates_endpoints() -> None:
     config = GRaDOSConfig.model_validate(
         {"extract": {"sci_hub": {"fallback_mirror": "https://legacy.example"}}}

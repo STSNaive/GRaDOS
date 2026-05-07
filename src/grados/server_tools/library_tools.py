@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -115,6 +116,22 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
     if not manual or not isinstance(resume, dict) or not resume:
         return result
 
+    kind = str(resume.get("kind", "") or "")
+    if kind == "codex":
+        doi = str(resume.get("doi", "") or "")
+        browser = str(resume.get("browser", "") or "Microsoft Edge")
+        start_url = str(resume.get("start_url", "") or (f"https://doi.org/{doi}" if doi else ""))
+        result += "\n\n### Codex Computer Use Download\n"
+        result += f"- **Browser:** {browser}\n"
+        if start_url:
+            result += f"- **Start URL:** {start_url}\n"
+        result += (
+            "- **Next:** use Codex Computer Use with Microsoft Edge to download the PDF, then call "
+            "`parse_pdf_file(file_path=..., doi=..., copy_to_library=true, "
+            "acquisition_via=\"codex\")` with the downloaded file path.\n"
+        )
+        return result.rstrip()
+
     host = str(getattr(fetch_result, "host", "") or resume.get("host", "") or "")
     url = str(resume.get("url", "") or "")
     profile_dir = str(resume.get("profile_dir", "") or "")
@@ -169,6 +186,8 @@ def _load_browser_resume(paths: object, doi: str) -> dict[str, str] | None:
 def _infer_remote_fetch_status(outcome: str, state: str, warnings: list[str]) -> str:
     if outcome == "metadata_only":
         return "metadata_only"
+    if outcome == "host_action_required" or state == "host_action_required":
+        return "host_action_required"
     if outcome in {"native_full_text", "pdf_obtained"}:
         return "fulltext"
     if state == "challenge":
@@ -688,6 +707,14 @@ async def parse_pdf_file(
         str | None,
         Field(description="Optional DOI to bind the parsed PDF to canonical storage and save it to the paper library."),
     ] = None,
+    copy_to_library: Annotated[
+        bool,
+        Field(description="Copy the raw PDF into the managed downloads archive when a DOI is provided."),
+    ] = False,
+    acquisition_via: Annotated[
+        str | None,
+        Field(description="Optional acquisition route label, such as `codex` or `local_pdf`."),
+    ] = None,
 ) -> str:
     """Parse a local PDF file into markdown."""
     from grados.extract.parse import parse_pdf_with_diagnostics
@@ -700,6 +727,7 @@ async def parse_pdf_file(
     pdf_buffer = path.read_bytes()
     if pdf_buffer[:5] != b"%PDF-":
         return f"Not a valid PDF file: {file_path}"
+    pdf_hash = hashlib.sha256(pdf_buffer).hexdigest()
 
     paths, config = get_paths_and_config()
     artifact = await build_library_document_artifact(
@@ -730,17 +758,48 @@ async def parse_pdf_file(
     markdown = artifact.markdown
 
     if doi:
+        normalized_acquisition = (acquisition_via or "").strip()
+        source = "Codex Computer Use" if normalized_acquisition == "codex" else "Local PDF"
+        copied_pdf_path = maybe_save_library_pdf(
+            doi=doi,
+            pdf_bytes=pdf_buffer,
+            paths=paths,
+            copy_to_library=copy_to_library,
+        )
+        extra_frontmatter = {
+            "original_pdf_path": str(path),
+            "source_pdf_hash": pdf_hash,
+        }
+        if copied_pdf_path:
+            extra_frontmatter["copied_pdf_path"] = copied_pdf_path
+        if normalized_acquisition:
+            extra_frontmatter["acquisition_via"] = normalized_acquisition
         persisted = persist_reviewed_library_document(
             review,
             paths=paths,
             doi=doi,
             title=expected_title or "",
-            source="Local PDF",
+            source=source,
             fetch_outcome="local_parse",
+            extra_frontmatter=extra_frontmatter,
+            copied_pdf_path=copied_pdf_path,
             index_warning_message=(
                 "Search index refresh failed — canonical markdown was saved to papers/ only. "
                 "Error: {index_error}"
             ),
+            indexing_config=config.indexing,
+        )
+        fetch_status = "partial_success" if persisted.index_warning_added else "fulltext"
+        remote_warning = _record_remote_metadata_update(
+            metadata_dir=_remote_metadata_dir(paths),
+            doi=doi,
+            fetch_status=fetch_status,
+            has_fulltext=True,
+            source=source,
+            title=expected_title or "",
+            metadata=None,
+            fetch_via=normalized_acquisition or "local_pdf",
+            fetch_state="ok",
             indexing_config=config.indexing,
         )
         result = (
@@ -748,14 +807,23 @@ async def parse_pdf_file(
             if persisted.index_warning_added
             else "## PDF Parsed & Saved\n\n"
         )
+        result += f"- **DOI:** {doi}\n"
         result += f"- **URI:** {persisted.summary.uri}\n"
         result += f"- **File:** {persisted.summary.file_path}\n"
+        if persisted.copied_pdf_path:
+            result += f"- **Copied PDF:** {persisted.copied_pdf_path}\n"
+        result += f"- **Source PDF Hash:** {pdf_hash}\n"
+        if normalized_acquisition:
+            result += f"- **Acquisition Via:** {normalized_acquisition}\n"
+        result += f"- **Fetch Status:** {fetch_status}\n"
         result += f"- **Words:** {persisted.summary.word_count:,}\n"
         result += f"- **Index Status:** {persisted.summary.index_status}\n"
         if persisted.artifact.parser_used:
             result += f"- **Parser Used:** {persisted.artifact.parser_used}\n"
         warnings = persisted.warnings
         parser_debug = persisted.debug
+        if remote_warning:
+            warnings = [*warnings, remote_warning]
     else:
         result = "## PDF Parsed\n\n"
         if review.artifact.parser_used:
@@ -814,6 +882,7 @@ def register_library_tools(mcp: FastMCP) -> None:
         description=(
             "Parse a local PDF into markdown. "
             "Without a DOI it returns a truncated preview; with a DOI it saves canonical markdown "
-            "and returns a save receipt."
+            "and returns a save receipt. Use copy_to_library=true for host-agent downloaded PDFs "
+            "that should be archived under downloads/."
         )
     )(parse_pdf_file)

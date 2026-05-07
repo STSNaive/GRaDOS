@@ -64,10 +64,10 @@ def test_fetch_result_defaults_include_asset_hints() -> None:
 
 
 def test_fetch_strategy_builders_preserve_order_and_filter_unknown_names() -> None:
-    strategies = build_fetch_strategies(["OA", "Unknown", "Headless"])
+    strategies = build_fetch_strategies(["OA", "Unknown", "codex", "Headless"])
     providers = build_tdm_providers(["Springer", "Missing", "Elsevier"])
 
-    assert [strategy.name for strategy in strategies] == ["oa", "browser"]
+    assert [strategy.name for strategy in strategies] == ["oa", "codex", "browser"]
     assert [provider.name for provider in providers] == ["Springer", "Elsevier"]
 
 
@@ -308,6 +308,44 @@ def test_fetch_paper_continues_after_scihub_not_found(monkeypatch) -> None:
     assert result.outcome == "pdf_obtained"
     assert result.via == "oa"
     assert result.warnings == ["Sci-Hub primary endpoint sci-hub.se reports no paper for DOI"]
+
+
+def test_fetch_paper_returns_edge_action_at_configured_position(monkeypatch) -> None:
+    import grados.extract.fetch as fetch_module
+
+    calls: list[str] = []
+
+    async def fake_fetch_tdm(*args, **kwargs):
+        calls.append("api")
+        return FetchResult(outcome="failed", via="api", state="error", warnings=["api miss"])
+
+    async def fake_fetch_scihub(*args, **kwargs):
+        calls.append("scihub")
+        raise AssertionError("codex should stop before later strategies")
+
+    monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
+    monkeypatch.setattr(fetch_module, "_fetch_scihub", fake_fetch_scihub)
+
+    result = asyncio.run(
+        fetch_module.fetch_paper(
+            doi="10.1234/demo",
+            api_keys={},
+            etiquette_email="test@example.com",
+            fetch_order=["api", "codex", "scihub"],
+            fetch_enabled={"api": True, "codex": True, "scihub": True},
+        )
+    )
+
+    assert calls == ["api"]
+    assert result.outcome == "host_action_required"
+    assert result.via == "codex"
+    assert result.state == "host_action_required"
+    assert result.manual is True
+    assert result.host == "Microsoft Edge"
+    assert result.resume["kind"] == "codex"
+    assert result.resume["start_url"] == "https://doi.org/10.1234/demo"
+    assert result.warnings[0] == "api miss"
+    assert any(trace["via"] == "codex" for trace in result.trace)
 
 
 def test_fetch_paper_resume_starts_at_browser_and_passes_resume(monkeypatch, tmp_path) -> None:
