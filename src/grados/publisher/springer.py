@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 import httpx
 
@@ -50,19 +51,24 @@ def _build_asset_hints(meta: SpringerMetaRecord | None) -> list[dict[str, str]]:
     return hints
 
 
+def _json_object(response: httpx.Response) -> dict[str, Any]:
+    payload: Any = response.json()
+    return cast(dict[str, Any], payload) if isinstance(payload, dict) else {}
+
+
 @http_retry()
 async def _springer_meta_request(
     client: httpx.AsyncClient,
     doi: str,
     api_key: str,
-) -> dict:
+) -> dict[str, Any]:
     resp = await client.get(
         "https://api.springernature.com/meta/v2/json",
         params={"q": f"doi:{doi}", "api_key": api_key},
         timeout=current_fetch_timeout(),
     )
     resp.raise_for_status()
-    return resp.json()
+    return _json_object(resp)
 
 
 @http_retry()

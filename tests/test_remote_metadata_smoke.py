@@ -206,7 +206,15 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     assert '"state": "ok"' in refreshed.fetch_trace
 
 
-def test_remote_metadata_preserves_computer_use_host_action(tmp_path: Path) -> None:
+def test_remote_metadata_preserves_computer_use_host_action(tmp_path: Path, monkeypatch) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+
+    collection = FakeRemoteMetadataCollection()
+
+    monkeypatch.setattr(remote_metadata, "get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(remote_metadata, "get_remote_metadata_collection", lambda client: collection)
+    monkeypatch.setattr(remote_metadata, "load_embedding_backend", lambda config=None: FakeEmbeddingBackend())
+
     record_remote_fetch_result(
         tmp_path / "chroma",
         doi="10.1234/demo",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from grados.browser.sciencedirect import follow_candidates as sd_follow_candidates
 from grados.browser.sciencedirect import try_view_pdf_click as sd_try_view_pdf_click
@@ -72,8 +72,14 @@ async def _run_generic_page_strategy(context: BrowserPageStrategyContext) -> Non
 
 
 BROWSER_PAGE_STRATEGY_REGISTRY: dict[str, BrowserPageStrategy] = {
-    "ScienceDirect": _FunctionBrowserPageStrategy("ScienceDirect", _run_sciencedirect_page_strategy),
-    "GenericPdfClick": _FunctionBrowserPageStrategy("GenericPdfClick", _run_generic_page_strategy),
+    "ScienceDirect": cast(
+        BrowserPageStrategy,
+        _FunctionBrowserPageStrategy("ScienceDirect", _run_sciencedirect_page_strategy),
+    ),
+    "GenericPdfClick": cast(
+        BrowserPageStrategy,
+        _FunctionBrowserPageStrategy("GenericPdfClick", _run_generic_page_strategy),
+    ),
 }
 
 

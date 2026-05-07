@@ -76,7 +76,7 @@ class KeychainStore:
         self.backend_name = ""
         self.error = ""
         try:
-            import keyring  # type: ignore[import-not-found]
+            import keyring
         except ImportError:
             self.error = "Python dependency `keyring` is not installed."
             return
@@ -97,31 +97,33 @@ class KeychainStore:
     def available(self) -> bool:
         return self._keyring is not None and not self.error
 
-    def get(self, slug: str) -> str:
-        if not self.available:
+    def _require_keyring(self) -> Any:
+        if not self.available or self._keyring is None:
             raise SecretStoreError(self.error or "Keychain backend is unavailable.")
+        return self._keyring
+
+    def get(self, slug: str) -> str:
+        keyring = self._require_keyring()
         try:
-            value = self._keyring.get_password(self.service_name, slug)
+            value = keyring.get_password(self.service_name, slug)
         except Exception as exc:  # pragma: no cover - backend-specific
             raise SecretStoreError(f"Failed to read keychain value for {slug}: {exc}") from exc
         return value or ""
 
     def set(self, slug: str, value: str) -> None:
-        if not self.available:
-            raise SecretStoreError(self.error or "Keychain backend is unavailable.")
+        keyring = self._require_keyring()
         try:
-            self._keyring.set_password(self.service_name, slug, value)
+            keyring.set_password(self.service_name, slug, value)
         except Exception as exc:  # pragma: no cover - backend-specific
             raise SecretStoreError(f"Failed to write keychain value for {slug}: {exc}") from exc
 
     def delete(self, slug: str) -> bool:
-        if not self.available:
-            raise SecretStoreError(self.error or "Keychain backend is unavailable.")
+        keyring = self._require_keyring()
         try:
-            self._keyring.delete_password(self.service_name, slug)
+            keyring.delete_password(self.service_name, slug)
             return True
         except Exception as exc:  # pragma: no cover - backend-specific
-            delete_error = getattr(getattr(self._keyring, "errors", None), "PasswordDeleteError", None)
+            delete_error = getattr(getattr(keyring, "errors", None), "PasswordDeleteError", None)
             if delete_error is not None and isinstance(exc, delete_error):
                 return False
             raise SecretStoreError(f"Failed to delete keychain value for {slug}: {exc}") from exc

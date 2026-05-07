@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from bs4 import BeautifulSoup
@@ -51,6 +51,11 @@ def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text) if text else ""
 
 
+def _json_object(response: httpx.Response) -> dict[str, Any]:
+    payload: Any = response.json()
+    return cast(dict[str, Any], payload) if isinstance(payload, dict) else {}
+
+
 # ── Crossref ─────────────────────────────────────────────────────────────────
 
 
@@ -75,7 +80,7 @@ async def _crossref_request(
         timeout=current_search_timeout(),
     )
     resp.raise_for_status()
-    return resp.json()
+    return _json_object(resp)
 
 
 async def search_crossref(
@@ -147,7 +152,7 @@ async def _pubmed_get_json(client: httpx.AsyncClient, url: str, params: dict[str
     await throttle_source("pubmed", pubmed_min_interval(has_api_key))
     resp = await client.get(url, params=params, timeout=current_search_timeout())
     resp.raise_for_status()
-    return resp.json()
+    return _json_object(resp)
 
 
 @http_retry()
@@ -281,7 +286,7 @@ async def _wos_request(
         timeout=current_search_timeout(),
     )
     resp.raise_for_status()
-    return resp.json()
+    return _json_object(resp)
 
 
 async def search_wos(
@@ -354,7 +359,7 @@ async def _elsevier_search_request(
         timeout=current_search_timeout(),
     )
     resp.raise_for_status()
-    return resp.json()
+    return _json_object(resp)
 
 
 async def search_elsevier(
@@ -423,7 +428,7 @@ async def _springer_search_request(
         timeout=current_search_timeout(),
     )
     resp.raise_for_status()
-    return resp.json()
+    return _json_object(resp)
 
 
 @dataclass

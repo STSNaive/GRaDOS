@@ -14,7 +14,8 @@ from grados.research.models import (
     DraftAuditResult,
 )
 from grados.storage.paths import resolve_papers_dir
-from grados.storage.vector import PaperSearchResult, search_papers
+from grados.storage.retrieval import PaperSearchResult
+from grados.storage.vector import search_papers
 
 
 def _split_claims(draft_text: str) -> list[str]:
@@ -32,18 +33,7 @@ def _split_claims(draft_text: str) -> list[str]:
 
 
 def _normalize_citation_piece(piece: str) -> str:
-    normalized = piece.translate(
-        str.maketrans(
-            {
-                "（": "(",
-                "）": ")",
-                "，": ",",
-                "；": ";",
-                "【": "[",
-                "】": "]",
-            }
-        )
-    )
+    normalized = piece.translate(str.maketrans("（），；【】", "(),;[]"))
     return re.sub(r"\s+", " ", normalized).strip()
 
 

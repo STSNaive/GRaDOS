@@ -22,9 +22,10 @@ import asyncio
 import functools
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 import httpx
 from tenacity import (
@@ -42,6 +43,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from grados.config import GRaDOSConfig
 
 logger = logging.getLogger(__name__)
+P = ParamSpec("P")
+R = TypeVar("R")
 
 # HTTP status codes worth retrying: rate-limit + upstream transient failures.
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
@@ -269,7 +272,7 @@ class _HeaderAwareWait(wait_base):
     def __init__(self, max_wait: float) -> None:
         self._fallback = wait_exponential(multiplier=1, min=1, max=max_wait) + wait_random(0, 1)
 
-    def __call__(self, retry_state: RetryCallState) -> float:  # type: ignore[override]
+    def __call__(self, retry_state: RetryCallState) -> float:
         outcome = retry_state.outcome
         if outcome is not None and outcome.failed:
             exc = outcome.exception()
@@ -374,7 +377,9 @@ def pubmed_min_interval(has_api_key: bool) -> float:
     return PUBMED_MIN_INTERVAL_WITH_KEY if has_api_key else PUBMED_MIN_INTERVAL_NO_KEY
 
 
-def http_retry(policy: RetryPolicy | None = None):
+def http_retry(
+    policy: RetryPolicy | None = None,
+) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
     """Decorator factory for idempotent async HTTP calls.
 
     Resolves the retry policy at **call time**, so `install_runtime_defaults`
@@ -383,9 +388,9 @@ def http_retry(policy: RetryPolicy | None = None):
     invocation of the wrapped function (useful in tests).
     """
 
-    def decorator(fn):
+    def decorator(fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
         @functools.wraps(fn)
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             retrying = _build_async_retrying(policy)
             async for attempt in retrying:
                 with attempt:

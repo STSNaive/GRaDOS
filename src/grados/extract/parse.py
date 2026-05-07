@@ -10,7 +10,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 
 @dataclass
@@ -128,20 +128,32 @@ def _run_docling_xml_normalizer(context: DocumentNormalizationContext) -> _Parse
 
 
 PDF_PARSER_REGISTRY: dict[str, PdfParserStrategy] = {
-    "Docling": _FunctionPdfParserStrategy("Docling", _run_docling_pdf_parser),
-    "Marker": _FunctionPdfParserStrategy("Marker", _run_marker_pdf_parser),
-    "PyMuPDF": _FunctionPdfParserStrategy("PyMuPDF", _run_pymupdf_pdf_parser),
+    "Docling": cast(PdfParserStrategy, _FunctionPdfParserStrategy("Docling", _run_docling_pdf_parser)),
+    "Marker": cast(PdfParserStrategy, _FunctionPdfParserStrategy("Marker", _run_marker_pdf_parser)),
+    "PyMuPDF": cast(PdfParserStrategy, _FunctionPdfParserStrategy("PyMuPDF", _run_pymupdf_pdf_parser)),
 }
 
 DOCUMENT_NORMALIZER_STRATEGIES: tuple[DocumentNormalizerStrategy, ...] = (
-    _FormatDocumentNormalizerStrategy("Markdown", "Markdown", ("markdown", "md"), _run_markdown_normalizer),
-    _FormatDocumentNormalizerStrategy("PlainText", "PlainText", ("text", "txt"), _run_plain_text_normalizer),
-    _FormatDocumentNormalizerStrategy("DoclingHTML", "Docling", ("html", "htm"), _run_docling_html_normalizer),
-    _FormatDocumentNormalizerStrategy(
-        "DoclingXML",
-        "Docling",
-        ("xml", "jats", "jats_xml"),
-        _run_docling_xml_normalizer,
+    cast(
+        DocumentNormalizerStrategy,
+        _FormatDocumentNormalizerStrategy("Markdown", "Markdown", ("markdown", "md"), _run_markdown_normalizer),
+    ),
+    cast(
+        DocumentNormalizerStrategy,
+        _FormatDocumentNormalizerStrategy("PlainText", "PlainText", ("text", "txt"), _run_plain_text_normalizer),
+    ),
+    cast(
+        DocumentNormalizerStrategy,
+        _FormatDocumentNormalizerStrategy("DoclingHTML", "Docling", ("html", "htm"), _run_docling_html_normalizer),
+    ),
+    cast(
+        DocumentNormalizerStrategy,
+        _FormatDocumentNormalizerStrategy(
+            "DoclingXML",
+            "Docling",
+            ("xml", "jats", "jats_xml"),
+            _run_docling_xml_normalizer,
+        ),
     ),
 )
 
@@ -274,7 +286,7 @@ def _parse_pymupdf_attempt(pdf_buffer: bytes) -> _ParserAttemptResult:
     """Parse PDF using pymupdf4llm as a light fallback parser."""
     try:
         import pymupdf
-        import pymupdf4llm
+        import pymupdf4llm  # type: ignore[import-untyped]
 
         doc = pymupdf.open(stream=pdf_buffer, filetype="pdf")  # type: ignore[no-untyped-call]
         md = pymupdf4llm.to_markdown(doc)
@@ -454,8 +466,8 @@ def _safe_stem(filename: str) -> str:
 
 def _marker_subprocess_main() -> int:
     try:
-        from marker.converters.pdf import PdfConverter
-        from marker.models import create_model_dict
+        from marker.converters.pdf import PdfConverter  # type: ignore[import-not-found]
+        from marker.models import create_model_dict  # type: ignore[import-not-found]
 
         raw = sys.stdin.read()
         if not raw:
@@ -514,10 +526,10 @@ def prewarm_docling_models() -> ParsePipelineResult:
     try:
         import pymupdf
 
-        doc = pymupdf.open()
+        doc = pymupdf.open()  # type: ignore[no-untyped-call]
         page = doc.new_page()
         page.insert_textbox(
-            pymupdf.Rect(50, 50, 550, 780),
+            pymupdf.Rect(50, 50, 550, 780),  # type: ignore[no-untyped-call]
             (
                 "GRaDOS Docling Prewarm\n\n"
                 "Abstract\n"
@@ -527,8 +539,8 @@ def prewarm_docling_models() -> ParsePipelineResult:
             ),
             fontsize=11,
         )
-        pdf_buffer = doc.tobytes()
-        doc.close()
+        pdf_buffer = doc.tobytes()  # type: ignore[no-untyped-call]
+        doc.close()  # type: ignore[no-untyped-call]
     except Exception as exc:
         return ParsePipelineResult(
             markdown=None,

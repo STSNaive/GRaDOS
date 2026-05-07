@@ -8,7 +8,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -247,16 +247,16 @@ async def _run_springer_tdm_provider(context: TDMProviderContext) -> FetchResult
 
 
 FETCH_STRATEGY_REGISTRY: dict[str, FetchStrategy] = {
-    "api": _FunctionFetchStrategy("api", _run_tdm_fetch_strategy),
-    "browser": _FunctionFetchStrategy("browser", _run_browser_fetch_strategy),
-    "codex": _FunctionFetchStrategy("codex", _run_codex_fetch_strategy),
-    "oa": _FunctionFetchStrategy("oa", _run_oa_fetch_strategy),
-    "scihub": _FunctionFetchStrategy("scihub", _run_scihub_fetch_strategy),
+    "api": cast(FetchStrategy, _FunctionFetchStrategy("api", _run_tdm_fetch_strategy)),
+    "browser": cast(FetchStrategy, _FunctionFetchStrategy("browser", _run_browser_fetch_strategy)),
+    "codex": cast(FetchStrategy, _FunctionFetchStrategy("codex", _run_codex_fetch_strategy)),
+    "oa": cast(FetchStrategy, _FunctionFetchStrategy("oa", _run_oa_fetch_strategy)),
+    "scihub": cast(FetchStrategy, _FunctionFetchStrategy("scihub", _run_scihub_fetch_strategy)),
 }
 
 TDM_PROVIDER_REGISTRY: dict[str, TDMProvider] = {
-    "Elsevier": _FunctionTDMProvider("Elsevier", _run_elsevier_tdm_provider),
-    "Springer": _FunctionTDMProvider("Springer", _run_springer_tdm_provider),
+    "Elsevier": cast(TDMProvider, _FunctionTDMProvider("Elsevier", _run_elsevier_tdm_provider)),
+    "Springer": cast(TDMProvider, _FunctionTDMProvider("Springer", _run_springer_tdm_provider)),
 }
 
 

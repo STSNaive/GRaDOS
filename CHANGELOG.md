@@ -57,6 +57,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed local-library ingest orchestration so `extract_paper_full_text`, `parse_pdf_file`, and `import_local_pdf_library` now share a typed workflow in `src/grados/workflows/library.py`; `server_tools/library_tools.py` and `importing.py` keep only entry adaptation, receipt rendering, and batch orchestration.
 - Changed browser orchestration layering so `src/grados/browser/generic.py` is now a thin facade over `session_runtime`, `fetch_runtime`, and `browser/strategies`; session lifecycle, listener cleanup, and page polling/backfill contracts are defined once without changing `BrowserFetchResult`.
 - Changed Stage B research helper layout so `src/grados/research_tools.py` is now a thin public facade over `src/grados/research/` (`models`, `common`, `full_context`, `citation_graph`, `evidence_grid`, `compare`, `draft_audit`), reducing cross-responsibility coupling while keeping MCP/server payloads stable.
+- Changed CI and PyPI publishing preflight to enforce `mypy` strict-mode checks alongside Ruff, pytest, native-TLS package builds, and local wheel smoke installs before release publication.
 
 ### Fixed
 - Fixed saved-paper selector handling so caller-provided `safe_doi` values and `grados://papers/...` suffixes are treated as opaque IDs, validated against a filename-token allowlist, and resolved under the canonical `papers/` directory before reading.
@@ -84,6 +85,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added workflow coverage for the shared library ingest pipeline plus `parse_pdf_file` smoke coverage for QA-warning and index-partial-success receipts.
 - Added browser regression coverage for retained-session teardown, listener cleanup, and challenge/timeout paths after splitting `browser/generic.py` into runtime/strategy layers.
 - Reorganized Stage B research smoke coverage into module-scoped suites for state persistence, citation graph, full-context reads, evidence-grid plus draft-audit, and compare flows; server smoke monkeypatches now target the new research submodules directly.
+- Added local validation coverage for the declared `mypy` strict-mode build gate, including typed retry decorators, optional keychain/parser imports, strategy registries, and research helper payload boundaries.
 
 ## [0.6.9] - 2026-04-16
 

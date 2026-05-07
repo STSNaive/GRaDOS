@@ -22,6 +22,14 @@ def _escape_markdown_table_cell(value: str) -> str:
     return normalized.replace("|", r"\|")
 
 
+def _coerce_nonnegative_int(value: object) -> int:
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value)
+    return 0
+
+
 def _axis_evidence(
     *,
     axis: str,
@@ -52,13 +60,14 @@ def _axis_evidence(
             warning="No comparable excerpt could be located.",
         )
 
-    paragraph_count = int(best_section.get("paragraph_count", 0) or 0)
+    paragraph_count = _coerce_nonnegative_int(best_section.get("paragraph_count", 0))
+    paragraph_start = _coerce_nonnegative_int(best_section.get("paragraph_start", 0))
     return ComparisonEvidenceItem(
         axis=axis,
         section_name=str(best_section.get("name", "")),
         excerpt=best_excerpt,
         canonical_uri=canonical_uri,
-        paragraph_start=int(best_section.get("paragraph_start", 0) or 0) if paragraph_count > 0 else None,
+        paragraph_start=paragraph_start if paragraph_count > 0 else None,
         paragraph_count=paragraph_count if paragraph_count > 0 else None,
         warning="Section-level anchor; reread the canonical paragraph window before citing.",
     )

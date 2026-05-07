@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
@@ -11,6 +12,7 @@ from typing import Annotated
 from fastmcp import FastMCP
 from pydantic import Field
 
+from grados.config import IndexingConfig
 from grados.publisher.common import PublisherMetadata, normalize_publisher_metadata, safe_doi_filename
 from grados.server_tools.shared import (
     format_paper_index_resource,
@@ -38,7 +40,7 @@ __all__ = [
 ]
 
 
-def _format_asset_hint_lines(asset_hints: list[dict[str, object]]) -> list[str]:
+def _format_asset_hint_lines(asset_hints: Sequence[Mapping[str, object]]) -> list[str]:
     lines: list[str] = []
     for hint in asset_hints:
         label = str(hint.get("label", "")).strip() or str(hint.get("kind", "")).strip() or "asset_hint"
@@ -151,9 +153,12 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
 
 def _remote_metadata_dir(paths: object) -> Path:
     metadata_dir = getattr(paths, "database_remote_metadata", None)
-    if metadata_dir is not None:
+    if isinstance(metadata_dir, Path):
         return metadata_dir
-    return getattr(paths, "database_chroma")
+    chroma_dir = getattr(paths, "database_chroma")
+    if isinstance(chroma_dir, Path):
+        return chroma_dir
+    return Path(chroma_dir)
 
 
 def _load_browser_resume(paths: object, doi: str) -> dict[str, str] | None:
@@ -220,7 +225,7 @@ def _record_remote_metadata_update(
     fetch_host: str = "",
     fetch_resume: dict[str, str] | None = None,
     fetch_manual: bool = False,
-    indexing_config: object | None = None,
+    indexing_config: IndexingConfig | None = None,
 ) -> str | None:
     from grados.storage.remote_metadata import record_remote_fetch_result
 

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Annotated
 
 from fastmcp import FastMCP
 from pydantic import Field
 
+from grados.config import GRaDOSConfig, GRaDOSPaths
 from grados.server_tools.shared import get_api_keys, get_paths_and_config
 
 __all__ = ["register_search_tools", "search_academic_papers", "search_saved_papers"]
@@ -47,9 +49,9 @@ def _saved_paper_anchor_payload(query: str, paper: object) -> dict[str, object]:
 
 
 def _local_state_for_paper(
-    paths: object,
+    paths: GRaDOSPaths | None,
     paper: object,
-    metadata_dir: object | None,
+    metadata_dir: Path | None,
     config: object,
 ) -> dict[str, object]:
     from grados.publisher.common import normalize_doi, safe_doi_filename
@@ -161,12 +163,13 @@ async def _run_indepth_for_results(
     query: str,
     limit: int,
     papers: list[object],
-    paths: object,
-    config: object,
-    metadata_dir: object | None,
+    paths: GRaDOSPaths | None,
+    config: GRaDOSConfig,
+    metadata_dir: Path | None,
 ) -> tuple[list[str], str]:
     from grados.publisher.common import normalize_doi, safe_doi_filename
     from grados.research_checkpoint import (
+        EvidenceAnchor,
         ResearchCheckpointPaper,
         generate_paper_summary,
         make_research_checkpoint,
@@ -189,7 +192,7 @@ async def _run_indepth_for_results(
 
     checkpoint_papers: list[ResearchCheckpointPaper] = []
     findings: list[str] = []
-    evidence_anchors = []
+    evidence_anchors: list[EvidenceAnchor] = []
     open_questions: list[str] = []
     next_actions: list[str] = []
     summaries_written = 0
@@ -225,7 +228,7 @@ async def _run_indepth_for_results(
                             has_fulltext=False,
                             source=str(getattr(paper, "source", "") or getattr(paper, "publisher", "") or ""),
                             title=title,
-                            indexing_config=getattr(config, "indexing", None),
+                            indexing_config=config.indexing,
                         )
                     except Exception as remote_exc:
                         warnings.append(
@@ -243,15 +246,15 @@ async def _run_indepth_for_results(
             paper_summary_id = ""
             if _indepth_auto_summarize(config):
                 try:
-                    summary = generate_paper_summary(
+                    paper_summary = generate_paper_summary(
                         getattr(paths, "paper_summaries"),
                         getattr(paths, "papers"),
                         doi=doi,
                     )
                     summaries_written += 1
-                    paper_summary_id = summary.summary_id
-                    findings.extend(summary.key_findings[:2])
-                    evidence_anchors.extend(summary.evidence_anchors[:4])
+                    paper_summary_id = paper_summary.summary_id
+                    findings.extend(paper_summary.key_findings[:2])
+                    evidence_anchors.extend(paper_summary.evidence_anchors[:4])
                 except Exception as exc:
                     fetch_status = "summary_failed"
                     failure_reason = f"paper_summary failed: {exc.__class__.__name__}: {exc}"
@@ -265,7 +268,7 @@ async def _run_indepth_for_results(
                                 has_fulltext=True,
                                 source=str(getattr(paper, "source", "") or getattr(paper, "publisher", "") or ""),
                                 title=title,
-                                indexing_config=getattr(config, "indexing", None),
+                                indexing_config=config.indexing,
                             )
                         except Exception as remote_exc:
                             warnings.append(
@@ -390,16 +393,13 @@ async def search_academic_papers(
             "Provided continuation_token was not applied; it was stale, invalid, or tied to a different query. "
             "Results restarted from page 1."
         )
-    metadata_dir = getattr(paths, "database_remote_metadata", None)
-    if metadata_dir is None:
-        metadata_dir = getattr(paths, "database_chroma", None)
-    indexing_config = getattr(config, "indexing", None)
+    metadata_dir = paths.database_remote_metadata if paths is not None else None
     if metadata_dir is not None:
         try:
             upsert_remote_metadata(
                 metadata_dir,
                 list(result.results),
-                indexing_config=indexing_config,
+                indexing_config=config.indexing,
             )
         except Exception as exc:
             warnings.append(f"Remote metadata cache update failed: {exc.__class__.__name__}: {exc}")

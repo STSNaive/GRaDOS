@@ -33,19 +33,20 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Show tool versions
-        run: |
-          python --version
-          uv --version
-
-      - name: Install project and test dependencies
+      - name: Install project and dev dependencies
         run: uv sync --group dev
+
+      - name: Run Ruff
+        run: uv run ruff check src tests
+
+      - name: Run mypy
+        run: uv run mypy src
 
       - name: Run Python smoke tests
         run: uv run pytest tests -q
 
       - name: Build sdist and wheel
-        run: uv build --no-sources
+        run: uv build --native-tls --no-sources
 
       - name: Smoke-test local wheel via uvx and uv tool install
         shell: bash
@@ -82,7 +83,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Build sdist and wheel
-        run: uv build --no-sources
+        run: uv build --native-tls --no-sources
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
