@@ -475,6 +475,37 @@ def test_fetch_scihub_surfaces_warning_when_pdf_link_missing() -> None:
     assert result.trace[0]["reason"] == "pdf_link_missing"
 
 
+def test_extract_scihub_pdf_url_handles_common_mirror_markup() -> None:
+    from grados.extract.fetch import _extract_scihub_pdf_url
+
+    base_url = "https://sci-hub.se/10.1234/demo"
+
+    assert (
+        _extract_scihub_pdf_url('<iframe id="pdf" src="//cdn.sci-hub.se/paper.pdf"></iframe>', base_url)
+        == "https://cdn.sci-hub.se/paper.pdf"
+    )
+    assert (
+        _extract_scihub_pdf_url('<embed id="plugin" src="/downloads/paper.pdf#view">', base_url)
+        == "https://sci-hub.se/downloads/paper.pdf#view"
+    )
+    assert (
+        _extract_scihub_pdf_url('<embed original-url="https://moscow.sci-hub.se/paper.pdf">', base_url)
+        == "https://moscow.sci-hub.se/paper.pdf"
+    )
+    assert (
+        _extract_scihub_pdf_url('<object data="/pdfs/paper.pdf?download=true"></object>', base_url)
+        == "https://sci-hub.se/pdfs/paper.pdf?download=true"
+    )
+    assert (
+        _extract_scihub_pdf_url('<a href="/downloads/paper.pdf">Download</a>', base_url)
+        == "https://sci-hub.se/downloads/paper.pdf"
+    )
+    assert (
+        _extract_scihub_pdf_url('<button onclick="location.href=&quot;/button/paper.pdf&quot;"></button>', base_url)
+        == "https://sci-hub.se/button/paper.pdf"
+    )
+
+
 def test_fetch_scihub_uses_fallback_endpoint_when_primary_unreachable() -> None:
     from grados.extract.fetch import _fetch_scihub
 

@@ -29,6 +29,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Changed
 - Changed the legacy cloud-parser API-key surface to MinerU; the old cloud-parser key is no longer part of the generated config, docs, or managed secret list.
 - Changed the optional `codex` fetch-strategy handoff to the Codex Chrome extension.
+- Changed Sci-Hub PDF URL extraction to recognize additional mirror markup patterns and standard URL resolution while keeping the strategy as an HTTP fallback.
 - Changed `parse_pdf_file` to support `copy_to_library` and `acquisition_via` for explicit-DOI local PDF handoffs, including raw-PDF archiving and `remote_metadata` backfill after a successful parse/save.
 - Changed `search_saved_papers` to include an `Evidence Anchor` JSON block with `canonical_uri`, paragraph coordinates, query, and score breakdown while preserving the existing human-readable Markdown output.
 - Changed `build_evidence_grid`, `compare_papers`, and `audit_draft_support` typed payloads to carry reusable reread anchors and score metadata; comparison excerpts now include per-axis section-level evidence items.

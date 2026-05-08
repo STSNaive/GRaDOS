@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -836,7 +836,10 @@ async def _fetch_scihub_endpoint(
             reason=reason,
         )
 
-    landing_url = f"{endpoint}/{doi}"
+    try:
+        landing_url = str(resp.url)
+    except RuntimeError:
+        landing_url = f"{endpoint}/{doi}"
     if detect_bot_challenge("", resp.text, landing_url):
         return _scihub_failed_result(
             doi,
@@ -859,7 +862,7 @@ async def _fetch_scihub_endpoint(
             reason="not_found_marker",
         )
 
-    pdf_url = _extract_scihub_pdf_url(resp.text, endpoint)
+    pdf_url = _extract_scihub_pdf_url(resp.text, landing_url)
     if not pdf_url:
         return _scihub_failed_result(
             doi,
@@ -991,35 +994,51 @@ async def _fetch_scihub(
     return failure_result
 
 
-def _extract_scihub_pdf_url(html: str, endpoint: str) -> str | None:
+def _extract_scihub_pdf_url(html: str, base_url: str) -> str | None:
     """Extract PDF URL from Sci-Hub page."""
     soup = BeautifulSoup(html, "lxml")
 
-    # embed[type=application/pdf]
-    embed = soup.find("embed", attrs={"type": "application/pdf"})
-    if embed and embed.get("src"):
-        return _normalize_scihub_url(str(embed["src"]), endpoint)
+    candidate_selectors = (
+        ("iframe#pdf", ("src",)),
+        ("embed#plugin", ("src", "original-url")),
+        ('embed[type="application/pdf"]', ("src", "original-url")),
+        ("object[data]", ("data",)),
+        ("iframe[src]", ("src",)),
+        ("embed[src], embed[original-url]", ("src", "original-url")),
+        ("a[href]", ("href",)),
+    )
+    for selector, attrs in candidate_selectors:
+        for tag in soup.select(selector):
+            for attr in attrs:
+                value = tag.get(attr)
+                if not value or (attr == "href" and not _looks_like_scihub_pdf_reference(str(value))):
+                    continue
+                return _normalize_scihub_url(str(value), base_url)
 
-    # iframe src
-    iframe = soup.find("iframe")
-    if iframe and iframe.get("src"):
-        return _normalize_scihub_url(str(iframe["src"]), endpoint)
-
-    # button onclick
-    button = soup.find("button")
-    if button and button.get("onclick"):
-        match = re.search(r"location\.href='([^']+\.pdf[^']*)'", str(button["onclick"]))
+    for tag in soup.find_all(attrs={"onclick": True}):
+        match = re.search(
+            r"""location\.href\s*=\s*["']([^"']+\.pdf[^"']*)["']""",
+            str(tag["onclick"]),
+            flags=re.IGNORECASE,
+        )
         if match:
-            return _normalize_scihub_url(match.group(1), endpoint)
+            return _normalize_scihub_url(match.group(1), base_url)
+
+    match = re.search(
+        r"""((?:https?:)?//[^\s"'<>]+\.pdf[^\s"'<>]*|/[^\s"'<>]+\.pdf[^\s"'<>]*)""",
+        html,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return _normalize_scihub_url(match.group(1), base_url)
 
     return None
 
 
-def _normalize_scihub_url(url: str, endpoint: str) -> str:
-    if url.startswith("//"):
-        return f"https:{url}"
-    if url.startswith("/"):
-        return f"{endpoint}{url}"
-    if not url.startswith("http"):
-        return f"{endpoint}/{url}"
-    return url
+def _looks_like_scihub_pdf_reference(url: str) -> bool:
+    lowered = url.lower()
+    return ".pdf" in lowered or "download" in lowered
+
+
+def _normalize_scihub_url(url: str, base_url: str) -> str:
+    return urljoin(base_url, url.strip())
