@@ -246,13 +246,21 @@ class HeadlessBrowserConfig(BaseModel):
 
 
 class ParsingConfig(BaseModel):
-    order: list[str] = Field(default=["Docling", "Marker", "PyMuPDF"])
+    order: list[str] = Field(default=["Docling", "MinerU", "Marker", "PyMuPDF"])
     enabled: dict[str, bool] = Field(default_factory=lambda: {
         "Docling": True,
+        "MinerU": True,
         "Marker": False,
         "PyMuPDF": True,
     })
     marker_timeout: int = Field(default=120000, description="Timeout in milliseconds for isolated Marker parser runs.")
+    mineru_timeout: int = Field(default=300000, description="Timeout in milliseconds for MinerU cloud parsing.")
+    mineru_poll_interval: float = Field(default=3.0, ge=0.5, description="Seconds between MinerU task polls.")
+    mineru_model_version: str = Field(default="vlm", description="MinerU model version: pipeline or vlm.")
+    mineru_language: str = Field(default="en", description="MinerU document language hint.")
+    mineru_enable_formula: bool = True
+    mineru_enable_table: bool = True
+    mineru_is_ocr: bool = False
 
 
 class QAConfig(BaseModel):
@@ -318,7 +326,7 @@ class ApiKeysConfig(BaseModel):
     WOS_API_KEY: str = ""
     SPRINGER_meta_API_KEY: str = ""
     SPRINGER_OA_API_KEY: str = ""
-    LLAMAPARSE_API_KEY: str = ""
+    MINERU_API_KEY: str = ""
     ZOTERO_API_KEY: str = ""
 
 
@@ -550,6 +558,15 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     )
     data["extract"]["parsing"]["_comment_marker_timeout"] = (
         "Maximum time in milliseconds to wait for the isolated Marker subprocess."
+    )
+    data["extract"]["parsing"]["_comment_mineru_timeout"] = (
+        "Maximum time in milliseconds to wait for MinerU's authenticated cloud parser."
+    )
+    data["extract"]["parsing"]["_comment_mineru_model_version"] = (
+        "MinerU cloud model version. Use `vlm` for precise PDF parsing, or `pipeline` for the lighter model."
+    )
+    data["extract"]["parsing"]["_comment_mineru_language"] = (
+        "MinerU language hint. Default `en` fits most academic PDFs; use `ch` for Chinese documents."
     )
     data["_comment_retry_policy"] = (
         "Unified retry knobs for external HTTP calls (ADR-008). Retries cover 429, 5xx, network errors."

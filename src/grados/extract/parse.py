@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
+
+import httpx
 
 
 @dataclass
@@ -33,6 +40,14 @@ class PdfParserContext:
     pdf_buffer: bytes
     filename: str
     marker_timeout: int
+    mineru_api_key: str = ""
+    mineru_model_version: str = "vlm"
+    mineru_language: str = "en"
+    mineru_timeout: int = 300000
+    mineru_poll_interval: float = 3.0
+    mineru_enable_formula: bool = True
+    mineru_enable_table: bool = True
+    mineru_is_ocr: bool = False
 
 
 @dataclass(frozen=True)
@@ -95,6 +110,21 @@ def _run_marker_pdf_parser(context: PdfParserContext) -> _ParserAttemptResult:
     )
 
 
+def _run_mineru_pdf_parser(context: PdfParserContext) -> _ParserAttemptResult:
+    return _parse_mineru_attempt(
+        context.pdf_buffer,
+        context.filename,
+        api_key=context.mineru_api_key,
+        model_version=context.mineru_model_version,
+        language=context.mineru_language,
+        timeout_ms=context.mineru_timeout,
+        poll_interval=context.mineru_poll_interval,
+        enable_formula=context.mineru_enable_formula,
+        enable_table=context.mineru_enable_table,
+        is_ocr=context.mineru_is_ocr,
+    )
+
+
 def _run_pymupdf_pdf_parser(context: PdfParserContext) -> _ParserAttemptResult:
     return _parse_pymupdf_attempt(context.pdf_buffer)
 
@@ -129,6 +159,7 @@ def _run_docling_xml_normalizer(context: DocumentNormalizationContext) -> _Parse
 
 PDF_PARSER_REGISTRY: dict[str, PdfParserStrategy] = {
     "Docling": cast(PdfParserStrategy, _FunctionPdfParserStrategy("Docling", _run_docling_pdf_parser)),
+    "MinerU": cast(PdfParserStrategy, _FunctionPdfParserStrategy("MinerU", _run_mineru_pdf_parser)),
     "Marker": cast(PdfParserStrategy, _FunctionPdfParserStrategy("Marker", _run_marker_pdf_parser)),
     "PyMuPDF": cast(PdfParserStrategy, _FunctionPdfParserStrategy("PyMuPDF", _run_pymupdf_pdf_parser)),
 }
@@ -159,7 +190,7 @@ DOCUMENT_NORMALIZER_STRATEGIES: tuple[DocumentNormalizerStrategy, ...] = (
 
 
 def build_pdf_parser_strategies(order: list[str] | None = None) -> list[PdfParserStrategy]:
-    resolved_order = order or ["Docling", "Marker", "PyMuPDF"]
+    resolved_order = order or ["Docling", "MinerU", "Marker", "PyMuPDF"]
     return [PDF_PARSER_REGISTRY[name] for name in resolved_order if name in PDF_PARSER_REGISTRY]
 
 
@@ -176,6 +207,14 @@ async def parse_pdf(
     parse_order: list[str] | None = None,
     parse_enabled: dict[str, bool] | None = None,
     marker_timeout: int = 120000,
+    mineru_api_key: str = "",
+    mineru_model_version: str = "vlm",
+    mineru_language: str = "en",
+    mineru_timeout: int = 300000,
+    mineru_poll_interval: float = 3.0,
+    mineru_enable_formula: bool = True,
+    mineru_enable_table: bool = True,
+    mineru_is_ocr: bool = False,
 ) -> str | None:
     """Parse a PDF buffer into markdown text using the configured pipeline.
 
@@ -187,6 +226,14 @@ async def parse_pdf(
         parse_order=parse_order,
         parse_enabled=parse_enabled,
         marker_timeout=marker_timeout,
+        mineru_api_key=mineru_api_key,
+        mineru_model_version=mineru_model_version,
+        mineru_language=mineru_language,
+        mineru_timeout=mineru_timeout,
+        mineru_poll_interval=mineru_poll_interval,
+        mineru_enable_formula=mineru_enable_formula,
+        mineru_enable_table=mineru_enable_table,
+        mineru_is_ocr=mineru_is_ocr,
     )
     return result.markdown
 
@@ -197,13 +244,33 @@ async def parse_pdf_with_diagnostics(
     parse_order: list[str] | None = None,
     parse_enabled: dict[str, bool] | None = None,
     marker_timeout: int = 120000,
+    mineru_api_key: str = "",
+    mineru_model_version: str = "vlm",
+    mineru_language: str = "en",
+    mineru_timeout: int = 300000,
+    mineru_poll_interval: float = 3.0,
+    mineru_enable_formula: bool = True,
+    mineru_enable_table: bool = True,
+    mineru_is_ocr: bool = False,
 ) -> ParsePipelineResult:
     """Parse a PDF buffer and preserve parser warnings/debug for caller-facing receipts."""
     strategies = build_pdf_parser_strategies(parse_order)
-    enabled = parse_enabled or {"Docling": True, "Marker": False, "PyMuPDF": True}
+    enabled = parse_enabled or {"Docling": True, "MinerU": True, "Marker": False, "PyMuPDF": True}
     warnings: list[str] = []
     debug: list[str] = []
-    context = PdfParserContext(pdf_buffer=pdf_buffer, filename=filename, marker_timeout=marker_timeout)
+    context = PdfParserContext(
+        pdf_buffer=pdf_buffer,
+        filename=filename,
+        marker_timeout=marker_timeout,
+        mineru_api_key=mineru_api_key,
+        mineru_model_version=mineru_model_version,
+        mineru_language=mineru_language,
+        mineru_timeout=mineru_timeout,
+        mineru_poll_interval=mineru_poll_interval,
+        mineru_enable_formula=mineru_enable_formula,
+        mineru_enable_table=mineru_enable_table,
+        mineru_is_ocr=mineru_is_ocr,
+    )
 
     for strategy in strategies:
         if not enabled.get(strategy.name, False):
@@ -388,6 +455,246 @@ def _parse_marker_attempt(
         warning=_parser_warning("Marker", f"returned insufficient content ({len(markdown)} chars)", fallback=True),
         debug=_parser_debug("Marker", f"normalized output below acceptance threshold ({len(markdown)} chars)"),
     )
+
+
+MINERU_API_BASE = "https://mineru.net/api/v4"
+
+
+def _parse_mineru(
+    pdf_buffer: bytes,
+    filename: str,
+    *,
+    api_key: str = "",
+    model_version: str = "vlm",
+    language: str = "en",
+    timeout_ms: int = 300000,
+    poll_interval: float = 3.0,
+    enable_formula: bool = True,
+    enable_table: bool = True,
+    is_ocr: bool = False,
+) -> str | None:
+    return _parse_mineru_attempt(
+        pdf_buffer,
+        filename,
+        api_key=api_key,
+        model_version=model_version,
+        language=language,
+        timeout_ms=timeout_ms,
+        poll_interval=poll_interval,
+        enable_formula=enable_formula,
+        enable_table=enable_table,
+        is_ocr=is_ocr,
+    ).markdown
+
+
+def _parse_mineru_attempt(
+    pdf_buffer: bytes,
+    filename: str,
+    *,
+    api_key: str,
+    model_version: str,
+    language: str,
+    timeout_ms: int,
+    poll_interval: float,
+    enable_formula: bool,
+    enable_table: bool,
+    is_ocr: bool,
+) -> _ParserAttemptResult:
+    """Parse PDF through MinerU's authenticated cloud API."""
+    token = (api_key or os.environ.get("MINERU_API_KEY", "")).strip()
+    if not token:
+        return _ParserAttemptResult(
+            markdown=None,
+            warning=_parser_warning("MinerU", "MINERU_API_KEY not configured", fallback=True),
+            debug=_parser_debug("MinerU", "cloud parser skipped because no API token was available"),
+        )
+
+    timeout_seconds = max(timeout_ms / 1000.0, 1.0)
+    poll_sleep = max(poll_interval, 0.5)
+    deadline = time.monotonic() + timeout_seconds
+    headers = {
+        "Authorization": _mineru_auth_header(token),
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+    }
+
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(connect=15.0, read=120.0, write=120.0, pool=15.0),
+            follow_redirects=True,
+        ) as client:
+            batch_id, data_id, upload_url = _create_mineru_upload_task(
+                client,
+                pdf_buffer,
+                filename,
+                headers=headers,
+                model_version=model_version,
+                language=language,
+                enable_formula=enable_formula,
+                enable_table=enable_table,
+                is_ocr=is_ocr,
+            )
+            upload = client.put(upload_url, content=pdf_buffer, headers={})
+            upload.raise_for_status()
+            while time.monotonic() < deadline:
+                try:
+                    result = _poll_mineru_batch_result(client, batch_id, data_id, headers=headers)
+                except _MinerUApiError as exc:
+                    if exc.code == -60012:
+                        time.sleep(poll_sleep)
+                        continue
+                    raise
+                state = str(result.get("state") or "")
+                if state == "done":
+                    zip_url = str(result.get("full_zip_url") or "")
+                    if not zip_url:
+                        raise ValueError("MinerU task completed without full_zip_url.")
+                    markdown = _download_mineru_markdown(client, zip_url)
+                    if len(markdown) > 100:
+                        return _ParserAttemptResult(
+                            markdown=markdown,
+                            debug=_parser_debug("MinerU", f"batch_id={batch_id}, data_id={data_id}"),
+                        )
+                    return _ParserAttemptResult(
+                        markdown=None,
+                        warning=_parser_warning(
+                            "MinerU",
+                            f"returned insufficient content ({len(markdown)} chars)",
+                            fallback=True,
+                        ),
+                        debug=_parser_debug("MinerU", f"batch_id={batch_id}, data_id={data_id}"),
+                    )
+                if state == "failed":
+                    reason = str(result.get("err_msg") or result.get("err_code") or "extract failed")
+                    return _ParserAttemptResult(
+                        markdown=None,
+                        warning=_parser_warning("MinerU", reason[:160], fallback=True),
+                        debug=_parser_debug("MinerU", f"batch_id={batch_id}, data_id={data_id}, state=failed"),
+                    )
+                time.sleep(poll_sleep)
+            return _ParserAttemptResult(
+                markdown=None,
+                warning=_parser_warning("MinerU", f"timed out after {timeout_ms} ms", fallback=True),
+                debug=_parser_debug("MinerU", f"batch_id={batch_id}, data_id={data_id}"),
+            )
+    except Exception as exc:
+        return _ParserAttemptResult(
+            markdown=None,
+            warning=_parser_warning("MinerU", "parse failed", fallback=True),
+            debug=_parser_debug("MinerU", _exception_summary(exc)),
+        )
+
+
+def _create_mineru_upload_task(
+    client: httpx.Client,
+    pdf_buffer: bytes,
+    filename: str,
+    *,
+    headers: dict[str, str],
+    model_version: str,
+    language: str,
+    enable_formula: bool,
+    enable_table: bool,
+    is_ocr: bool,
+) -> tuple[str, str, str]:
+    file_name = Path(filename).name or "document.pdf"
+    if not file_name.lower().endswith(".pdf"):
+        file_name = f"{file_name}.pdf"
+    data_id = hashlib.sha256(pdf_buffer).hexdigest()[:24]
+    payload: dict[str, Any] = {
+        "files": [
+            {
+                "name": file_name,
+                "data_id": data_id,
+                "is_ocr": is_ocr,
+            }
+        ],
+        "model_version": model_version or "vlm",
+        "enable_formula": enable_formula,
+        "enable_table": enable_table,
+    }
+    if language:
+        payload["language"] = language
+
+    response = client.post(f"{MINERU_API_BASE}/file-urls/batch", headers=headers, json=payload)
+    data = _mineru_response_data(response)
+    batch_id = _required_mineru_string(data, "batch_id")
+    file_urls = data.get("file_urls")
+    if not isinstance(file_urls, list) or not file_urls:
+        raise ValueError("MinerU did not return an upload URL.")
+    upload_url = str(file_urls[0] or "")
+    if not upload_url:
+        raise ValueError("MinerU returned an empty upload URL.")
+    return batch_id, data_id, upload_url
+
+
+def _mineru_auth_header(token: str) -> str:
+    token = token.strip()
+    if token.lower().startswith("bearer "):
+        return token
+    return f"Bearer {token}"
+
+
+class _MinerUApiError(ValueError):
+    def __init__(self, code: object, message: str) -> None:
+        self.code = code
+        super().__init__(f"MinerU API returned code {code}: {message}")
+
+
+def _poll_mineru_batch_result(
+    client: httpx.Client,
+    batch_id: str,
+    data_id: str,
+    *,
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    response = client.get(f"{MINERU_API_BASE}/extract-results/batch/{batch_id}", headers=headers)
+    data = _mineru_response_data(response)
+    extract_result = data.get("extract_result")
+    if not isinstance(extract_result, list) or not extract_result:
+        raise ValueError("MinerU batch result was empty.")
+    for item in extract_result:
+        if isinstance(item, dict) and str(item.get("data_id") or "") == data_id:
+            return item
+    first = extract_result[0]
+    if not isinstance(first, dict):
+        raise ValueError("MinerU batch result item was not an object.")
+    return first
+
+
+def _download_mineru_markdown(client: httpx.Client, zip_url: str) -> str:
+    response = client.get(zip_url)
+    response.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        markdown_names = [
+            name for name in archive.namelist() if Path(name).name == "full.md" or name.endswith("/full.md")
+        ]
+        if not markdown_names:
+            raise ValueError("MinerU result zip did not contain full.md.")
+        with archive.open(markdown_names[0]) as handle:
+            return _compact_markdown(handle.read().decode("utf-8", errors="replace"))
+
+
+def _mineru_response_data(response: httpx.Response) -> dict[str, Any]:
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("MinerU returned non-object JSON.")
+    code = payload.get("code")
+    if code != 0:
+        message = str(payload.get("msg") or "unknown MinerU API error")
+        raise _MinerUApiError(code, message)
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("MinerU response missing data object.")
+    return data
+
+
+def _required_mineru_string(data: dict[str, Any], key: str) -> str:
+    value = str(data.get(key) or "")
+    if not value:
+        raise ValueError(f"MinerU response missing {key}.")
+    return value
 
 
 def _parse_docling(pdf_buffer: bytes, filename: str) -> str | None:

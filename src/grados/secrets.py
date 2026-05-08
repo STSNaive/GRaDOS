@@ -25,7 +25,7 @@ API_KEY_SPECS: tuple[ApiKeySpec, ...] = (
     ApiKeySpec("WOS_API_KEY", "wos", "Web of Science"),
     ApiKeySpec("SPRINGER_meta_API_KEY", "springer_meta", "Springer Meta"),
     ApiKeySpec("SPRINGER_OA_API_KEY", "springer_oa", "Springer OA"),
-    ApiKeySpec("LLAMAPARSE_API_KEY", "llamaparse", "LlamaParse"),
+    ApiKeySpec("MINERU_API_KEY", "mineru", "MinerU"),
     ApiKeySpec("ZOTERO_API_KEY", "zotero", "Zotero"),
 )
 

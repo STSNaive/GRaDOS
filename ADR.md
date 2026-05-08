@@ -66,7 +66,7 @@
 
 ### 决策
 - 非 Elsevier 的文档型输入，默认通过 Docling 归一化为统一 canonical Markdown。
-- 默认 PDF 解析顺序调整为 `Docling -> Marker -> PyMuPDF`，`PyMuPDF` 只保留为 fallback。
+- 默认 PDF 解析顺序调整为 `Docling -> MinerU -> Marker -> PyMuPDF`。MinerU 作为需要 `MINERU_API_KEY` 的认证云端 fallback；`PyMuPDF` 只保留为本地轻量 fallback。
 - Elsevier full-text API 优先请求 `application/xml`，并走 publisher-native 的确定性解析。
 - Elsevier 的 JSON `originalText` 与 `text/plain` 只作为 fallback，不再作为 canonical 主路径。
 - 对已经高度结构化且可确定性解析的 publisher-native 输入，优先 deterministic parser，而不是机械再过一层通用转换器。
@@ -74,6 +74,7 @@
 ### 结果与影响
 - 文档结构更稳定，section-aware chunking 和 paragraph reread 更可靠。
 - Docling 成为默认安装与默认归一化路径的一部分，需要在 setup 阶段进行预热。
+- MinerU 只在用户配置 token 后参与 PDF 解析瀑布，避免无意上传本地论文 PDF 到第三方云端服务。
 - Elsevier 的结构化正确性来自 XML 解析与校验，而不是依赖扁平全文猜结构。
 
 ## ADR-004：可靠性与可观测性优先于静默 fallback

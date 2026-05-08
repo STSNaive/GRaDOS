@@ -86,16 +86,28 @@
         "parsing": {
             "order": [
                 "Docling",
+                "MinerU",
                 "Marker",
                 "PyMuPDF"
             ],
             "enabled": {
                 "Docling": true,
+                "MinerU": true,
                 "Marker": false,
                 "PyMuPDF": true
             },
             "marker_timeout": 120000,
-            "_comment_marker_timeout": "Maximum time in milliseconds to wait for the isolated Marker subprocess."
+            "mineru_timeout": 300000,
+            "mineru_poll_interval": 3.0,
+            "mineru_model_version": "vlm",
+            "mineru_language": "en",
+            "mineru_enable_formula": true,
+            "mineru_enable_table": true,
+            "mineru_is_ocr": false,
+            "_comment_marker_timeout": "Maximum time in milliseconds to wait for the isolated Marker subprocess.",
+            "_comment_mineru_timeout": "Maximum time in milliseconds to wait for MinerU's authenticated cloud parser.",
+            "_comment_mineru_model_version": "MinerU cloud model version. Use `vlm` for precise PDF parsing, or `pipeline` for the lighter model.",
+            "_comment_mineru_language": "MinerU language hint. Default `en` fits most academic PDFs; use `ch` for Chinese documents."
         },
         "qa": {
             "min_characters": 1500
@@ -144,7 +156,7 @@
         "WOS_API_KEY": "",
         "SPRINGER_meta_API_KEY": "",
         "SPRINGER_OA_API_KEY": "",
-        "LLAMAPARSE_API_KEY": "",
+        "MINERU_API_KEY": "",
         "ZOTERO_API_KEY": ""
     },
     "retry_policy": {

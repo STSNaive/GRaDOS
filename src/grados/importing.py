@@ -100,6 +100,14 @@ async def import_local_pdf_library(
                 parse_order=config.extract.parsing.order,
                 parse_enabled=config.extract.parsing.enabled,
                 marker_timeout=config.extract.parsing.marker_timeout,
+                mineru_api_key=config.api_keys.MINERU_API_KEY,
+                mineru_model_version=config.extract.parsing.mineru_model_version,
+                mineru_language=config.extract.parsing.mineru_language,
+                mineru_timeout=config.extract.parsing.mineru_timeout,
+                mineru_poll_interval=config.extract.parsing.mineru_poll_interval,
+                mineru_enable_formula=config.extract.parsing.mineru_enable_formula,
+                mineru_enable_table=config.extract.parsing.mineru_enable_table,
+                mineru_is_ocr=config.extract.parsing.mineru_is_ocr,
             )
         )
         parser_warnings = list(artifact.warnings)

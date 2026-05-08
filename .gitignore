@@ -18,6 +18,7 @@ marker-worker/
 
 # Secrets & user config
 .env
+MinerU.md
 grados-config.json
 manifest.json
 

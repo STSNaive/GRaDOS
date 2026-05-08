@@ -83,6 +83,7 @@ def test_config_normalization_preserves_literal_enabled_map_keys() -> None:
             "parsing": {
                 "enabled": {
                     "Docling": True,
+                    "MinerU": True,
                     "PyMuPDF": True,
                     "Marker": False,
                 }
@@ -99,6 +100,7 @@ def test_config_normalization_preserves_literal_enabled_map_keys() -> None:
     assert config.extract.fetch_strategy.enabled["browser"] is False
     assert config.extract.tdm.enabled["Elsevier"] is False
     assert config.extract.parsing.enabled["Docling"] is True
+    assert config.extract.parsing.enabled["MinerU"] is True
     assert config.extract.parsing.enabled["PyMuPDF"] is True
     assert "py_mu_p_d_f" not in config.extract.parsing.enabled
 

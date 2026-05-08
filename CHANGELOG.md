@@ -7,6 +7,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
+- Added MinerU as the authenticated cloud PDF parser fallback in the parsing waterfall (`Docling -> MinerU -> Marker -> PyMuPDF`), including signed-upload polling, zip `full.md` extraction, config knobs, keychain support via `MINERU_API_KEY`, and smoke-test coverage.
 - Added disabled-by-default `codex` fetch-strategy support so Codex host agents can place the Microsoft Edge Computer Use download handoff anywhere in `extract.fetch_strategy.order`.
 - Added agent-side evidence anchors to saved-paper search and Stage B research helpers so snippets, grids, comparisons, and audits can point agents back to canonical `read_saved_paper` paragraph windows before citation.
 - Added `candidate_limit` to `audit_draft_support` so draft audits can return more candidate evidence items for host-agent reranking before final support judgment.
@@ -26,6 +27,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed the legacy cloud-parser API-key surface to MinerU; the old cloud-parser key is no longer part of the generated config, docs, or managed secret list.
 - Changed `parse_pdf_file` to support `copy_to_library` and `acquisition_via` for explicit-DOI local PDF handoffs, including raw-PDF archiving and `remote_metadata` backfill after a successful parse/save.
 - Changed `search_saved_papers` to include an `Evidence Anchor` JSON block with `canonical_uri`, paragraph coordinates, query, and score breakdown while preserving the existing human-readable Markdown output.
 - Changed `build_evidence_grid`, `compare_papers`, and `audit_draft_support` typed payloads to carry reusable reread anchors and score metadata; comparison excerpts now include per-axis section-level evidence items.
@@ -65,7 +67,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Fixed Sci-Hub endpoint fallback behavior so one endpoint returning `not_found` no longer prevents later configured endpoints from being tried; a final `not_found` is returned only after all endpoints miss.
 - Fixed plaintext API-key import for mixed-case secret fields such as `SPRINGER_meta_API_KEY`, so `config.json` one-shot keys are migrated into the OS keychain and then cleared instead of being dropped by config-key normalization.
 - Fixed canonical paper saves from `extract_paper_full_text`, `parse_pdf_file`, and `import_local_pdf_library` to pass the active `IndexingConfig` through to Chroma indexing, preventing newly saved papers from being indexed with default embedding/chunking settings after users customize config.
-- Fixed the bundled GRaDOS skill tool reference to describe the current `api -> browser -> oa -> scihub` fetch order and `Docling -> Marker -> PyMuPDF` parse order.
+- Fixed the bundled GRaDOS skill tool reference to describe the current `api -> browser -> oa -> scihub` fetch order and `Docling -> MinerU -> Marker -> PyMuPDF` parse order.
 - Fixed `_HeaderAwareWait` so `Retry-After: 0` is honored as an explicit immediate retry instead of being treated as a missing header and falling back to exponential backoff.
 - Fixed retained browser-session error handling so `fetch_with_browser()` now detaches `response` / `download` / `page` listeners even when the polling loop raises, preventing listener leaks across reused visible sessions.
 - Fixed `audit_draft_support` to split Chinese claims on sentence-ending punctuation without requiring whitespace, parse Chinese author-year citations such as `（张三，2025）`, and strip those citations before evidence lookup.
@@ -132,7 +134,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed the Codex plugin packaging to follow the official local marketplace layout more closely, with `.agents/plugins/marketplace.json` pointing at the self-contained `plugins/grados/` bundle instead of the repo root.
 - Changed the local paper contract from "search and deep read only" to a broader Stage B research surface with explicit artifacts, failure memory, citation graph, CAG context packs, and draft-support auditing.
 - Changed the skill and README documentation to reflect the expanded 16-tool MCP surface, the `grados client install ...` workflow, and the merged writing-stage guidance in `skills/grados/SKILL.md`.
-- Changed the default parser/install surface so `uv tool install grados` now includes Docling by default; `grados[docling]` remains as a compatibility alias and `PyMuPDF` is now a fallback parser behind `Docling -> Marker -> PyMuPDF`.
+- Changed the default parser/install surface so `uv tool install grados` now includes Docling by default; `grados[docling]` remains as a compatibility alias and `PyMuPDF` is now a fallback parser behind `Docling -> MinerU -> Marker -> PyMuPDF`.
 - Changed source-of-truth semantics so `papers/*.md` is now the user-facing canonical full-text store, while `database/chroma` is treated as a rebuildable retrieval index.
 - Changed `search_saved_papers` from returning index-resident snippets to an "index recall + canonical reread" flow that resolves final evidence windows from `papers/*.md`.
 - Changed Elsevier full-text handling from JSON `originalText` as the primary path to XML-first deterministic parsing, preserving publisher-native sections, authors, keywords, and references before rendering canonical Markdown.

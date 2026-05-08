@@ -27,7 +27,7 @@ GRaDOS is designed to sit inside an agent research workflow:
 1. Check the local paper library first with `search_saved_papers`, `get_saved_paper_structure`, or `grados://papers/{safe_doi}`
 2. Search remote academic sources in configured priority order
 3. Fetch full text through the configured `api`, `browser`, `oa`, `scihub`, and optional `codex` routes
-4. Parse PDFs through `Docling -> Marker -> PyMuPDF`
+4. Parse PDFs through `Docling -> MinerU -> Marker -> PyMuPDF`
 5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, the paper index to `database/chroma/`, and remote metadata to `database/remote_metadata/`
 6. Re-open saved papers with low-token structure cards and deep-reading windows before citing them
 
@@ -100,7 +100,7 @@ grados setup
 grados client install all
 ```
 
-This creates `~/GRaDOS/config.json`, prepares the visible directory layout, installs managed browser assets, and warms the default Harrier embedding runtime. `docling` is now included in the default install because the canonical parsing pipeline is Docling-first.
+This creates `~/GRaDOS/config.json`, prepares the visible directory layout, installs managed browser assets, and warms the default Harrier embedding runtime. `docling` is now included in the default install because the canonical parsing pipeline is Docling-first. MinerU is an optional authenticated cloud parser in the same waterfall; it runs only when `MINERU_API_KEY` is configured.
 Use `grados auth set <provider>` to store API keys in the OS keychain. Plaintext keys placed in `config.json` are treated as a one-time import path and are cleared after a successful migration.
 
 ### Option B: extras, zero-install, or pip
@@ -122,7 +122,7 @@ pip install grados
 
 Extras in the current package:
 
-- `grados`: core MCP server, CLI, ChromaDB storage, Docling-first default parser, PyMuPDF fallback, browser automation, and built-in Zotero save support
+- `grados`: core MCP server, CLI, ChromaDB storage, Docling-first parser, optional MinerU cloud fallback, PyMuPDF fallback, browser automation, and built-in Zotero save support
 - `grados[marker]`: core plus the Marker PDF parser
 - `grados[docling]`: compatibility alias for the built-in Docling runtime
 - `grados[full]`: core plus the Marker parser
@@ -324,7 +324,7 @@ Root selection priority:
 | `WOS_API_KEY` | Clarivate Developer Portal | No |
 | `SPRINGER_meta_API_KEY` | Springer Nature Metadata API | No |
 | `SPRINGER_OA_API_KEY` | Springer Nature Open Access API | No |
-| `LLAMAPARSE_API_KEY` | LlamaCloud | No |
+| `MINERU_API_KEY` | MinerU API token | No |
 | `ZOTERO_API_KEY` | Zotero Settings -> Keys | No |
 
 Crossref works without an API key. PubMed also works without one, but `PUBMED_API_KEY` is available as an optional pacing upgrade for E-utilities. GRaDOS will use whichever services are configured and skip the rest; the default remote search flow still works with the free sources, and the local paper workflow works without any third-party key.
@@ -374,11 +374,19 @@ PDF parsing priority:
 {
   "extract": {
     "parsing": {
-      "order": ["Docling", "Marker", "PyMuPDF"]
+      "order": ["Docling", "MinerU", "Marker", "PyMuPDF"],
+      "enabled": {
+        "Docling": true,
+        "MinerU": true,
+        "Marker": false,
+        "PyMuPDF": true
+      }
     }
   }
 }
 ```
+
+`MinerU` is an authenticated cloud parser. When enabled and `MINERU_API_KEY` is present, GRaDOS uploads the local PDF through MinerU's signed upload API, polls for the extraction zip, and reads `full.md` as the parser output. Use `grados auth set mineru` to store the token in the OS keychain.
 
 ### Importing Existing PDF Libraries ♻️
 

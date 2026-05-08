@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import subprocess
+import zipfile
+from typing import Any
 
 import pymupdf
 
@@ -70,9 +73,15 @@ def test_parse_pdf_prefers_docling_before_pymupdf(monkeypatch) -> None:
 
 
 def test_parse_strategy_registry_preserves_order_and_filters_unknown_names() -> None:
-    strategies = build_pdf_parser_strategies(["PyMuPDF", "Unknown", "Docling"])
+    strategies = build_pdf_parser_strategies(["PyMuPDF", "Unknown", "MinerU", "Docling"])
 
-    assert [strategy.name for strategy in strategies] == ["PyMuPDF", "Docling"]
+    assert [strategy.name for strategy in strategies] == ["PyMuPDF", "MinerU", "Docling"]
+
+
+def test_default_parse_strategy_order_includes_mineru_after_docling() -> None:
+    strategies = build_pdf_parser_strategies()
+
+    assert [strategy.name for strategy in strategies] == ["Docling", "MinerU", "Marker", "PyMuPDF"]
 
 
 def test_document_normalizer_registry_resolves_known_and_fallback_formats() -> None:
@@ -95,6 +104,113 @@ def test_parse_marker_returns_none_on_timeout(monkeypatch) -> None:
 
     assert parsed is None
     assert observed["timeout"] == 0.05
+
+
+def test_parse_mineru_cloud_parser_uses_authenticated_signed_upload(monkeypatch) -> None:
+    import grados.extract.parse as parse_module
+
+    class FakeResponse:
+        def __init__(
+            self,
+            json_payload: dict[str, Any] | None = None,
+            content: bytes = b"",
+        ) -> None:
+            self._json_payload = json_payload or {}
+            self.content = content
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._json_payload
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.auth_headers: list[str] = []
+            self.uploaded_pdf = b""
+            self.upload_headers: list[dict[str, str]] = []
+            self.polls = 0
+
+        def __enter__(self) -> FakeClient:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> FakeResponse:
+            assert url == "https://mineru.net/api/v4/file-urls/batch"
+            self.auth_headers.append(headers["Authorization"])
+            assert json["model_version"] == "vlm"
+            assert json["files"][0]["name"] == "paper.pdf"
+            return FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "batch_id": "batch-1",
+                        "file_urls": ["https://upload.example/paper.pdf"],
+                    },
+                    "msg": "ok",
+                }
+            )
+
+        def put(self, url: str, *, content: bytes, headers: dict[str, str]) -> FakeResponse:
+            assert url == "https://upload.example/paper.pdf"
+            assert headers == {}
+            self.upload_headers.append(headers)
+            self.uploaded_pdf = content
+            return FakeResponse()
+
+        def get(self, url: str, *, headers: dict[str, str] | None = None) -> FakeResponse:
+            if url == "https://mineru.net/api/v4/extract-results/batch/batch-1":
+                assert headers is not None
+                self.auth_headers.append(headers["Authorization"])
+                self.polls += 1
+                if self.polls == 1:
+                    return FakeResponse({"code": -60012, "msg": "task not found or expire"})
+                return FakeResponse(
+                    {
+                        "code": 0,
+                        "data": {
+                            "batch_id": "batch-1",
+                            "extract_result": [
+                                {
+                                    "data_id": "ignored-by-fallback",
+                                    "state": "done",
+                                    "full_zip_url": "https://cdn.example/result.zip",
+                                }
+                            ],
+                        },
+                        "msg": "ok",
+                    }
+                )
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as archive:
+                archive.writestr("paper/full.md", "# MinerU\n\n" + ("Parsed by MinerU cloud. " * 12))
+            return FakeResponse(content=zip_buffer.getvalue())
+
+    fake_client = FakeClient()
+    monkeypatch.setattr(parse_module.httpx, "Client", lambda **kwargs: fake_client)
+    monkeypatch.setattr(parse_module.time, "sleep", lambda seconds: None)
+
+    result = parse_module._parse_mineru_attempt(
+        _make_sample_pdf_bytes(),
+        "paper.pdf",
+        api_key="Bearer mineru-secret",
+        model_version="vlm",
+        language="en",
+        timeout_ms=1000,
+        poll_interval=0.5,
+        enable_formula=True,
+        enable_table=True,
+        is_ocr=False,
+    )
+
+    assert result.markdown is not None
+    assert "Parsed by MinerU cloud" in result.markdown
+    assert result.warning == ""
+    assert fake_client.uploaded_pdf.startswith(b"%PDF")
+    assert fake_client.upload_headers == [{}]
+    assert fake_client.auth_headers == ["Bearer mineru-secret", "Bearer mineru-secret", "Bearer mineru-secret"]
 
 
 def test_parse_pdf_falls_back_after_marker_timeout(monkeypatch) -> None:

@@ -27,7 +27,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 1. 先用 `search_saved_papers`、`get_saved_paper_structure` 或 `grados://papers/{safe_doi}` 检查本地论文库
 2. 按配置好的优先级检索远程学术数据库
 3. 按配置好的 `api`、`browser`、`oa`、`scihub` 与可选 `codex` 路径抓取全文
-4. 按 `Docling -> Marker -> PyMuPDF` 瀑布解析 PDF
+4. 按 `Docling -> MinerU -> Marker -> PyMuPDF` 瀑布解析 PDF
 5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把论文索引写入 `database/chroma/`，把远程元数据写入 `database/remote_metadata/`
 6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
 
@@ -100,7 +100,7 @@ grados setup
 grados client install all
 ```
 
-这会创建 `~/GRaDOS/config.json`，准备可见目录结构，安装托管浏览器资产，并预热默认的 Harrier embedding 运行时。由于当前 canonical 解析链已经改为 Docling 优先，默认安装现在也会自带 `docling`。
+这会创建 `~/GRaDOS/config.json`，准备可见目录结构，安装托管浏览器资产，并预热默认的 Harrier embedding 运行时。由于当前 canonical 解析链已经改为 Docling 优先，默认安装现在也会自带 `docling`。MinerU 作为同一瀑布中的可选认证云端解析器，只有在配置了 `MINERU_API_KEY` 时才会运行。
 推荐用 `grados auth set <provider>` 把 API Key 写入系统 keychain。若你临时把明文 key 填进 `config.json`，GRaDOS 会在下次运行时自动导入 keychain，并在迁移成功后清空原文件中的明文值。
 
 ### 方式 B：extras、零安装或 pip
@@ -122,7 +122,7 @@ pip install grados
 
 当前包的 extras：
 
-- `grados`：核心 MCP 服务、CLI、ChromaDB 存储、Docling-first 默认解析器、PyMuPDF fallback、浏览器自动化，以及内置 Zotero 保存能力
+- `grados`：核心 MCP 服务、CLI、ChromaDB 存储、Docling-first 解析器、可选 MinerU 云端 fallback、PyMuPDF fallback、浏览器自动化，以及内置 Zotero 保存能力
 - `grados[marker]`：在核心上加入 Marker PDF 解析器
 - `grados[docling]`：为了兼容旧安装说明而保留的空 alias
 - `grados[full]`：在核心上额外加入 Marker 解析器
@@ -324,7 +324,7 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 | `WOS_API_KEY` | Clarivate Developer Portal | 否 |
 | `SPRINGER_meta_API_KEY` | Springer Nature Metadata API | 否 |
 | `SPRINGER_OA_API_KEY` | Springer Nature Open Access API | 否 |
-| `LLAMAPARSE_API_KEY` | LlamaCloud | 否 |
+| `MINERU_API_KEY` | MinerU API token | 否 |
 | `ZOTERO_API_KEY` | Zotero Settings -> Keys | 否 |
 
 Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `PUBMED_API_KEY` 可作为 E-utilities 节流上限的可选增强。GRaDOS 会使用你已配置的服务，未配置的会自动跳过；即使没有第三方 Key，本地论文工作流也能使用，远程检索也仍可依赖免费来源运行。
@@ -374,11 +374,19 @@ PDF 解析优先级：
 {
   "extract": {
     "parsing": {
-      "order": ["Docling", "Marker", "PyMuPDF"]
+      "order": ["Docling", "MinerU", "Marker", "PyMuPDF"],
+      "enabled": {
+        "Docling": true,
+        "MinerU": true,
+        "Marker": false,
+        "PyMuPDF": true
+      }
     }
   }
 }
 ```
+
+`MinerU` 是认证云端解析器。启用且存在 `MINERU_API_KEY` 时，GRaDOS 会通过 MinerU 签名上传 API 上传本地 PDF，轮询解析 zip，并读取其中的 `full.md` 作为解析结果。用 `grados auth set mineru` 可把 token 存入系统 keychain。
 
 ### 导入现有 PDF 库 ♻️
 
