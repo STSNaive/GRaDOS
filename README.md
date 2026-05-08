@@ -366,7 +366,7 @@ Legacy fetch-strategy aliases such as `TDM`, `OA`, `SciHub`, and `Headless` are 
 
 The browser strategy is a first-class path for institutional publisher access. If a publisher verification page blocks PDF capture, GRaDOS records a `challenge` with manual-resume metadata in `remote_metadata`; complete the verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true` to continue from the saved browser URL/profile instead of restarting at `api`.
 
-`codex` is disabled by default. When enabled and placed in `extract.fetch_strategy.order`, it acts as a Codex host-agent handoff at that exact point in the order: `extract_paper_full_text` returns a Codex Computer Use download action, then the host agent downloads the PDF in Microsoft Edge and calls `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.
+`codex` is disabled by default. When enabled and placed in `extract.fetch_strategy.order`, it acts as a Codex Chrome extension host-agent handoff at that exact point in the order: `extract_paper_full_text` returns a Chrome download receipt, then the host agent downloads the PDF in Chrome with the [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) and calls `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.
 
 PDF parsing priority:
 

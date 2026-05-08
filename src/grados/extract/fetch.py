@@ -25,6 +25,8 @@ from grados.publisher.common import (
 from grados.publisher.elsevier import ElsevierFetchResult, fetch_elsevier_article
 from grados.publisher.springer import SpringerFetchResult, fetch_springer_article
 
+CODEX_CHROME_EXTENSION_DOCS_URL = "https://developers.openai.com/codex/app/chrome-extension"
+
 
 @dataclass
 class FetchResult:
@@ -160,22 +162,25 @@ async def _run_codex_fetch_strategy(context: FetchStrategyContext) -> FetchResul
     start_url = f"https://doi.org/{context.doi}"
     return FetchResult(
         outcome="host_action_required",
-        source="Codex Computer Use",
+        source="Codex Chrome Extension",
         via="codex",
         state="host_action_required",
         manual=True,
-        host="Microsoft Edge",
+        host="Google Chrome",
         resume={
             "kind": "codex",
             "doi": context.doi,
-            "browser": "Microsoft Edge",
+            "browser": "Google Chrome",
             "start_url": start_url,
-            "action": "download_pdf_with_edge_then_call_parse_pdf_file",
+            "action": "download_pdf_with_chrome_extension_then_call_parse_pdf_file",
+            "extension": "Codex Chrome extension",
+            "documentation_url": CODEX_CHROME_EXTENSION_DOCS_URL,
         },
         warnings=[
             (
-                "Codex Computer Use is a host-agent step. Use Microsoft Edge to download the PDF, "
-                "then call parse_pdf_file with the downloaded file path and the same DOI."
+                "Codex Chrome extension is a host-agent step. Use Chrome with the Codex extension "
+                "to download the PDF, then call parse_pdf_file with the downloaded file path and "
+                "the same DOI."
             )
         ],
     )

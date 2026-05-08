@@ -105,7 +105,7 @@ def test_config_normalization_preserves_literal_enabled_map_keys() -> None:
     assert "py_mu_p_d_f" not in config.extract.parsing.enabled
 
 
-def test_default_config_exposes_disabled_edge_strategy() -> None:
+def test_default_config_exposes_disabled_codex_chrome_extension_strategy() -> None:
     config = GRaDOSConfig()
 
     assert config.extract.fetch_strategy.order == [

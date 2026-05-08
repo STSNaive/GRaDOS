@@ -869,19 +869,20 @@ def test_extract_paper_full_text_returns_codex_action(
     async def fake_fetch_paper(**kwargs):
         return fetch_module.FetchResult(
             outcome="host_action_required",
-            source="Codex Computer Use",
+            source="Codex Chrome Extension",
             via="codex",
             state="host_action_required",
             manual=True,
-            host="Microsoft Edge",
+            host="Google Chrome",
             resume={
                 "kind": "codex",
                 "doi": "10.1234/demo",
-                "browser": "Microsoft Edge",
+                "browser": "Google Chrome",
                 "start_url": "https://doi.org/10.1234/demo",
-                "action": "download_pdf_with_edge_then_call_parse_pdf_file",
+                "action": "download_pdf_with_chrome_extension_then_call_parse_pdf_file",
+                "documentation_url": "https://developers.openai.com/codex/app/chrome-extension",
             },
-            warnings=["Codex Computer Use host action required"],
+            warnings=["Codex Chrome extension host action required"],
         )
 
     def fake_record_remote_fetch_result(metadata_dir, **kwargs):  # noqa: ANN001, ANN003
@@ -893,8 +894,9 @@ def test_extract_paper_full_text_returns_codex_action(
 
     result = asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
 
-    assert "Codex Computer Use Download" in result
-    assert "Microsoft Edge" in result
+    assert "Codex Chrome Extension Download" in result
+    assert "Google Chrome" in result
+    assert "https://developers.openai.com/codex/app/chrome-extension" in result
     assert "parse_pdf_file(file_path=..., doi=..., copy_to_library=true" in result
     assert "Manual Browser Resume" not in result
     assert len(calls) == 1
@@ -904,6 +906,7 @@ def test_extract_paper_full_text_returns_codex_action(
     assert calls[0]["fetch_manual"] is True
     assert isinstance(calls[0]["fetch_resume"], dict)
     assert calls[0]["fetch_resume"]["kind"] == "codex"
+    assert calls[0]["fetch_resume"]["browser"] == "Google Chrome"
     assert calls[0]["has_fulltext"] is False
 
 
@@ -1106,6 +1109,7 @@ def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
     assert captured["remote_metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
     assert captured["remote_metadata"]["fetch_status"] == "partial_success"
     assert captured["remote_metadata"]["fetch_via"] == "codex"
+    assert captured["remote_metadata"]["source"] == "Codex Chrome Extension"
 
     record = load_paper_record(tmp_path / "grados-home" / "papers", doi="10.1234/local-parse")
     assert record is not None

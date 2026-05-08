@@ -509,7 +509,7 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "Keep generous: large PDFs and intermediate redirects can stream slowly."
     )
     data["extract"]["fetch_strategy"]["_comment_order"] = (
-        "PDF/full-text retrieval order. `codex` is a disabled-by-default Codex host handoff."
+        "PDF/full-text retrieval order. `codex` is a disabled-by-default Codex Chrome extension handoff."
     )
     data["extract"]["tdm"]["_comment_order"] = (
         "Publisher API/TDM providers tried by the api fetch strategy."

@@ -4,7 +4,7 @@
 
 - [GRaDOS Server Tools](#grados-server-tools)
 - [Indepth Mode](#indepth-mode)
-- [Optional Codex Computer Use](#optional-codex-computer-use)
+- [Optional Codex Chrome Extension](#optional-codex-chrome-extension)
 - [Optional Playwright MCP Tools](#optional-playwright-mcp-tools)
 - [MCP Resources](#mcp-resources)
 
@@ -92,9 +92,9 @@ Recommended metadata:
 
 Restore with `grados:query_research_artifacts(kind="evidence_checkpoint", detail=true)`. Before citing, auditing, or comparing any restored claim, call `grados:read_saved_paper` with the saved `canonical_uri` or `safe_doi`, `start_paragraph`, and `max_paragraphs=paragraph_count`. Search snippets, summaries, checkpoints, and tool previews are only navigation material; final answers and citations must be checked against canonical `papers/*.md` content.
 
-## Optional Codex Computer Use
+## Optional Codex Chrome Extension
 
-`codex` is a disabled-by-default fetch-strategy entry for Codex host agents that have the Computer Use plugin. It is not a GRaDOS server-internal browser backend. When enabled and placed in `extract.fetch_strategy.order`, GRaDOS stops at that position and returns a host-action receipt for Microsoft Edge.
+`codex` is a disabled-by-default fetch-strategy entry for Codex host agents that have the [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) connected. It is not a GRaDOS server-internal browser backend. When enabled and placed in `extract.fetch_strategy.order`, GRaDOS stops at that position and returns a host-action receipt for Chrome.
 
 Config shape:
 
@@ -118,8 +118,8 @@ Config shape:
 Typical host-agent flow:
 
 1. Call `grados:extract_paper_full_text` with the DOI.
-2. If the receipt asks for `codex`, use Codex Computer Use with Microsoft Edge and start from the receipt URL, normally `https://doi.org/{doi}`.
-3. After Microsoft Edge downloads the PDF, identify the downloaded `.pdf` path and validate it is a PDF.
+2. If the receipt asks for `codex`, use Chrome with the Codex extension and start from the receipt URL, normally `https://doi.org/{doi}`.
+3. After Chrome downloads the PDF, identify the downloaded `.pdf` path and validate it is a PDF.
 4. Call `grados:parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.
 
 ## Optional Playwright MCP Tools

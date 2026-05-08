@@ -310,7 +310,7 @@ def test_fetch_paper_continues_after_scihub_not_found(monkeypatch) -> None:
     assert result.warnings == ["Sci-Hub primary endpoint sci-hub.se reports no paper for DOI"]
 
 
-def test_fetch_paper_returns_edge_action_at_configured_position(monkeypatch) -> None:
+def test_fetch_paper_returns_chrome_extension_action_at_configured_position(monkeypatch) -> None:
     import grados.extract.fetch as fetch_module
 
     calls: list[str] = []
@@ -341,9 +341,13 @@ def test_fetch_paper_returns_edge_action_at_configured_position(monkeypatch) -> 
     assert result.via == "codex"
     assert result.state == "host_action_required"
     assert result.manual is True
-    assert result.host == "Microsoft Edge"
+    assert result.source == "Codex Chrome Extension"
+    assert result.host == "Google Chrome"
     assert result.resume["kind"] == "codex"
+    assert result.resume["browser"] == "Google Chrome"
     assert result.resume["start_url"] == "https://doi.org/10.1234/demo"
+    assert result.resume["action"] == "download_pdf_with_chrome_extension_then_call_parse_pdf_file"
+    assert result.resume["documentation_url"] == "https://developers.openai.com/codex/app/chrome-extension"
     assert result.warnings[0] == "api miss"
     assert any(trace["via"] == "codex" for trace in result.trace)
 

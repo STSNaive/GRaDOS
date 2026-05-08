@@ -121,14 +121,17 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
     kind = str(resume.get("kind", "") or "")
     if kind == "codex":
         doi = str(resume.get("doi", "") or "")
-        browser = str(resume.get("browser", "") or "Microsoft Edge")
+        browser = str(resume.get("browser", "") or "Google Chrome")
         start_url = str(resume.get("start_url", "") or (f"https://doi.org/{doi}" if doi else ""))
-        result += "\n\n### Codex Computer Use Download\n"
+        documentation_url = str(resume.get("documentation_url", "") or "")
+        result += "\n\n### Codex Chrome Extension Download\n"
         result += f"- **Browser:** {browser}\n"
+        if documentation_url:
+            result += f"- **Setup:** {documentation_url}\n"
         if start_url:
             result += f"- **Start URL:** {start_url}\n"
         result += (
-            "- **Next:** use Codex Computer Use with Microsoft Edge to download the PDF, then call "
+            "- **Next:** use Chrome with the Codex extension to download the PDF, then call "
             "`parse_pdf_file(file_path=..., doi=..., copy_to_library=true, "
             "acquisition_via=\"codex\")` with the downloaded file path.\n"
         )
@@ -780,7 +783,7 @@ async def parse_pdf_file(
 
     if doi:
         normalized_acquisition = (acquisition_via or "").strip()
-        source = "Codex Computer Use" if normalized_acquisition == "codex" else "Local PDF"
+        source = "Codex Chrome Extension" if normalized_acquisition == "codex" else "Local PDF"
         copied_pdf_path = maybe_save_library_pdf(
             doi=doi,
             pdf_bytes=pdf_buffer,

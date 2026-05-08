@@ -387,9 +387,9 @@
 - Codex Browser Use 的 in-app browser 不进入 GRaDOS 的 PDF acquisition backend 或默认 `extract.fetch_strategy.order`。
 - 现有 managed Chrome / Patchright 继续作为 GRaDOS 内部 browser strategy 的主路径。
 - Codex in-app browser 只可作为页面观察、调试或预览表面；不能被文档或代码描述为可稳定产出 PDF artifact 的获取后端。
-- Codex host 侧桌面能力可以作为 disabled-by-default 的 `codex` 配置项参与 `extract.fetch_strategy.order`，但语义是 host-agent handoff：GRaDOS 只在该顺序位置返回 Microsoft Edge 下载动作，由 host agent 在 GRaDOS 进程外拿到本地 PDF 路径，再调用 `parse_pdf_file` 回流入库；不得伪装成 server 内部下载 backend。
+- Codex Chrome extension 可以作为 disabled-by-default 的 `codex` 配置项参与 `extract.fetch_strategy.order`，但语义是 host-agent handoff：GRaDOS 只在该顺序位置返回 Chrome extension 下载 receipt，由 host agent 在 GRaDOS 进程外拿到本地 PDF 路径，再调用 `parse_pdf_file` 回流入库；不得伪装成 server 内部下载 backend。
 
 ### 结果与影响
 - GRaDOS 的 acquisition contract 继续围绕可由 Python runtime 控制和验证的后端组织。
 - 不保留 speculative in-app browser backend TODO，避免再次把不可下载的 UI surface 误写成获取路径。
-- `codex` 的配置顺序只控制 host-action 出现时机；真正下载和本地 PDF 路径识别仍属于 Codex host agent 工作。
+- `codex` 的配置顺序只控制 host-action 出现时机；真正下载和本地 PDF 路径识别仍属于连接了 Codex Chrome extension 的 Codex host agent 工作。

@@ -206,7 +206,7 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     assert '"state": "ok"' in refreshed.fetch_trace
 
 
-def test_remote_metadata_preserves_computer_use_host_action(tmp_path: Path, monkeypatch) -> None:
+def test_remote_metadata_preserves_codex_chrome_extension_host_action(tmp_path: Path, monkeypatch) -> None:
     import grados.storage.remote_metadata as remote_metadata
 
     collection = FakeRemoteMetadataCollection()
@@ -230,13 +230,14 @@ def test_remote_metadata_preserves_computer_use_host_action(tmp_path: Path, monk
         doi="10.1234/demo",
         fetch_status="host_action_required",
         has_fulltext=False,
-        source="Codex Computer Use",
+        source="Codex Chrome Extension",
         fetch_via="codex",
         fetch_state="host_action_required",
-        fetch_host="Microsoft Edge",
+        fetch_host="Google Chrome",
         fetch_resume={
             "kind": "codex",
             "doi": "10.1234/demo",
+            "browser": "Google Chrome",
             "start_url": "https://doi.org/10.1234/demo",
         },
         fetch_manual=True,
@@ -248,7 +249,7 @@ def test_remote_metadata_preserves_computer_use_host_action(tmp_path: Path, monk
     assert record.fetch_status == "host_action_required"
     assert record.fetch_via == "codex"
     assert record.fetch_state == "host_action_required"
-    assert record.fetch_host == "Microsoft Edge"
+    assert record.fetch_host == "Google Chrome"
     assert record.fetch_manual is True
     assert '"kind": "codex"' in record.fetch_resume
 

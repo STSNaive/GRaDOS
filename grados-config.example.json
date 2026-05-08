@@ -36,7 +36,7 @@
                 "oa": true,
                 "scihub": true
             },
-            "_comment_order": "PDF/full-text retrieval order. `codex` is a disabled-by-default Codex host handoff."
+            "_comment_order": "PDF/full-text retrieval order. `codex` is a disabled-by-default Codex Chrome extension handoff."
         },
         "tdm": {
             "order": [
