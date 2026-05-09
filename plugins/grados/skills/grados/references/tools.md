@@ -5,7 +5,6 @@
 - [GRaDOS Server Tools](#grados-server-tools)
 - [Indepth Mode](#indepth-mode)
 - [Optional Codex Chrome Extension](#optional-codex-chrome-extension)
-- [Optional Playwright MCP Tools](#optional-playwright-mcp-tools)
 - [MCP Resources](#mcp-resources)
 
 ---
@@ -40,8 +39,6 @@ GRaDOS tools do not call the host agent model. They provide deterministic search
 Outputs from `search_saved_papers`, `build_evidence_grid`, `compare_papers`, and `audit_draft_support` are navigation and audit material. They may include `canonical_uri`, `paragraph_start`, and `paragraph_count` so the agent can reread the source, but they are not final citation evidence until `grados:read_saved_paper` returns the canonical paragraph window.
 
 For broad tasks, a host client may use subagents to triage independent paper sets, claim sets, or subquestions. Subagents are not GRaDOS server tools; their output should be limited to candidate anchors, rejected/weak items, gaps, warnings, and exact reread selectors such as `canonical_uri`, `paragraph_start`, and `paragraph_count`. The main host agent must reread accepted anchors through `grados:read_saved_paper` before citation or final support judgment.
-
-When `extract_paper_full_text` returns a browser `challenge`, complete publisher verification in the managed browser profile and call the tool again with `resume_browser=true`. GRaDOS resumes at the browser strategy from the saved URL/profile when available, instead of restarting at the `api` strategy.
 
 ## Indepth Mode
 
@@ -121,25 +118,6 @@ Typical host-agent flow:
 2. If the receipt asks for `codex`, use Chrome with the Codex extension and start from the receipt URL, normally `https://doi.org/{doi}`.
 3. After Chrome downloads the PDF, identify the downloaded `.pdf` path and validate it is a PDF.
 4. Call `grados:parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.
-
-## Optional Playwright MCP Tools
-
-If Playwright MCP is registered, the agent can use it when `extract_paper_full_text` fails on a publisher page and the paper remains strongly relevant. Prefer the built-in `resume_browser=true` flow for saved browser challenges before trying an external Playwright fallback.
-
-| Tool | Purpose |
-| --- | --- |
-| `playwright:browser_navigate` | Navigate to a URL such as `https://doi.org/{doi}` |
-| `playwright:browser_snapshot` | Inspect page structure to find a PDF entrypoint |
-| `playwright:browser_click` | Click the selected download element |
-| `playwright:browser_take_screenshot` | Capture the page when CAPTCHA or anti-bot behavior needs diagnosis |
-
-Typical fallback flow:
-
-1. Call `browser_navigate` for `https://doi.org/{doi}`.
-2. Call `browser_snapshot` and inspect the accessibility tree for PDF or full-text entrypoints.
-3. Call `browser_click` on the most likely "Download PDF", "View PDF", or "Full Text PDF" element.
-4. If a download completes, pass the downloaded file path plus DOI/title to `grados:parse_pdf_file`.
-5. If the page presents CAPTCHA, Cloudflare, or another human verification wall, stop automated fallback and report the required manual action.
 
 ## MCP Resources
 

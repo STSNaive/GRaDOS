@@ -84,8 +84,6 @@ Before querying remote databases:
 2. If `papers/{safe_doi}.md` already exists, skip re-extraction for that DOI.
 3. Do **not** attempt to extract more than 8 papers in one query.
 4. If extraction fails for a strongly relevant paper, record its title, DOI, and abstract-based relevance in `未能获取全文`; silently skip marginal failures.
-5. If the tool returns a browser `challenge`, prefer the managed manual-resume flow in [references/tools.md](references/tools.md), then retry with `resume_browser=true`.
-6. Use Playwright fallback only when the tool reference says it is available and the paper remains strongly relevant. If CAPTCHA, Cloudflare, or human verification blocks automation, stop and report the manual action needed.
 
 ### 4. Read, Synthesize, And Save
 

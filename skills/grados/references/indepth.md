@@ -112,13 +112,10 @@ Even when `indepth` is off, `search_academic_papers` exposes local state for eac
 The fetch/checkpoint status vocabulary includes:
 
 - `metadata_only`
-- `challenge`
 - `failed`
 - `partial_success`
 - `summary_failed`
 - `fulltext`
-
-Browser challenges are recoverable state. They are written into `remote_metadata` and the current checkpoint, but they do not stop the rest of an indepth batch.
 
 ## Evidence Discipline
 
