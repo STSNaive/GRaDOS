@@ -26,17 +26,19 @@
                 "api",
                 "browser",
                 "codex",
-                "oa",
                 "scihub"
             ],
             "enabled": {
                 "api": true,
                 "browser": true,
                 "codex": false,
-                "oa": true,
                 "scihub": true
             },
             "_comment_order": "PDF/full-text retrieval order. `codex` is a disabled-by-default Codex Chrome extension handoff."
+        },
+        "unpaywall": {
+            "enabled": true,
+            "_comment_enabled": "When true, resolve DOI to Unpaywall OA locations before codex/browser acquisition. Unpaywall is not a download strategy and does not affect api or scihub."
         },
         "tdm": {
             "order": [
@@ -114,7 +116,7 @@
         },
         "fetch_connect_timeout": 15.0,
         "fetch_read_timeout": 60.0,
-        "_comment_fetch_connect_timeout": "TCP connect timeout in seconds for api / oa / scihub HTTP calls.",
+        "_comment_fetch_connect_timeout": "TCP connect timeout in seconds for api / unpaywall / scihub HTTP calls.",
         "_comment_fetch_read_timeout": "Response read timeout in seconds for PDF and landing-page downloads. Keep generous: large PDFs and intermediate redirects can stream slowly."
     },
     "research": {

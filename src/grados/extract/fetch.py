@@ -1,4 +1,4 @@
-"""PDF fetch waterfall: api -> browser -> oa -> scihub, plus optional host handoff."""
+"""PDF fetch waterfall: api -> browser -> codex -> scihub, with optional URL resolution."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
@@ -15,7 +15,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from grados._retry import current_fetch_timeout, current_pdf_timeout, http_retry
-from grados.config import DEFAULT_SCI_HUB_ENDPOINT, GRaDOSPaths, HeadlessBrowserConfig
+from grados.config import DEFAULT_SCI_HUB_ENDPOINT, FetchStrategyConfig, GRaDOSPaths, HeadlessBrowserConfig
 from grados.publisher.common import (
     PublisherMetadata,
     classify_pdf_content,
@@ -33,8 +33,8 @@ class FetchResult:
     text: str = ""
     pdf_buffer: bytes = b""
     outcome: str = ""  # native_full_text | pdf_obtained | metadata_only | host_action_required | failed
-    source: str = ""  # e.g. "Elsevier TDM", "Unpaywall OA", "Sci-Hub"
-    via: str = ""  # api | browser | oa | scihub | codex
+    source: str = ""  # e.g. "Elsevier TDM", "Sci-Hub", "Codex Chrome Extension"
+    via: str = ""  # api | browser | scihub | codex
     state: str = ""
     text_format: str = ""  # markdown | text | html | xml
     metadata: PublisherMetadata | None = None
@@ -58,6 +58,16 @@ class FetchStrategyContext:
     headless_config: HeadlessBrowserConfig | None
     paths: GRaDOSPaths | None
     browser_resume: dict[str, str] | None
+    unpaywall: UnpaywallResolution | None = None
+
+
+@dataclass(frozen=True)
+class UnpaywallResolution:
+    best_oa_location: dict[str, Any] = field(default_factory=dict)
+    oa_locations: list[dict[str, Any]] = field(default_factory=list)
+    selected_url: str = ""
+    selected_url_source: str = ""
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -109,10 +119,6 @@ async def _run_tdm_fetch_strategy(context: FetchStrategyContext) -> FetchResult:
     )
 
 
-async def _run_oa_fetch_strategy(context: FetchStrategyContext) -> FetchResult:
-    return await _fetch_oa(context.doi, context.etiquette_email, context.client)
-
-
 async def _run_scihub_fetch_strategy(context: FetchStrategyContext) -> FetchResult:
     return await _fetch_scihub(context.doi, context.client, context.sci_hub_config)
 
@@ -133,6 +139,11 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
         context.headless_config,
         context.paths,
         resume=context.browser_resume,
+        target_url=(
+            ""
+            if context.browser_resume is not None
+            else _unpaywall_selected_url(context.unpaywall)
+        ),
     )
     if browser_result.pdf_buffer:
         return FetchResult(
@@ -159,7 +170,12 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
 
 
 async def _run_codex_fetch_strategy(context: FetchStrategyContext) -> FetchResult:
-    start_url = f"https://doi.org/{context.doi}"
+    start_url = _unpaywall_selected_url(context.unpaywall) or f"https://doi.org/{context.doi}"
+    start_url_source = (
+        context.unpaywall.selected_url_source
+        if context.unpaywall is not None and context.unpaywall.selected_url_source
+        else "doi"
+    )
     return FetchResult(
         outcome="host_action_required",
         source="Codex Chrome Extension",
@@ -172,6 +188,7 @@ async def _run_codex_fetch_strategy(context: FetchStrategyContext) -> FetchResul
             "doi": context.doi,
             "browser": "Google Chrome",
             "start_url": start_url,
+            "start_url_source": start_url_source,
             "action": "download_pdf_with_chrome_extension_then_call_parse_pdf_file",
             "extension": "Codex Chrome extension",
             "documentation_url": CODEX_CHROME_EXTENSION_DOCS_URL,
@@ -255,7 +272,6 @@ FETCH_STRATEGY_REGISTRY: dict[str, FetchStrategy] = {
     "api": cast(FetchStrategy, _FunctionFetchStrategy("api", _run_tdm_fetch_strategy)),
     "browser": cast(FetchStrategy, _FunctionFetchStrategy("browser", _run_browser_fetch_strategy)),
     "codex": cast(FetchStrategy, _FunctionFetchStrategy("codex", _run_codex_fetch_strategy)),
-    "oa": cast(FetchStrategy, _FunctionFetchStrategy("oa", _run_oa_fetch_strategy)),
     "scihub": cast(FetchStrategy, _FunctionFetchStrategy("scihub", _run_scihub_fetch_strategy)),
 }
 
@@ -271,7 +287,6 @@ _FETCH_STRATEGY_ALIASES: dict[str, str] = {
     "browser": "browser",
     "headless": "browser",
     "codex": "codex",
-    "oa": "oa",
     "scihub": "scihub",
 }
 
@@ -293,8 +308,14 @@ def _normalize_fetch_enabled(enabled: dict[str, bool] | None) -> dict[str, bool]
     return normalized
 
 
+def _resolve_fetch_enabled(enabled: dict[str, bool] | None) -> dict[str, bool]:
+    resolved = _normalize_fetch_enabled(FetchStrategyConfig().enabled)
+    resolved.update(_normalize_fetch_enabled(enabled))
+    return resolved
+
+
 def build_fetch_strategies(order: list[str] | None = None) -> list[FetchStrategy]:
-    resolved_order = order or ["api", "browser", "oa", "scihub"]
+    resolved_order = order or FetchStrategyConfig().order
     strategies: list[FetchStrategy] = []
     seen: set[str] = set()
     for raw_name in resolved_order:
@@ -439,12 +460,13 @@ async def fetch_paper(
     headless_config: HeadlessBrowserConfig | None = None,
     paths: GRaDOSPaths | None = None,
     browser_resume: dict[str, str] | None = None,
+    unpaywall_enabled: bool = True,
 ) -> FetchResult:
     """Execute the fetch waterfall for a DOI."""
     strategies = build_fetch_strategies(fetch_order)
     if browser_resume is not None:
         strategies = _resume_fetch_strategies(strategies)
-    enabled = _normalize_fetch_enabled(fetch_enabled) or {strategy.name: True for strategy in strategies}
+    enabled = _resolve_fetch_enabled(fetch_enabled)
     warnings: list[str] = []
     trace: list[dict[str, Any]] = []
     partial_result: FetchResult | None = None
@@ -463,12 +485,23 @@ async def fetch_paper(
             paths=paths,
             browser_resume=browser_resume,
         )
+        unpaywall: UnpaywallResolution | None = None
 
         for strategy in strategies:
             if not enabled.get(strategy.name, True):
                 continue
 
-            result = await strategy.run(context)
+            needs_unpaywall = strategy.name == "codex" or (
+                strategy.name == "browser"
+                and context.browser_resume is None
+                and context.headless_config is not None
+                and context.paths is not None
+            )
+            if needs_unpaywall and unpaywall_enabled and unpaywall is None:
+                unpaywall = await _resolve_unpaywall_locations(doi, etiquette_email, client)
+                warnings.extend(unpaywall.warnings)
+
+            result = await strategy.run(replace(context, unpaywall=unpaywall))
             warnings.extend(result.warnings)
             trace.extend(result.trace or [_trace_fetch_result(doi, result)])
             if _is_host_action_required(result):
@@ -529,7 +562,7 @@ async def _fetch_tdm(
     return FetchResult(outcome="failed", via="api", state="error")
 
 
-# ── OA (Unpaywall) ──────────────────────────────────────────────────────────
+# ── Unpaywall URL resolution ────────────────────────────────────────────────
 
 
 @http_retry()
@@ -550,56 +583,93 @@ async def _unpaywall_lookup(
     return resp
 
 
+def _as_unpaywall_location(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_unpaywall_locations(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _select_unpaywall_start_url(resolution: UnpaywallResolution) -> tuple[str, str]:
+    best = resolution.best_oa_location
+    locations = resolution.oa_locations
+    candidates: list[tuple[str, str]] = []
+
+    if best.get("url_for_pdf"):
+        candidates.append(("unpaywall.best_oa_location.url_for_pdf", str(best["url_for_pdf"])))
+    for index, location in enumerate(locations):
+        if location.get("url_for_pdf"):
+            candidates.append((
+                f"unpaywall.oa_locations[{index}].url_for_pdf",
+                str(location["url_for_pdf"]),
+            ))
+    if best.get("url_for_landing_page"):
+        candidates.append((
+            "unpaywall.best_oa_location.url_for_landing_page",
+            str(best["url_for_landing_page"]),
+        ))
+    for index, location in enumerate(locations):
+        if location.get("url_for_landing_page"):
+            candidates.append((
+                f"unpaywall.oa_locations[{index}].url_for_landing_page",
+                str(location["url_for_landing_page"]),
+            ))
+
+    for source, url in candidates:
+        normalized = url.strip()
+        if normalized:
+            return normalized, source
+    return "", ""
+
+
+def _unpaywall_selected_url(resolution: UnpaywallResolution | None) -> str:
+    return resolution.selected_url if resolution is not None else ""
+
+
+async def _resolve_unpaywall_locations(
+    doi: str,
+    etiquette_email: str,
+    client: httpx.AsyncClient,
+) -> UnpaywallResolution:
+    warnings: list[str] = []
+    try:
+        resp = await _unpaywall_lookup(client, doi, etiquette_email)
+        if resp.status_code == 404:
+            return UnpaywallResolution()
+        if resp.status_code != 200:
+            return UnpaywallResolution(warnings=[f"Unpaywall lookup failed: HTTP {resp.status_code}"])
+
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            return UnpaywallResolution(warnings=["Unpaywall lookup failed: invalid JSON payload"])
+
+        best_oa_location = _as_unpaywall_location(payload.get("best_oa_location"))
+        oa_locations = _as_unpaywall_locations(payload.get("oa_locations"))
+        resolution = UnpaywallResolution(
+            best_oa_location=best_oa_location,
+            oa_locations=oa_locations,
+        )
+        selected_url, selected_url_source = _select_unpaywall_start_url(resolution)
+        return UnpaywallResolution(
+            best_oa_location=best_oa_location,
+            oa_locations=oa_locations,
+            selected_url=selected_url,
+            selected_url_source=selected_url_source,
+        )
+    except Exception as exc:
+        warnings.append(_format_fetch_warning("Unpaywall lookup failed", exc))
+    return UnpaywallResolution(warnings=warnings)
+
+
 @http_retry()
 async def _download_pdf(client: httpx.AsyncClient, url: str) -> httpx.Response:
     resp = await client.get(url, timeout=current_pdf_timeout(), follow_redirects=True)
     if resp.status_code >= 500 or resp.status_code == 429:
         resp.raise_for_status()
     return resp
-
-
-async def _fetch_oa(
-    doi: str,
-    etiquette_email: str,
-    client: httpx.AsyncClient,
-) -> FetchResult:
-    warnings: list[str] = []
-    try:
-        resp = await _unpaywall_lookup(client, doi, etiquette_email)
-        if resp.status_code != 200:
-            return FetchResult(
-                outcome="failed",
-                via="oa",
-                state="error",
-                warnings=[f"OA lookup failed: HTTP {resp.status_code}"],
-            )
-
-        locations = resp.json().get("oa_locations", [])
-        # Prefer repository sources (arXiv, PMC) over publisher
-        locations.sort(key=lambda loc: 0 if loc.get("host_type") == "repository" else 1)
-
-        for loc in locations:
-            pdf_url = loc.get("url_for_pdf")
-            if not pdf_url:
-                continue
-            try:
-                pdf_resp = await _download_pdf(client, pdf_url)
-                ct = pdf_resp.headers.get("content-type", "")
-                check = classify_pdf_content(pdf_resp.content, ct)
-                if check["is_pdf"]:
-                    return FetchResult(
-                        pdf_buffer=pdf_resp.content,
-                        outcome="pdf_obtained",
-                        source="Unpaywall OA",
-                        via="oa",
-                        state="ok",
-                    )
-            except Exception as exc:
-                warnings.append(_format_fetch_warning("OA PDF fetch failed", exc))
-                continue
-    except Exception as exc:
-        warnings.append(_format_fetch_warning("OA lookup failed", exc))
-    return FetchResult(outcome="failed", source="Unpaywall OA", via="oa", state="error", warnings=warnings)
 
 
 # ── Sci-Hub ──────────────────────────────────────────────────────────────────

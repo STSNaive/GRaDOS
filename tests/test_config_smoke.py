@@ -112,10 +112,10 @@ def test_default_config_exposes_disabled_codex_chrome_extension_strategy() -> No
         "api",
         "browser",
         "codex",
-        "oa",
         "scihub",
     ]
     assert config.extract.fetch_strategy.enabled["codex"] is False
+    assert config.extract.unpaywall.enabled is True
 
 
 def test_scihub_legacy_fallback_mirror_populates_endpoints() -> None:

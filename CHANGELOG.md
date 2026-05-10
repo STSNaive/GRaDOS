@@ -17,7 +17,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added `grados auth set/status/migrate/clear` commands for explicit keychain management, masked source-aware API-key inspection, and one-shot migration of legacy plaintext config values.
 - Added a dedicated `database/remote_metadata/` Chroma store plus `grados.storage.remote_metadata` helpers for validated per-DOI metadata caching, semantic title/abstract lookup, and fetch-status backfills outside the rebuildable paper index.
 - Added `tenacity` (>=9.1) as a runtime dependency and a `grados._retry` module providing a unified async HTTP retry decorator (3 attempts, exponential 1→8s backoff with jitter, retries on 429/5xx/connect/read-timeout/protocol errors); see ADR-008.
-- Added `PDF_DOWNLOAD_TIMEOUT` helper (connect=15s, read=60s) applied to all PDF downloads in the OA, Sci-Hub, and Springer fetch paths so slow, large-file transfers no longer time out mid-stream at 30s.
+- Added `PDF_DOWNLOAD_TIMEOUT` helper (connect=15s, read=60s) applied to PDF downloads in the Sci-Hub and Springer fetch paths so slow, large-file transfers no longer time out mid-stream at 30s.
 - Added configurable timeout / retry knobs under nested `search`, `extract`, `extract.headless_browser`, and top-level `retry_policy` config sections (`grados-config.example.json`); new processes pick up edits without code changes. See `RetryPolicyConfig` plus `SearchConfig.connect_timeout`, `SearchConfig.read_timeout`, `ExtractConfig.fetch_connect_timeout`, `ExtractConfig.fetch_read_timeout`, and `HeadlessBrowserConfig.deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`.
 - Added `grados._retry.install_runtime_defaults()` plus live getters (`current_search_timeout`, `current_fetch_timeout`, `current_pdf_timeout`, `current_browser_networkidle_timeout_ms`, `current_browser_deadline_seconds`, `current_browser_poll_bounds`); retry / timeout values are now resolved at call time instead of being frozen at decorator construction, so config changes take effect on process restart without code edits.
 - Added a header-aware wait strategy that honors `Retry-After` and `X-RateLimit-Reset` response headers (capped at 60s) before falling back to exponential backoff with jitter; toggle via `retry_policy.respect_retry_after`.
@@ -29,6 +29,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Changed
 - Changed the legacy cloud-parser API-key surface to MinerU; the old cloud-parser key is no longer part of the generated config, docs, or managed secret list.
 - Changed the optional `codex` fetch-strategy handoff to the Codex Chrome extension.
+- Changed Unpaywall from an `oa` download strategy into an optional `extract.unpaywall.enabled` resolver that supplies OA `url_for_pdf` / `url_for_landing_page` start URLs to `codex` and `browser` without affecting `api` or `scihub`.
 - Changed Sci-Hub PDF URL extraction to recognize additional mirror markup patterns and standard URL resolution while keeping the strategy as an HTTP fallback.
 - Changed `parse_pdf_file` to support `copy_to_library` and `acquisition_via` for explicit-DOI local PDF handoffs, including raw-PDF archiving and `remote_metadata` backfill after a successful parse/save.
 - Changed `search_saved_papers` to include an `Evidence Anchor` JSON block with `canonical_uri`, paragraph coordinates, query, and score breakdown while preserving the existing human-readable Markdown output.
@@ -41,7 +42,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed `grados reindex` to preserve legacy `remote_metadata` rows by copying them from `database/chroma/` into `database/remote_metadata/` before clearing the rebuildable paper index.
 - Changed canonical Chroma document/chunk metadata to carry explicit `paper_id`, `remote_source`, and `doc_id` join keys so later corpus-layer work can associate saved full text with the remote metadata cache without re-deriving identifiers.
 - Changed phase-1 canonical corpus persistence to reserve `corpus/tier/workset_id/promoted_at/promote_reason` on both markdown frontmatter and Chroma metadata, while older saved papers continue to hydrate with `canonical/stable` defaults when those fields are absent.
-- Changed full-text acquisition defaults to use canonical fetch-strategy names (`api`, `browser`, `oa`, `scihub`) and the browser-first order `api -> browser -> oa -> scihub`; legacy `TDM` / `OA` / `SciHub` / `Headless` values remain accepted as aliases.
+- Changed full-text acquisition defaults to use canonical fetch-strategy names (`api`, `browser`, `codex`, `scihub`) and the order `api -> browser -> codex -> scihub`; legacy `TDM` / `SciHub` / `Headless` values remain accepted as aliases, while stale `oa` entries are ignored.
 - Changed Sci-Hub configuration from a single `fallback_mirror` runtime value to ordered `extract.sci_hub.endpoints`; the first endpoint is preferred, later endpoints are fallbacks, and the legacy `fallback_mirror` value is used only when `endpoints` is omitted or empty.
 - Changed fetch results and browser results to surface `via` and `state` fields, and changed the main fetch waterfall to preserve browser `challenge` / `timeout` / `nobrowser` states instead of collapsing every browser miss into a generic final `failed`.
 - Changed all academic search calls (Crossref, PubMed ESearch/ESummary/EFetch, Web of Science, Elsevier Scopus, Springer Meta) to go through the unified retry decorator so transient 429/5xx responses and network errors no longer fail the whole page fetch.
@@ -69,7 +70,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Fixed Sci-Hub endpoint fallback behavior so one endpoint returning `not_found` no longer prevents later configured endpoints from being tried; a final `not_found` is returned only after all endpoints miss.
 - Fixed plaintext API-key import for mixed-case secret fields such as `SPRINGER_meta_API_KEY`, so `config.json` one-shot keys are migrated into the OS keychain and then cleared instead of being dropped by config-key normalization.
 - Fixed canonical paper saves from `extract_paper_full_text`, `parse_pdf_file`, and `import_local_pdf_library` to pass the active `IndexingConfig` through to Chroma indexing, preventing newly saved papers from being indexed with default embedding/chunking settings after users customize config.
-- Fixed the bundled GRaDOS skill tool reference to describe the current `api -> browser -> oa -> scihub` fetch order and `Docling -> MinerU -> Marker -> PyMuPDF` parse order.
+- Fixed the bundled GRaDOS skill tool reference to describe the current `api -> browser -> codex -> scihub` fetch order and `Docling -> MinerU -> Marker -> PyMuPDF` parse order.
 - Fixed `_HeaderAwareWait` so `Retry-After: 0` is honored as an explicit immediate retry instead of being treated as a missing header and falling back to exponential backoff.
 - Fixed retained browser-session error handling so `fetch_with_browser()` now detaches `response` / `download` / `page` listeners even when the polling loop raises, preventing listener leaks across reused visible sessions.
 - Fixed `audit_draft_support` to split Chinese claims on sentence-ending punctuation without requiring whitespace, parse Chinese author-year citations such as `（张三，2025）`, and strip those citations before evidence lookup.
@@ -143,12 +144,12 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed Springer native full-text handling so publisher XML/HTML now enters the shared normalization pipeline instead of being flattened early into ad hoc plain text.
 - Changed canonical paper frontmatter and reindex behavior so `authors/year/journal` survive in `papers/*.md`, allowing `grados reindex` to rebuild retrieval metadata from the source library alone.
 - Changed the index manifest to schema version `3` with chunking strategy `section-aware-v2`; existing local indexes must be rebuilt with `grados reindex`.
-- Changed save/import/parse receipts so Chroma indexing failures are surfaced as warnings / partial-success instead of being silently swallowed after the markdown mirror is written.
+- Changed save/import/parse receipts so Chroma indexing failures are surfaced as warnings / partial-success instead of being silently swallowed after the canonical Markdown file is written.
 - Changed Marker parsing so `config.extract.parsing.marker_timeout` now enforces a real subprocess timeout instead of being a dead config knob; timed-out Marker runs now fall back cleanly to the next parser.
 - Changed parser runtime setup and diagnostics so `grados setup` now prewarms Docling models, while Docling/Marker failures are surfaced through standardized warning/debug messages instead of silent fallbacks.
 - Changed local saved-paper retrieval so lexical fallback and result snippets now prefer canonical content from `papers/*.md` when available, instead of continuing to lean on Chroma doc copies for the final returned evidence text.
 - Changed local saved-paper retrieval so overlapping chunk hits for the same paper are merged into a single canonical paragraph window before evidence is returned, reducing duplicate or fragmented excerpts.
-- Changed canonical save ordering so `save_paper_markdown()` writes `papers/*.md` before refreshing Chroma, preventing index-only state when mirror writes fail.
+- Changed canonical save ordering so `save_paper_markdown()` writes `papers/*.md` before refreshing Chroma, preventing index-only state when canonical Markdown writes fail.
 - Changed canonical paper frontmatter handling to use `python-frontmatter` + `PyYAML` for save/read/list flows, so multiline YAML values and colon-rich metadata round-trip correctly through `papers/*.md`.
 - Changed `list_saved_papers()` frontmatter scanning to read until the closing `---` marker (bounded to 4 KB) instead of truncating metadata after 500 characters.
 - Changed publisher fetch handling so `metadata_only` outcomes, typed publisher metadata, and asset hints now survive the TDM waterfall into user-visible extraction receipts, instead of collapsing into generic fetch failures.
@@ -178,9 +179,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added Stage B smoke coverage for research artifacts, failure memory, citation graphs, full-context retrieval, evidence grids, paper comparison, and draft-support auditing.
 - Added smoke coverage for client install flows and plugin manifests.
 - Added regression coverage for Docling-first parsing, Elsevier XML deterministic normalization, and canonical paragraph reread after Chroma retrieval.
-- Added end-to-end regression coverage for the full "index recall + canonical reread" path, including user-facing `search_saved_papers` output after an indexed paper's canonical mirror is updated.
+- Added end-to-end regression coverage for the full "index recall + canonical reread" path, including user-facing `search_saved_papers` output after an indexed paper's canonical Markdown file is updated.
 - Added regression coverage for fetch/parser/browser strategy registries so order preservation and unknown-strategy filtering stay stable during future extensions.
-- Added regression coverage for mirror-first canonical saves so failed `papers/*.md` writes cannot leave Chroma in an index-only state.
+- Added regression coverage for canonical-Markdown-first saves so failed `papers/*.md` writes cannot leave Chroma in an index-only state.
 - Added regression coverage for YAML frontmatter round-trips, long-header saved-paper listing, and visible Chroma/OA/Sci-Hub fallback warnings.
 - Added regression coverage for process-local embedding cache reuse and invalidation, including shared backend reuse across `index_paper()` and `search_papers()`.
 - Added offline contract-fixture coverage for Elsevier metadata fallback, Springer waterfall fallback, browser anti-bot HTML masquerading as PDF, and nested local-import warning paths.

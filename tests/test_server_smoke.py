@@ -410,7 +410,7 @@ def test_search_saved_papers_rejects_invalid_year_range() -> None:
     assert "Invalid year range" in result
 
 
-def test_read_saved_paper_requires_markdown_mirror_source_of_truth(tmp_path: Path, monkeypatch) -> None:
+def test_read_saved_paper_requires_canonical_markdown_source_of_truth(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
 
     result = asyncio.run(read_saved_paper(safe_doi="10_1234_demo", section_query="methods"))
@@ -549,7 +549,7 @@ def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path,
         "read_paper",
         lambda **kwargs: papers.PaperReadResult(
             doi="10.1234/demo",
-            text="## Methods\n\nCanonical paragraph window from papers mirror.",
+            text="## Methods\n\nCanonical paragraph window from papers file.",
             start_paragraph=2,
             paragraph_count=2,
             total_paragraphs=8,
@@ -576,7 +576,7 @@ def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path,
     assert '"paragraph_count": 2' in result
     assert '"dense_score": 1.2' in result
     assert '"lexical_score": 0.9' in result
-    assert "Canonical Excerpt: ## Methods Canonical paragraph window from papers mirror." in result
+    assert "Canonical Excerpt: ## Methods Canonical paragraph window from papers file." in result
 
 
 def test_search_saved_papers_end_to_end_rereads_updated_canonical_excerpt(
@@ -632,7 +632,7 @@ def test_search_saved_papers_end_to_end_rereads_updated_canonical_excerpt(
         "## Abstract\n\n"
         "This study investigates laminate damping behaviour.\n\n"
         "## Results\n\n"
-        "Canonical mirror excerpt confirms attenuation rose by 18 percent after laminate treatment.\n\n"
+        "Canonical paper excerpt confirms attenuation rose by 18 percent after laminate treatment.\n\n"
         "## Discussion\n\n"
         "Closing discussion paragraph.\n",
         encoding="utf-8",
@@ -768,7 +768,7 @@ def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, m
                 publisher="Elsevier",
             ),
             asset_hints=[{"kind": "article_landing", "url": "https://example.com/article"}],
-            warnings=["OA lookup failed", "Browser fallback unavailable"],
+            warnings=["Unpaywall lookup failed", "Browser fallback unavailable"],
         )
 
     def fake_record_remote_fetch_result(metadata_dir, **kwargs):  # noqa: ANN001, ANN003
@@ -808,7 +808,7 @@ def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeyp
     async def fake_fetch_paper(**kwargs):
         return fetch_module.FetchResult(
             outcome="failed",
-            source="Headless Browser",
+            source="Browser",
             via="browser",
             state="challenge",
             manual=True,
@@ -935,7 +935,7 @@ def test_extract_paper_full_text_resume_browser_uses_saved_resume(tmp_path: Path
         fetch_calls.append(kwargs)
         return fetch_module.FetchResult(
             outcome="metadata_only",
-            source="Headless Browser",
+            source="Browser",
             via="browser",
             state="partial",
             metadata=PublisherMetadata(
@@ -1126,13 +1126,13 @@ def test_stage_b_state_tools_round_trip(tmp_path: Path, monkeypatch) -> None:
 
     artifact = asyncio.run(
         save_research_artifact(
-            kind="evidence_table",
+            kind="evidence_grid",
             title="Composite Grid",
             content={"topic": "composite damping", "rows": [{"doi": "10.1234/demo"}]},
             source_doi="10.1234/demo",
         )
     )
-    queried = asyncio.run(query_research_artifacts(kind="evidence_table", detail=True))
+    queried = asyncio.run(query_research_artifacts(kind="evidence_grid", detail=True))
     recorded = asyncio.run(
         manage_failure_cases(
             mode="record",

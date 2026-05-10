@@ -16,9 +16,9 @@
 | `grados:search_academic_papers` | Waterfall search across academic databases. Returns deduplicated paper metadata with DOIs, abstracts, continuation state, and local saved/full-text/summary state. Optional `indepth=true` materializes returned candidates with the same `limit`. |
 | `grados:search_saved_papers` | Compact paper-level search over the saved-paper store. Uses metadata prefiltering, ChromaDB chunk retrieval, and optional lightweight lexical reranking over canonical documents. Treat snippets and evidence anchors as screening/reranking material, not citation evidence. |
 | `grados:get_saved_paper_structure` | Deterministic low-token paper card for one saved paper. Returns canonical URI, preview excerpt, section headings, section outline, counts, and asset summary. Use this before deep reading. |
-| `grados:extract_paper_full_text` | Fetch full text by DOI via the configured `api`, `browser`, `oa`, `scihub`, and optional `codex` order, then parse via `Docling -> MinerU -> Marker -> PyMuPDF`. MinerU is an authenticated cloud fallback that requires `MINERU_API_KEY`; successful fetches auto-save to the canonical paper store, mirror Markdown to `papers/`, and index into ChromaDB; `codex` returns a host-action receipt. |
+| `grados:extract_paper_full_text` | Fetch full text by DOI via the configured `api`, `browser`, optional `codex`, and `scihub` order, then parse via `Docling -> MinerU -> Marker -> PyMuPDF`. Optional Unpaywall resolution can supply OA `url_for_pdf` / `url_for_landing_page` start URLs for `codex` and `browser`; MinerU is an authenticated cloud fallback that requires `MINERU_API_KEY`; successful fetches write canonical Markdown to `papers/` and refresh the ChromaDB retrieval index; `codex` returns a host-action receipt. |
 | `grados:import_local_pdf_library` | Import one local PDF file or a directory of PDFs into the canonical paper store. Supports recursive scanning, glob filtering, and optional raw-PDF archiving into `downloads/`. |
-| `grados:parse_pdf_file` | Parse a local PDF file using the same Python parsing waterfall. If DOI is provided, it writes the canonical paper entry, mirrors `.md` to `papers/`, and returns a compact save receipt. |
+| `grados:parse_pdf_file` | Parse a local PDF file using the same Python parsing waterfall. If DOI is provided, it writes the canonical `.md` file to `papers/` and returns a compact save receipt. |
 | `grados:read_saved_paper` | Canonical deep-reading tool for previously saved papers. Accepts `doi`, a GRaDOS-returned opaque `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window for synthesis and citation verification. |
 | `grados:save_paper_to_zotero` | Save cited paper metadata to Zotero. Requires `ZOTERO_API_KEY` and Zotero library configuration. |
 | `grados:save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, and compression-safe evidence checkpoints in the local SQLite state store. |
@@ -91,7 +91,7 @@ Restore with `grados:query_research_artifacts(kind="evidence_checkpoint", detail
 
 ## Optional Codex Chrome Extension
 
-`codex` is a disabled-by-default fetch-strategy entry for Codex host agents that have the [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) connected. It is not a GRaDOS server-internal browser backend. When enabled and placed in `extract.fetch_strategy.order`, GRaDOS stops at that position and returns a host-action receipt for Chrome.
+`codex` is a disabled-by-default fetch-strategy entry for Codex host agents that have the [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) connected. It is not a GRaDOS server-internal browser backend. When enabled and placed in `extract.fetch_strategy.order`, GRaDOS stops at that position and returns a host-action receipt for Chrome. When `extract.unpaywall.enabled=true`, the receipt can start from an Unpaywall `url_for_pdf` or `url_for_landing_page` instead of the DOI URL.
 
 Config shape:
 
@@ -99,14 +99,16 @@ Config shape:
 {
   "extract": {
     "fetch_strategy": {
-      "order": ["api", "browser", "codex", "oa", "scihub"],
+      "order": ["api", "browser", "codex", "scihub"],
       "enabled": {
         "api": true,
         "browser": true,
         "codex": true,
-        "oa": true,
         "scihub": true
       }
+    },
+    "unpaywall": {
+      "enabled": true
     }
   }
 }
@@ -115,7 +117,7 @@ Config shape:
 Typical host-agent flow:
 
 1. Call `grados:extract_paper_full_text` with the DOI.
-2. If the receipt asks for `codex`, use Chrome with the Codex extension and start from the receipt URL, normally `https://doi.org/{doi}`.
+2. If the receipt asks for `codex`, use Chrome with the Codex extension and start from the receipt URL. This can be an Unpaywall OA URL when available, otherwise `https://doi.org/{doi}`.
 3. After Chrome downloads the PDF, identify the downloaded `.pdf` path and validate it is a PDF.
 4. Call `grados:parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.
 

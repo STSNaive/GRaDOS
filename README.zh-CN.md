@@ -26,7 +26,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 1. 先用 `search_saved_papers`、`get_saved_paper_structure` 或 `grados://papers/{safe_doi}` 检查本地论文库
 2. 按配置好的优先级检索远程学术数据库
-3. 按配置好的 `api`、`browser`、`oa`、`scihub` 与可选 `codex` 路径抓取全文
+3. 可选用 Unpaywall 解析 OA 位置，再按配置好的 `api`、`browser`、可选 `codex` 与 `scihub` 路径抓取全文
 4. 按 `Docling -> MinerU -> Marker -> PyMuPDF` 瀑布解析 PDF
 5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把论文索引写入 `database/chroma/`，把远程元数据写入 `database/remote_metadata/`
 6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
@@ -76,7 +76,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | `database/remote_metadata/` | ChromaDB collection | 远程论文 metadata、fetch 状态与浏览器恢复缓存 |
 | `research_checkpoints/` | `checkpoint.json` 与渲染后的 `checkpoint.md` | 可恢复的 indepth 研究工作流状态 |
 | `paper_summaries/` | query-independent 的派生论文 summary | 导航与上下文恢复，不能作为引用依据 |
-| `browser/` | 托管 Chromium、profile、extensions | 难处理 publisher 页面的浏览器回退 |
+| `browser/` | 托管 Chromium、profile、extensions | publisher PDF 访问所需的 `browser` 策略资产 |
 | `models/` | embedding 与 OCR 模型缓存 | setup 预热的运行时资产 |
 
 ### 仓库地图 🗺️
@@ -252,7 +252,7 @@ cp -R skills/grados "<skills-root>/"
 
 - `search`: `connect_timeout`, `read_timeout`
 - `extract`: `fetch_connect_timeout`, `fetch_read_timeout`
-- `extract.headless_browser`: `deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`
+- `extract.headless_browser`: `browser` 策略的 legacy 命名配置段（`deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`）
 - `retry_policy`: `max_attempts`, `max_wait`, `respect_retry_after`
 
 ### 命令 🧰
@@ -349,24 +349,28 @@ Crossref 不需要 API Key。PubMed 也可以在无 key 情况下运行，但 `P
 {
   "extract": {
     "fetch_strategy": {
-      "order": ["api", "browser", "codex", "oa", "scihub"],
+      "order": ["api", "browser", "codex", "scihub"],
       "enabled": {
         "api": true,
         "browser": true,
         "codex": false,
-        "oa": true,
         "scihub": true
       }
+    },
+    "unpaywall": {
+      "enabled": true
     }
   }
 }
 ```
 
-旧的抓取策略别名 `TDM`、`OA`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。当前 `scihub` 运行时使用 `extract.sci_hub.endpoints` 作为有序访问列表：第一个 endpoint 优先尝试，后续 endpoint 作为 fallback。旧的 `extract.sci_hub.fallback_mirror` 在 `endpoints` 省略或为空时仍然兼容。
+Unpaywall 是可选的 DOI 到 OA location resolver，不是下载路径。`extract.unpaywall.enabled=true` 时，GRaDOS 会在 `codex` 或 `browser` 运行前解析 `best_oa_location` / `oa_locations`，并把最佳 `url_for_pdf` 或 `url_for_landing_page` 作为该路径的入口 URL。它不影响 `api` 或 `scihub` 路径。旧配置中残留的 `fetch_strategy.order` / `enabled` 里的 `oa` 会被忽略。
+
+旧的抓取策略别名 `TDM`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。当前 `scihub` 运行时使用 `extract.sci_hub.endpoints` 作为有序访问列表：第一个 endpoint 优先尝试，后续 endpoint 作为 fallback。旧的 `extract.sci_hub.fallback_mirror` 在 `endpoints` 省略或为空时仍然兼容。
 
 `browser` 是机构权限访问 publisher 全文的一等路径。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
 
-`codex` 默认关闭。启用并放入 `extract.fetch_strategy.order` 后，它会在该顺序位置作为 Codex Chrome extension host-agent handoff：`extract_paper_full_text` 返回 Chrome 下载 receipt，外层 agent 通过 Chrome 中的 [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) 下载 PDF，再调用 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")` 回到 GRaDOS 入库。
+`codex` 默认关闭。启用并放入 `extract.fetch_strategy.order` 后，它会在该顺序位置作为 Codex Chrome extension host-agent handoff：`extract_paper_full_text` 返回 Chrome 下载 receipt，外层 agent 通过 Chrome 中的 [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) 下载 PDF，再调用 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")` 回到 GRaDOS 入库。若 Unpaywall 找到 OA URL，receipt 会优先从该 URL 开始，而不是 `https://doi.org/{doi}`。
 
 PDF 解析优先级：
 

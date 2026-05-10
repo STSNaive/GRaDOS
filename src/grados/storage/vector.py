@@ -1,4 +1,4 @@
-"""ChromaDB canonical storage for paper documents and semantic retrieval."""
+"""ChromaDB retrieval index for canonical paper documents."""
 
 from __future__ import annotations
 
@@ -345,7 +345,7 @@ def index_paper(
 
 
 def get_paper_document(chroma_dir: Path, safe_doi: str) -> PaperDocument | None:
-    """Load the canonical stored paper document by safe_doi."""
+    """Load the indexed paper document metadata by safe_doi."""
     client = _get_client(chroma_dir)
     docs_collection = _get_docs_collection(client)
     record = get_paper_document_record(docs_collection=docs_collection, safe_doi=safe_doi)
@@ -355,7 +355,7 @@ def get_paper_document(chroma_dir: Path, safe_doi: str) -> PaperDocument | None:
 
 
 def list_paper_documents(chroma_dir: Path) -> list[PaperDocumentSummary]:
-    """List canonical paper documents currently stored in ChromaDB."""
+    """List paper document summaries currently indexed in ChromaDB."""
     client = _get_client(chroma_dir)
     docs_collection = _get_docs_collection(client)
     return [
@@ -550,7 +550,7 @@ def index_all_papers(
     *,
     indexing_config: IndexingConfig | None = None,
 ) -> tuple[int, int]:
-    """Rebuild canonical docs and retrieval chunks from mirror markdown files."""
+    """Rebuild retrieval documents and chunks from canonical Markdown files."""
     if not papers_dir.is_dir():
         return 0, 0
 

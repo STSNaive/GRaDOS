@@ -10,14 +10,14 @@ def test_research_artifacts_round_trip(tmp_path: Path) -> None:
 
     receipt = save_research_artifact(
         db_path,
-        kind="evidence_table",
+        kind="evidence_grid",
         title="Composite Damping Grid",
         content={"topic": "composite damping", "rows": [{"doi": "10.1234/demo"}]},
         source_doi="10.1234/demo",
         metadata={"query": "composite damping"},
     )
 
-    result = query_research_artifacts(db_path, kind="evidence_table", detail=True)
+    result = query_research_artifacts(db_path, kind="evidence_grid", detail=True)
 
     assert receipt["artifact_id"].startswith("artifact_")
     assert result["count"] == 1

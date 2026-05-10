@@ -123,6 +123,7 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
         doi = str(resume.get("doi", "") or "")
         browser = str(resume.get("browser", "") or "Google Chrome")
         start_url = str(resume.get("start_url", "") or (f"https://doi.org/{doi}" if doi else ""))
+        start_url_source = str(resume.get("start_url_source", "") or "")
         documentation_url = str(resume.get("documentation_url", "") or "")
         result += "\n\n### Codex Chrome Extension Download\n"
         result += f"- **Browser:** {browser}\n"
@@ -130,6 +131,8 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
             result += f"- **Setup:** {documentation_url}\n"
         if start_url:
             result += f"- **Start URL:** {start_url}\n"
+        if start_url_source:
+            result += f"- **Start URL Source:** {start_url_source}\n"
         result += (
             "- **Next:** use Chrome with the Codex extension to download the PDF, then call "
             "`parse_pdf_file(file_path=..., doi=..., copy_to_library=true, "
@@ -327,6 +330,7 @@ async def extract_paper_full_text(
         headless_config=config.extract.headless_browser,
         paths=paths,
         browser_resume=browser_resume if resume_browser else None,
+        unpaywall_enabled=bool(getattr(config.extract.unpaywall, "enabled", True)),
     )
 
     metadata = normalize_publisher_metadata(fetch_result.metadata)

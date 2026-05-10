@@ -5,7 +5,14 @@ import asyncio
 import httpx
 
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
-from grados.extract.fetch import FetchResult, _fetch_tdm, build_fetch_strategies, build_tdm_providers
+from grados.extract.fetch import (
+    FetchResult,
+    UnpaywallResolution,
+    _fetch_tdm,
+    _resolve_unpaywall_locations,
+    build_fetch_strategies,
+    build_tdm_providers,
+)
 from grados.publisher.common import PublisherMetadata
 from grados.publisher.elsevier import ElsevierFetchResult, ElsevierMetadataSignal, _extract_elsevier_markdown_from_xml
 from grados.publisher.springer import SpringerFetchResult
@@ -67,14 +74,14 @@ def test_fetch_strategy_builders_preserve_order_and_filter_unknown_names() -> No
     strategies = build_fetch_strategies(["OA", "Unknown", "codex", "Headless"])
     providers = build_tdm_providers(["Springer", "Missing", "Elsevier"])
 
-    assert [strategy.name for strategy in strategies] == ["oa", "codex", "browser"]
+    assert [strategy.name for strategy in strategies] == ["codex", "browser"]
     assert [provider.name for provider in providers] == ["Springer", "Elsevier"]
 
 
-def test_fetch_strategy_builders_default_to_browser_first_order() -> None:
+def test_fetch_strategy_builders_default_to_config_order() -> None:
     strategies = build_fetch_strategies()
 
-    assert [strategy.name for strategy in strategies] == ["api", "browser", "oa", "scihub"]
+    assert [strategy.name for strategy in strategies] == ["api", "browser", "codex", "scihub"]
 
 
 def test_fetch_tdm_returns_metadata_only_when_no_full_text_available(monkeypatch) -> None:
@@ -140,18 +147,18 @@ def test_fetch_paper_preserves_metadata_only_after_later_failures(monkeypatch) -
             asset_hints=[{"kind": "article_landing", "url": "https://example.com/article"}],
         )
 
-    async def fake_fetch_oa(*args, **kwargs):
-        return FetchResult(outcome="failed", via="oa", state="error", warnings=["OA lookup failed"])
+    async def fake_fetch_scihub(*args, **kwargs):
+        return FetchResult(outcome="failed", via="scihub", state="error", warnings=["Sci-Hub lookup failed"])
 
     monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
-    monkeypatch.setattr(fetch_module, "_fetch_oa", fake_fetch_oa)
+    monkeypatch.setattr(fetch_module, "_fetch_scihub", fake_fetch_scihub)
 
     result = asyncio.run(
         fetch_module.fetch_paper(
             doi="10.1234/demo",
             api_keys={"ELSEVIER_API_KEY": "elsevier-key"},
             etiquette_email="test@example.com",
-            fetch_order=["api", "oa"],
+            fetch_order=["api", "scihub"],
         )
     )
 
@@ -161,7 +168,7 @@ def test_fetch_paper_preserves_metadata_only_after_later_failures(monkeypatch) -
     assert result.state == "partial"
     assert result.metadata is not None
     assert result.metadata.title == "Metadata Only Paper"
-    assert result.warnings == ["OA lookup failed"]
+    assert result.warnings == ["Sci-Hub lookup failed"]
 
 
 def test_fetch_paper_preserves_browser_challenge_in_final_result(monkeypatch, tmp_path) -> None:
@@ -171,13 +178,10 @@ def test_fetch_paper_preserves_browser_challenge_in_final_result(monkeypatch, tm
     async def fake_fetch_tdm(*args, **kwargs):
         return FetchResult(outcome="failed", via="api", state="error", warnings=["api miss"])
 
-    async def fake_fetch_oa(*args, **kwargs):
-        return FetchResult(outcome="failed", via="oa", state="error", warnings=["oa miss"])
-
-    async def fake_fetch_with_browser(doi, config, paths, resume=None):  # noqa: ANN001
-        _ = (doi, config, paths, resume)
+    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url=""):  # noqa: ANN001
+        _ = (doi, config, paths, resume, target_url)
         return BrowserFetchResult(
-            source="Headless Browser",
+            source="Browser",
             outcome="publisher_challenge",
             state="challenge",
             manual=True,
@@ -194,7 +198,6 @@ def test_fetch_paper_preserves_browser_challenge_in_final_result(monkeypatch, tm
         )
 
     monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
-    monkeypatch.setattr(fetch_module, "_fetch_oa", fake_fetch_oa)
     monkeypatch.setattr("grados.browser.generic.fetch_with_browser", fake_fetch_with_browser)
 
     result = asyncio.run(
@@ -202,9 +205,10 @@ def test_fetch_paper_preserves_browser_challenge_in_final_result(monkeypatch, tm
             doi="10.1234/demo",
             api_keys={},
             etiquette_email="test@example.com",
-            fetch_order=["api", "browser", "oa"],
+            fetch_order=["api", "browser"],
             headless_config=HeadlessBrowserConfig(),
             paths=GRaDOSPaths(tmp_path / "grados-home"),
+            unpaywall_enabled=False,
         )
     )
 
@@ -215,7 +219,7 @@ def test_fetch_paper_preserves_browser_challenge_in_final_result(monkeypatch, tm
     assert result.host == "www.sciencedirect.com"
     assert result.resume["kind"] == "browser_profile"
     assert result.resume["profile_dir"].endswith("browser/profile")
-    assert result.warnings == ["api miss", "Browser automation: publisher_challenge", "oa miss"]
+    assert result.warnings == ["api miss", "Browser automation: publisher_challenge"]
 
 
 def test_fetch_paper_stops_after_browser_success(monkeypatch, tmp_path) -> None:
@@ -228,26 +232,21 @@ def test_fetch_paper_stops_after_browser_success(monkeypatch, tmp_path) -> None:
         calls.append("api")
         return FetchResult(outcome="metadata_only", via="api", state="partial")
 
-    async def fake_fetch_oa(*args, **kwargs):
-        calls.append("oa")
-        return FetchResult(outcome="failed", via="oa", state="error", warnings=["oa miss"])
-
     async def fake_fetch_scihub(*args, **kwargs):
         calls.append("scihub")
         return FetchResult(outcome="failed", via="scihub", state="error")
 
-    async def fake_fetch_with_browser(doi, config, paths, resume=None):  # noqa: ANN001
-        _ = (doi, config, paths, resume)
+    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url=""):  # noqa: ANN001
+        _ = (doi, config, paths, resume, target_url)
         calls.append("browser")
         return BrowserFetchResult(
             pdf_buffer=b"%PDF-1.4\n%stub",
-            source="Headless Browser",
+            source="Browser",
             outcome="pdf_obtained",
             state="ok",
         )
 
     monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
-    monkeypatch.setattr(fetch_module, "_fetch_oa", fake_fetch_oa)
     monkeypatch.setattr(fetch_module, "_fetch_scihub", fake_fetch_scihub)
     monkeypatch.setattr("grados.browser.generic.fetch_with_browser", fake_fetch_with_browser)
 
@@ -258,6 +257,7 @@ def test_fetch_paper_stops_after_browser_success(monkeypatch, tmp_path) -> None:
             etiquette_email="test@example.com",
             headless_config=HeadlessBrowserConfig(),
             paths=GRaDOSPaths(tmp_path / "grados-home"),
+            unpaywall_enabled=False,
         )
     )
 
@@ -267,7 +267,7 @@ def test_fetch_paper_stops_after_browser_success(monkeypatch, tmp_path) -> None:
     assert result.state == "ok"
 
 
-def test_fetch_paper_continues_after_scihub_not_found(monkeypatch) -> None:
+def test_fetch_paper_ignores_removed_oa_strategy_after_scihub_not_found(monkeypatch) -> None:
     import grados.extract.fetch as fetch_module
 
     calls: list[str] = []
@@ -282,18 +282,7 @@ def test_fetch_paper_continues_after_scihub_not_found(monkeypatch) -> None:
             warnings=["Sci-Hub primary endpoint sci-hub.se reports no paper for DOI"],
         )
 
-    async def fake_fetch_oa(*args, **kwargs):
-        calls.append("oa")
-        return FetchResult(
-            pdf_buffer=b"%PDF-1.4\n%stub",
-            outcome="pdf_obtained",
-            source="Unpaywall OA",
-            via="oa",
-            state="ok",
-        )
-
     monkeypatch.setattr(fetch_module, "_fetch_scihub", fake_fetch_scihub)
-    monkeypatch.setattr(fetch_module, "_fetch_oa", fake_fetch_oa)
 
     result = asyncio.run(
         fetch_module.fetch_paper(
@@ -301,13 +290,47 @@ def test_fetch_paper_continues_after_scihub_not_found(monkeypatch) -> None:
             api_keys={},
             etiquette_email="test@example.com",
             fetch_order=["scihub", "oa"],
+            fetch_enabled={"scihub": True, "oa": True},
         )
     )
 
-    assert calls == ["scihub", "oa"]
-    assert result.outcome == "pdf_obtained"
-    assert result.via == "oa"
+    assert calls == ["scihub"]
+    assert result.outcome == "failed"
+    assert result.via == "scihub"
     assert result.warnings == ["Sci-Hub primary endpoint sci-hub.se reports no paper for DOI"]
+
+
+def test_fetch_paper_defaults_keep_codex_disabled(monkeypatch) -> None:
+    import grados.extract.fetch as fetch_module
+
+    calls: list[str] = []
+
+    async def fake_fetch_tdm(*args, **kwargs):
+        calls.append("api")
+        return FetchResult(outcome="failed", via="api", state="error", warnings=["api miss"])
+
+    async def fake_fetch_scihub(*args, **kwargs):
+        calls.append("scihub")
+        return FetchResult(outcome="failed", via="scihub", state="not_found", warnings=["scihub miss"])
+
+    async def fake_resolve(*args, **kwargs):
+        raise AssertionError("unconfigured browser and disabled codex should not trigger Unpaywall")
+
+    monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
+    monkeypatch.setattr(fetch_module, "_fetch_scihub", fake_fetch_scihub)
+    monkeypatch.setattr(fetch_module, "_resolve_unpaywall_locations", fake_resolve)
+
+    result = asyncio.run(
+        fetch_module.fetch_paper(
+            doi="10.1234/demo",
+            api_keys={},
+            etiquette_email="test@example.com",
+        )
+    )
+
+    assert calls == ["api", "scihub"]
+    assert result.via == "scihub"
+    assert not any(trace["via"] == "codex" for trace in result.trace)
 
 
 def test_fetch_paper_returns_chrome_extension_action_at_configured_position(monkeypatch) -> None:
@@ -333,6 +356,7 @@ def test_fetch_paper_returns_chrome_extension_action_at_configured_position(monk
             etiquette_email="test@example.com",
             fetch_order=["api", "codex", "scihub"],
             fetch_enabled={"api": True, "codex": True, "scihub": True},
+            unpaywall_enabled=False,
         )
     )
 
@@ -346,6 +370,7 @@ def test_fetch_paper_returns_chrome_extension_action_at_configured_position(monk
     assert result.resume["kind"] == "codex"
     assert result.resume["browser"] == "Google Chrome"
     assert result.resume["start_url"] == "https://doi.org/10.1234/demo"
+    assert result.resume["start_url_source"] == "doi"
     assert result.resume["action"] == "download_pdf_with_chrome_extension_then_call_parse_pdf_file"
     assert result.resume["documentation_url"] == "https://developers.openai.com/codex/app/chrome-extension"
     assert result.warnings[0] == "api miss"
@@ -368,8 +393,8 @@ def test_fetch_paper_resume_starts_at_browser_and_passes_resume(monkeypatch, tmp
         _ = (args, kwargs)
         raise AssertionError("resume should not rerun api")
 
-    async def fake_fetch_with_browser(doi, config, paths, resume=None):  # noqa: ANN001
-        _ = (doi, config, paths)
+    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url=""):  # noqa: ANN001
+        _ = (doi, config, paths, target_url)
         calls.append("browser")
         assert resume == {
             "kind": "browser_profile",
@@ -379,7 +404,7 @@ def test_fetch_paper_resume_starts_at_browser_and_passes_resume(monkeypatch, tmp
         }
         return BrowserFetchResult(
             pdf_buffer=b"%PDF-1.4\n%stub",
-            source="Headless Browser",
+            source="Browser",
             outcome="pdf_obtained",
             state="ok",
         )
@@ -405,35 +430,176 @@ def test_fetch_paper_resume_starts_at_browser_and_passes_resume(monkeypatch, tmp
     assert result.trace[0]["state"] == "ok"
 
 
-def test_fetch_oa_surfaces_warning_when_pdf_download_fails() -> None:
-    from grados.extract.fetch import _fetch_oa
-
+def test_unpaywall_resolver_prefers_best_pdf_url() -> None:
     class FakeResponse:
         status_code = 200
 
         @staticmethod
         def json() -> dict[str, object]:
             return {
+                "best_oa_location": {
+                    "host_type": "repository",
+                    "url_for_pdf": "https://example.com/best.pdf",
+                    "url_for_landing_page": "https://example.com/best",
+                },
                 "oa_locations": [
                     {
-                        "host_type": "repository",
-                        "url_for_pdf": "https://example.com/demo.pdf",
+                        "host_type": "publisher",
+                        "url_for_pdf": "https://example.com/other.pdf",
                     }
                 ]
             }
 
     class FakeClient:
+        calls: list[str]
+
+        def __init__(self) -> None:
+            self.calls = []
+
         async def get(self, url: str, **kwargs):  # noqa: ANN003
+            self.calls.append(url)
             if "unpaywall" in url:
                 return FakeResponse()
             raise RuntimeError("network down")
 
-    result = asyncio.run(_fetch_oa("10.1234/demo", "test@example.com", FakeClient()))  # type: ignore[arg-type]
+    client = FakeClient()
+    result = asyncio.run(
+        _resolve_unpaywall_locations("10.1234/demo", "test@example.com", client)  # type: ignore[arg-type]
+    )
 
-    assert result.outcome == "failed"
-    assert result.via == "oa"
-    assert result.state == "error"
-    assert result.warnings == ["OA PDF fetch failed: RuntimeError: network down"]
+    assert client.calls == ["https://api.unpaywall.org/v2/10.1234/demo"]
+    assert result.selected_url == "https://example.com/best.pdf"
+    assert result.selected_url_source == "unpaywall.best_oa_location.url_for_pdf"
+    assert result.best_oa_location["url_for_pdf"] == "https://example.com/best.pdf"
+    assert result.oa_locations[0]["url_for_pdf"] == "https://example.com/other.pdf"
+
+
+def test_unpaywall_resolver_falls_back_to_landing_page() -> None:
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "best_oa_location": {
+                    "host_type": "repository",
+                    "url_for_landing_page": "https://example.com/article",
+                },
+                "oa_locations": [],
+            }
+
+    class FakeClient:
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            _ = (url, kwargs)
+            return FakeResponse()
+
+    result = asyncio.run(
+        _resolve_unpaywall_locations("10.1234/demo", "test@example.com", FakeClient())  # type: ignore[arg-type]
+    )
+
+    assert result.selected_url == "https://example.com/article"
+    assert result.selected_url_source == "unpaywall.best_oa_location.url_for_landing_page"
+
+
+def test_fetch_paper_does_not_resolve_unpaywall_for_api_only(monkeypatch) -> None:
+    import grados.extract.fetch as fetch_module
+
+    async def fake_fetch_tdm(*args, **kwargs):
+        return FetchResult(
+            text="full text",
+            outcome="native_full_text",
+            source="Elsevier TDM",
+            via="api",
+            state="ok",
+        )
+
+    async def fake_resolve(*args, **kwargs):
+        raise AssertionError("api path should not trigger Unpaywall resolution")
+
+    monkeypatch.setattr(fetch_module, "_fetch_tdm", fake_fetch_tdm)
+    monkeypatch.setattr(fetch_module, "_resolve_unpaywall_locations", fake_resolve)
+
+    result = asyncio.run(
+        fetch_module.fetch_paper(
+            doi="10.1234/demo",
+            api_keys={"ELSEVIER_API_KEY": "elsevier-key"},
+            etiquette_email="test@example.com",
+            fetch_order=["api"],
+        )
+    )
+
+    assert result.outcome == "native_full_text"
+    assert result.via == "api"
+
+
+def test_fetch_paper_codex_uses_unpaywall_start_url(monkeypatch) -> None:
+    import grados.extract.fetch as fetch_module
+
+    async def fake_resolve(*args, **kwargs):
+        _ = (args, kwargs)
+        return UnpaywallResolution(
+            best_oa_location={"url_for_pdf": "https://example.com/best.pdf"},
+            selected_url="https://example.com/best.pdf",
+            selected_url_source="unpaywall.best_oa_location.url_for_pdf",
+        )
+
+    monkeypatch.setattr(fetch_module, "_resolve_unpaywall_locations", fake_resolve)
+
+    result = asyncio.run(
+        fetch_module.fetch_paper(
+            doi="10.1234/demo",
+            api_keys={},
+            etiquette_email="test@example.com",
+            fetch_order=["codex"],
+            fetch_enabled={"codex": True},
+        )
+    )
+
+    assert result.via == "codex"
+    assert result.resume["start_url"] == "https://example.com/best.pdf"
+    assert result.resume["start_url_source"] == "unpaywall.best_oa_location.url_for_pdf"
+
+
+def test_fetch_paper_browser_uses_unpaywall_target_url(monkeypatch, tmp_path) -> None:
+    import grados.extract.fetch as fetch_module
+    from grados.browser.generic import BrowserFetchResult
+
+    captured: dict[str, str] = {}
+
+    async def fake_resolve(*args, **kwargs):
+        _ = (args, kwargs)
+        return UnpaywallResolution(
+            best_oa_location={"url_for_pdf": "https://example.com/best.pdf"},
+            selected_url="https://example.com/best.pdf",
+            selected_url_source="unpaywall.best_oa_location.url_for_pdf",
+        )
+
+    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url=""):  # noqa: ANN001
+        _ = (doi, config, paths, resume)
+        captured["target_url"] = target_url
+        return BrowserFetchResult(
+            pdf_buffer=b"%PDF-1.4\n%stub",
+            source="Browser",
+            outcome="pdf_obtained",
+            state="ok",
+        )
+
+    monkeypatch.setattr(fetch_module, "_resolve_unpaywall_locations", fake_resolve)
+    monkeypatch.setattr("grados.browser.generic.fetch_with_browser", fake_fetch_with_browser)
+
+    result = asyncio.run(
+        fetch_module.fetch_paper(
+            doi="10.1234/demo",
+            api_keys={},
+            etiquette_email="test@example.com",
+            fetch_order=["browser"],
+            headless_config=HeadlessBrowserConfig(),
+            paths=GRaDOSPaths(tmp_path / "grados-home"),
+        )
+    )
+
+    assert result.via == "browser"
+    assert captured["target_url"] == "https://example.com/best.pdf"
 
 
 def _http_response(

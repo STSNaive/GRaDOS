@@ -96,6 +96,7 @@ async def fetch_with_browser(
     config: HeadlessBrowserConfig,
     paths: GRaDOSPaths,
     resume: dict[str, str] | None = None,
+    target_url: str = "",
 ) -> BrowserFetchResult:
     """Fetch a paper PDF using browser automation."""
     runtime = None
@@ -113,7 +114,7 @@ async def fetch_with_browser(
         if runtime is None:
             return BrowserFetchResult(
                 pdf_buffer=None,
-                source="Headless Browser",
+                source="Browser",
                 outcome="no_browser",
                 state="nobrowser",
                 warnings=["No compatible browser executable found. Run 'grados setup'."],
@@ -126,7 +127,7 @@ async def fetch_with_browser(
         await navigate_to_doi_target(
             runtime.root_page,
             doi=doi,
-            target_url=(resume or {}).get("url", ""),
+            target_url=(resume or {}).get("url", "") or target_url,
             state=state,
             networkidle_timeout_ms=current_browser_networkidle_timeout_ms(),
             logger=logger,
@@ -153,7 +154,7 @@ async def fetch_with_browser(
             )
             return BrowserFetchResult(
                 pdf_buffer=state.pdf_buffer,
-                source=f"Headless Browser ({runtime.browser_label})",
+                source=f"Browser ({runtime.browser_label})",
                 outcome="pdf_obtained",
                 state="ok",
                 warnings=state.warnings,
@@ -176,7 +177,7 @@ async def fetch_with_browser(
         )
         return BrowserFetchResult(
             pdf_buffer=None,
-            source=f"Headless Browser ({runtime.browser_label})",
+            source=f"Browser ({runtime.browser_label})",
             outcome=outcome,
             state="challenge" if state.challenge_seen else "timeout",
             manual=state.challenge_seen,
@@ -187,9 +188,9 @@ async def fetch_with_browser(
     except Exception as exc:
         if runtime is not None:
             await finalize_browser_error(runtime)
-        source = "Headless Browser"
+        source = "Browser"
         if runtime is not None:
-            source = f"Headless Browser ({runtime.browser_label})"
+            source = f"Browser ({runtime.browser_label})"
         return BrowserFetchResult(
             pdf_buffer=None,
             source=source,

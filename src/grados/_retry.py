@@ -66,7 +66,7 @@ class TimeoutPolicy:
 
     `search`: academic metadata APIs (Crossref / PubMed / WoS / Elsevier Scopus
               / Springer Meta). Small JSON payloads.
-    `fetch`:  OA lookup, Sci-Hub landing, Elsevier TDM / Springer OA JATS
+    `fetch`:  Unpaywall lookup, Sci-Hub landing, Elsevier TDM / Springer OA JATS
               (non-PDF) and HTML fallbacks. Medium payloads.
     `pdf`:    Direct PDF downloads — keep read generous.
     """

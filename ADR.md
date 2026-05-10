@@ -20,13 +20,13 @@
 - `database/remote_metadata` 单独保存远程论文 metadata、fetch 状态与 browser resume 信息；它不是 `grados reindex` 要清理的可重建 paper index。
 - `grados reindex` 的产品语义明确为“重建检索索引”，而不是“恢复论文正文”。
 - 用户侧读论文、列论文、获取结构、深读上下文时，都应从 `papers/*.md` 读取 canonical Markdown。
-- canonical mirror 的 durable 写入必须先于索引刷新；不得允许“只有索引、没有 `papers/*.md` 原文”的状态成为持久结果。
+- canonical Markdown 的 durable 写入必须先于索引刷新；不得允许“只有索引、没有 `papers/*.md` 原文”的状态成为持久结果。
 
 ### 结果与影响
 - 全文真源与检索索引职责解耦，系统语义更清晰。
 - `papers/*.md` 必须保留足够 frontmatter 元数据，以支持仅依赖原文库重建索引。
 - 如果原文文件缺失，应显式表现为源数据缺失，而不是偷偷回退到索引库正文副本。
-- mirror 写入失败时，应让保存过程直接失败或终止在 canonical 层，而不是继续刷新派生索引。
+- canonical Markdown 写入失败时，应让保存过程直接失败或终止在 canonical 层，而不是继续刷新派生索引。
 
 ## ADR-002：检索采用“索引召回 + canonical 原文回读”
 
@@ -84,12 +84,12 @@
 
 ### 背景
 - 早期实现里存在两类风险：
-  - 保存 mirror 成功但索引失败时，系统仍表现为“完全成功”
+  - canonical Markdown 保存成功但索引失败时，系统仍表现为“完全成功”
   - Parser fallback 失败或超时时静默吞掉异常，难以判断问题发生在哪一层
 
 ### 决策
-- `save_paper_markdown()` 必须显式区分 mirror 写入状态与索引状态。
-- 当 mirror 成功但索引失败时，上层 extract/import/parse 工具返回 partial-success / warnings，而不是伪装为完全成功。
+- `save_paper_markdown()` 必须显式区分 canonical Markdown 写入状态与索引状态。
+- 当 canonical Markdown 成功但索引失败时，上层 extract/import/parse 工具返回 partial-success / warnings，而不是伪装为完全成功。
 - `marker_timeout` 必须成为真实生效的运行时契约，因此 Marker 改为独立子进程执行并按配置超时终止。
 - Docling 与 Marker 的失败、超时、fallback 需要输出统一格式的 warning/debug。
 - `grados setup` 在用户首次真实解析前预热 Docling，减少冷启动“像卡住”的体验问题。
@@ -284,7 +284,7 @@
 
 ## ADR-011：全文获取默认顺序改为 `api -> browser -> oa -> scihub`
 
-- 状态：Accepted
+- 状态：Superseded by ADR-015 for current behavior; retained as historical context for the earlier `oa` strategy design.
 - 日期：2026-04-23
 
 ### 背景
@@ -393,3 +393,34 @@
 - GRaDOS 的 acquisition contract 继续围绕可由 Python runtime 控制和验证的后端组织。
 - 不保留 speculative in-app browser backend TODO，避免再次把不可下载的 UI surface 误写成获取路径。
 - `codex` 的配置顺序只控制 host-action 出现时机；真正下载和本地 PDF 路径识别仍属于连接了 Codex Chrome extension 的 Codex host agent 工作。
+
+---
+
+## ADR-015：Unpaywall 作为 URL resolver 而不是下载路径
+
+- 状态：Accepted
+- 日期：2026-05-10
+
+### 背景
+- 旧的 `oa` fetch strategy 把两个职责混在一起：先用 DOI 查询 Unpaywall `oa_locations`，再由 GRaDOS 进程直接 HTTP 下载 `url_for_pdf`。
+- 随着 `codex` Chrome extension handoff 成为主下载路径，继续保留 `oa` 作为并列 downloader 会重新引入 direct HTTP PDF 抓取、HTML/block page 检测和重复的下载心智。
+- Unpaywall 的稳定职责是 DOI -> OA location discovery。它返回 `best_oa_location`、`oa_locations`、`url_for_pdf`、`url_for_landing_page`、`host_type` 等 upstream 字段，但不保证这些 URL 一定能由 GRaDOS 后端直接下载成功。
+
+### 决策
+- 从默认 `extract.fetch_strategy.order` 和 registry 中移除 `oa`。新默认顺序为 `api -> browser -> codex -> scihub`，其中 `codex` 仍默认关闭。
+- 新增 `extract.unpaywall.enabled`，默认开启。它是可选 resolver，不是 fetch strategy。
+- Unpaywall 只在即将执行 `codex` 或 `browser` 时按需查询；`api` 和 `scihub` 不消费 Unpaywall hint，也不因 Unpaywall 开关改变行为。
+- URL 选择顺序为：
+  - `best_oa_location.url_for_pdf`
+  - `oa_locations[*].url_for_pdf`
+  - `best_oa_location.url_for_landing_page`
+  - `oa_locations[*].url_for_landing_page`
+  - `https://doi.org/{doi}` fallback
+- Unpaywall resolver 内部保留 upstream 字段名；`codex` 继续输出 `start_url`，`browser` 继续消费 `target_url`。不新增 `direct_pdf` / `direct_link` 路径或字段。
+- 旧 config 中残留的 `oa` strategy 名和 enabled key 不做迁移，按未知/无效 strategy 自然忽略；不为旧配置增加额外迁移变量或运行时代码。
+
+### 结果与影响
+- `codex` 和 `browser` 可以优先从合法 OA PDF 或 landing page 开始，减少从 DOI publisher page 摸索的成本。
+- GRaDOS 不再把 Unpaywall 描述为下载路径，避免与 Chrome extension / browser acquisition 责任重叠。
+- API/TDM 路径继续只由 publisher API 配置控制；Sci-Hub 继续只由 DOI 和 `extract.sci_hub.endpoints` 控制。
+- 旧配置中的 `oa` 项不会导致启动失败，但也不会再执行 Unpaywall direct-PDF 下载。

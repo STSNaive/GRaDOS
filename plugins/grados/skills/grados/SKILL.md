@@ -51,7 +51,7 @@ Use host-side subagents only when isolated parallel triage reduces context load:
 
 ## Compression-Safe Anchors
 
-Use this protocol whenever a claim, evidence table, comparison, or draft audit may survive context compression or be reused later:
+Use this protocol whenever a claim, evidence grid, comparison, or draft audit may survive context compression or be reused later:
 
 1. Treat every citable evidence point as an `evidence_anchor` with DOI or `safe_doi`, `canonical_uri`, paragraph window, claim, and support reason. See [references/tools.md](references/tools.md) for the full schema.
 2. Create or confirm anchors from canonical saved-paper reads, not from snippets, summaries, receipts, or helper tables.

@@ -239,7 +239,7 @@ def _retry_suggestions(
         if "403" in error or "paywall" in error or "captcha" in error:
             suggestions.append(
                 "Publisher access looks restricted on "
-                f"{source_name}; retry with headless/browser-assisted "
+                f"{source_name}; retry with browser-assisted "
                 "extraction or a local PDF fallback."
             )
         if doi:

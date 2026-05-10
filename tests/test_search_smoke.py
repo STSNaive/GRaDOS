@@ -687,7 +687,7 @@ def test_search_papers_uses_index_candidates_before_canonical_hydration(monkeypa
     assert hydrated_counts == [30]
 
 
-def test_search_papers_end_to_end_rereads_updated_canonical_mirror(monkeypatch, tmp_path: Path) -> None:
+def test_search_papers_end_to_end_rereads_updated_canonical_markdown(monkeypatch, tmp_path: Path) -> None:
     import grados.storage.vector as vector
 
     class FakeBackend:
@@ -736,7 +736,7 @@ def test_search_papers_end_to_end_rereads_updated_canonical_mirror(monkeypatch, 
         "## Abstract\n\n"
         "This study investigates laminate damping behaviour.\n\n"
         "## Results\n\n"
-        "Canonical mirror wording says attenuation rose by 18 percent after laminate treatment.\n\n"
+        "Canonical paper wording says attenuation rose by 18 percent after laminate treatment.\n\n"
         "## Discussion\n\n"
         "Closing discussion paragraph.\n",
         encoding="utf-8",

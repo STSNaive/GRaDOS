@@ -27,9 +27,9 @@ def test_save_read_list_and_pdf_workflow(tmp_path: Path, monkeypatch) -> None:
     import grados.storage.vector as vector
 
     def fake_index_paper(chroma, doi, safe, title, markdown, **kwargs):
-        mirror_path = papers_dir / f"{safe}.md"
-        assert mirror_path.is_file()
-        saved = mirror_path.read_text(encoding="utf-8")
+        paper_path = papers_dir / f"{safe}.md"
+        assert paper_path.is_file()
+        saved = paper_path.read_text(encoding="utf-8")
         metadata = read_frontmatter_metadata(saved)
         assert "# Demo Paper Title" in saved
         assert json.loads(metadata["authors_json"]) == ["Alice", "Bob"]
@@ -275,7 +275,7 @@ def test_chunking_helpers_strip_frontmatter_and_normalize_reference_dois() -> No
     assert extract_reference_dois(markdown) == ["10.1000/foo", "10.1000/bar"]
 
 
-def test_save_paper_markdown_surfaces_index_failure_without_blocking_mirror(
+def test_save_paper_markdown_surfaces_index_failure_without_blocking_canonical_write(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -303,7 +303,7 @@ def test_save_paper_markdown_surfaces_index_failure_without_blocking_mirror(
     assert "embedding backend unavailable" in summary.index_error
 
 
-def test_save_paper_markdown_skips_index_when_mirror_write_fails(
+def test_save_paper_markdown_skips_index_when_canonical_write_fails(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -341,13 +341,13 @@ def test_save_paper_markdown_skips_index_when_mirror_write_fails(
     except OSError as exc:
         assert "disk full" in str(exc)
     else:
-        raise AssertionError("Expected mirror write failure")
+        raise AssertionError("Expected canonical paper write failure")
 
     assert called is False
     assert not (papers_dir / f"{expected_safe}.md").exists()
 
 
-def test_read_and_list_require_markdown_mirror_source_of_truth(
+def test_read_and_list_require_canonical_markdown_source_of_truth(
     tmp_path: Path,
     monkeypatch,
 ) -> None:

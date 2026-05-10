@@ -186,7 +186,7 @@ async def import_local_pdf_library(
         existing_dois.add(normalize_doi(doi))
         if persisted.index_warning_added:
             warning = (
-                f"{pdf_file.name}: search index refresh failed after canonical mirror save. "
+                f"{pdf_file.name}: search index refresh failed after canonical paper save. "
                 f"Error: {persisted.summary.index_error}"
             )
             result.warnings.append(warning)

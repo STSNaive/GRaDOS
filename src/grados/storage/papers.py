@@ -1,4 +1,4 @@
-"""Paper storage: canonical markdown mirrors under papers/."""
+"""Paper storage: canonical Markdown files under papers/."""
 
 from __future__ import annotations
 

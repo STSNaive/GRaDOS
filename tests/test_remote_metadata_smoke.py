@@ -126,7 +126,7 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
         doi="10.1234/demo",
         fetch_status="challenge",
         has_fulltext=False,
-        source="Headless Browser",
+        source="Browser",
         fetch_via="browser",
         fetch_state="challenge",
         fetch_host="www.sciencedirect.com",

@@ -1,4 +1,4 @@
-"""Canonical YAML frontmatter helpers for paper markdown mirrors."""
+"""Canonical YAML frontmatter helpers for paper Markdown files."""
 
 from __future__ import annotations
 

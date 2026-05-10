@@ -178,14 +178,17 @@ class SearchConfig(BaseModel):
 
 
 class FetchStrategyConfig(BaseModel):
-    order: list[str] = Field(default=["api", "browser", "codex", "oa", "scihub"])
+    order: list[str] = Field(default=["api", "browser", "codex", "scihub"])
     enabled: dict[str, bool] = Field(default_factory=lambda: {
         "api": True,
         "browser": True,
         "codex": False,
-        "oa": True,
         "scihub": True,
     })
+
+
+class UnpaywallConfig(BaseModel):
+    enabled: bool = True
 
 
 DEFAULT_SCI_HUB_ENDPOINT = "https://sci-hub.se"
@@ -277,6 +280,7 @@ class TDMConfig(BaseModel):
 
 class ExtractConfig(BaseModel):
     fetch_strategy: FetchStrategyConfig = Field(default_factory=FetchStrategyConfig)
+    unpaywall: UnpaywallConfig = Field(default_factory=UnpaywallConfig)
     tdm: TDMConfig = Field(default_factory=TDMConfig)
     sci_hub: SciHubConfig = Field(default_factory=SciHubConfig)
     headless_browser: HeadlessBrowserConfig = Field(default_factory=HeadlessBrowserConfig)
@@ -285,7 +289,7 @@ class ExtractConfig(BaseModel):
     fetch_connect_timeout: float = Field(
         default=15.0,
         ge=1.0,
-        description="TCP connect timeout (seconds) for api / oa / scihub HTTP calls.",
+        description="TCP connect timeout (seconds) for api / unpaywall / scihub HTTP calls.",
     )
     fetch_read_timeout: float = Field(
         default=60.0,
@@ -502,7 +506,7 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "Response read timeout in seconds for academic search APIs."
     )
     data["extract"]["_comment_fetch_connect_timeout"] = (
-        "TCP connect timeout in seconds for api / oa / scihub HTTP calls."
+        "TCP connect timeout in seconds for api / unpaywall / scihub HTTP calls."
     )
     data["extract"]["_comment_fetch_read_timeout"] = (
         "Response read timeout in seconds for PDF and landing-page downloads. "
@@ -510,6 +514,10 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     )
     data["extract"]["fetch_strategy"]["_comment_order"] = (
         "PDF/full-text retrieval order. `codex` is a disabled-by-default Codex Chrome extension handoff."
+    )
+    data["extract"]["unpaywall"]["_comment_enabled"] = (
+        "When true, resolve DOI to Unpaywall OA locations before codex/browser acquisition. "
+        "Unpaywall is not a download strategy and does not affect api or scihub."
     )
     data["extract"]["tdm"]["_comment_order"] = (
         "Publisher API/TDM providers tried by the api fetch strategy."
