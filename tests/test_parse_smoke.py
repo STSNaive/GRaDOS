@@ -7,6 +7,7 @@ import zipfile
 from typing import Any
 
 import pymupdf
+import pytest
 
 from grados.extract.parse import (
     ParsePipelineResult,
@@ -16,6 +17,7 @@ from grados.extract.parse import (
     resolve_document_normalizer,
 )
 from grados.extract.qa import is_valid_paper_content
+from grados.http_limits import SizeLimitError
 
 
 def _make_sample_pdf_bytes() -> bytes:
@@ -211,6 +213,34 @@ def test_parse_mineru_cloud_parser_uses_authenticated_signed_upload(monkeypatch)
     assert fake_client.uploaded_pdf.startswith(b"%PDF")
     assert fake_client.upload_headers == [{}]
     assert fake_client.auth_headers == ["Bearer mineru-secret", "Bearer mineru-secret", "Bearer mineru-secret"]
+
+
+def test_mineru_markdown_reader_rejects_oversized_full_md() -> None:
+    import grados.extract.parse as parse_module
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as archive:
+        archive.writestr("paper/full.md", "# Oversized\n\n" + ("x" * 128))
+
+    class FakeResponse:
+        headers = {"content-length": str(len(zip_buffer.getvalue()))}
+        content = zip_buffer.getvalue()
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeClient:
+        def get(self, url: str, **kwargs):  # noqa: ANN003
+            _ = (url, kwargs)
+            return FakeResponse()
+
+    with pytest.raises(SizeLimitError, match="MinerU full.md exceeds configured size limit"):
+        parse_module._download_mineru_markdown(
+            FakeClient(),  # type: ignore[arg-type]
+            "https://cdn.example/result.zip",
+            max_zip_bytes=1024,
+            max_full_md_bytes=32,
+        )
 
 
 def test_parse_pdf_falls_back_after_marker_timeout(monkeypatch) -> None:

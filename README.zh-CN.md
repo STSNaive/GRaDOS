@@ -255,6 +255,10 @@ cp -R skills/grados "<skills-root>/"
 - `extract.headless_browser`: `browser` 策略的 legacy 命名配置段（`deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`）
 - `retry_policy`: `max_attempts`, `max_wait`, `respect_retry_after`
 
+### 尺寸保护
+
+- `extract.security`：远端 PDF、远端文本/XML/HTML、本地 PDF、浏览器 PDF 捕获、MinerU 结果 zip、MinerU `full.md` 的字节上限。默认值刻意保守地放宽到正常论文 PDF 足够使用；只有可信的大文件才需要调高。
+
 ### 命令 🧰
 
 | 命令 | 作用 |
@@ -314,6 +318,8 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 
 1. `GRADOS_HOME`
 2. `~/GRaDOS`
+
+`parse_pdf_file` 和 `import_local_pdf_library` 这类本地 PDF 工具会从可信本地 MCP/CLI 会话读取主机文件路径，并在真正加载文件前先检查 `extract.security.max_local_pdf_bytes`。
 
 ### API Keys 🔑
 
@@ -390,7 +396,7 @@ PDF 解析优先级：
 }
 ```
 
-`MinerU` 是认证云端解析器。启用且存在 `MINERU_API_KEY` 时，GRaDOS 会通过 MinerU 签名上传 API 上传本地 PDF，轮询解析 zip，并读取其中的 `full.md` 作为解析结果。用 `grados auth set mineru` 可把 token 存入系统 keychain。
+`MinerU` 是认证云端解析器。启用且存在 `MINERU_API_KEY` 时，GRaDOS 会通过 MinerU 签名上传 API 上传本地 PDF，轮询解析 zip，并读取其中的 `full.md` 作为解析结果。GRaDOS 会忽略 zip 中的其他条目，并在读取前检查 `extract.security.max_mineru_zip_bytes` 和 `extract.security.max_mineru_full_md_bytes`。用 `grados auth set mineru` 可把 token 存入系统 keychain。
 
 ### 导入现有 PDF 库 ♻️
 

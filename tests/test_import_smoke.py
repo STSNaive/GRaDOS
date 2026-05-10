@@ -126,3 +126,31 @@ def test_import_local_pdf_library_surfaces_index_warning(tmp_path: Path, monkeyp
     assert any("index refresh failed" in warning.lower() for warning in result.warnings)
     assert (paths.papers / f"{safe_doi_filename('10.1234/demo-a')}.md").is_file()
     assert isinstance(captured["indexing_config"], IndexingConfig)
+
+
+def test_import_local_pdf_library_rejects_oversized_pdf(tmp_path: Path) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    config = generate_default_config(paths)
+    config["extract"]["security"]["max_local_pdf_bytes"] = 8
+    paths.config_file.write_text(json.dumps(config), encoding="utf-8")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "too-large.pdf").write_bytes(b"%PDF-1.4\n" + b"x" * 32)
+
+    result = asyncio.run(
+        import_local_pdf_library(
+            source_path=source,
+            paths=paths,
+            copy_to_library=False,
+        )
+    )
+
+    assert result.scanned == 1
+    assert result.imported == 0
+    assert result.failed == 1
+    assert result.items[0].status == "failed"
+    assert result.items[0].detail == "file_too_large"
+    assert "Local PDF" in result.items[0].warnings[0]

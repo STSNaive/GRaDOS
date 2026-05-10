@@ -11,7 +11,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from grados.http_limits import (
+    DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
+    SizeLimitError,
+    ensure_byte_limit,
+    ensure_bytes_within_limit,
+    ensure_content_length_allowed,
+)
 from grados.publisher.common import classify_pdf_content, detect_bot_challenge
+
+logger = logging.getLogger(__name__)
 
 
 def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) -> float:
@@ -23,6 +32,12 @@ def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) ->
     return min(poll_max, current * 2)
 
 
+BrowserBackfill = Callable[
+    [Any, Any, set[str], Any, Any, Callable[[str], None], int],
+    Awaitable[None],
+]
+
+
 @dataclass
 class BrowserFetchState:
     attempted_urls: set[str] = field(default_factory=set)
@@ -31,6 +46,7 @@ class BrowserFetchState:
     pdf_buffer: bytes | None = None
     challenge_seen: bool = False
     final_url: str = ""
+    max_capture_bytes: int = DEFAULT_MAX_BROWSER_CAPTURE_BYTES
 
     def pdf_captured(self) -> bool:
         return self.pdf_buffer is not None
@@ -41,7 +57,12 @@ class BrowserFetchState:
             self.warnings.append(normalized)
 
     def try_capture(self, data: bytes, content_type: str = "", source_url: str = "") -> bool:
-        _ = source_url
+        label = f"Browser PDF capture from {source_url}" if source_url else "Browser PDF capture"
+        try:
+            ensure_bytes_within_limit(data, max_bytes=self.max_capture_bytes, label=label)
+        except SizeLimitError as exc:
+            self.report_warning(str(exc))
+            return False
         check = classify_pdf_content(data, content_type)
         if check["is_pdf"]:
             self.pdf_buffer = data
@@ -98,12 +119,19 @@ class BrowserListenerRegistry:
         if not looks_pdf:
             return
         try:
+            ensure_content_length_allowed(
+                headers,
+                max_bytes=self.state.max_capture_bytes,
+                label=f"Browser PDF response from {url}",
+            )
             body = await response.body()
             self.state.try_capture(body, ct, url)
-        except Exception:
+        except SizeLimitError as exc:
+            self.state.report_warning(str(exc))
+        except Exception as exc:
             # Response hooks are opportunistic sniffers and must not stop the
             # main polling loop if the browser rejects body access.
-            pass
+            logger.debug("Browser response body capture failed for %s: %s", url, exc)
 
     async def _on_download(self, download: Any) -> None:
         if self.state.pdf_captured():
@@ -114,12 +142,20 @@ class BrowserListenerRegistry:
                 return
             dl_path = await download.path()
             if dl_path:
-                body = Path(dl_path).read_bytes()
+                path = Path(dl_path)
+                ensure_byte_limit(
+                    path.stat().st_size,
+                    max_bytes=self.state.max_capture_bytes,
+                    label=f"Browser PDF download from {download.url}",
+                )
+                body = path.read_bytes()
                 self.state.try_capture(body, "application/pdf", download.url)
-        except Exception:
+        except SizeLimitError as exc:
+            self.state.report_warning(str(exc))
+        except Exception as exc:
             # Download persistence is best-effort; a broken temp file should
             # not abort other capture paths.
-            pass
+            logger.debug("Browser download capture failed for %s: %s", getattr(download, "url", ""), exc)
 
     def _on_new_page(self, page: Any) -> None:
         self.track_page(page)
@@ -187,7 +223,7 @@ async def run_browser_polling_loop(
     poll_min: float,
     poll_max: float,
     strategy_context_factory: Callable[..., Any],
-    backfill_from_url: Callable[[Any, Any, set[str], Any, Any, Callable[[str], None]], Awaitable[None]],
+    backfill_from_url: BrowserBackfill,
 ) -> None:
     """Poll tracked pages until a PDF is captured or the deadline expires."""
     deadline = time.monotonic() + deadline_seconds
@@ -209,6 +245,7 @@ async def run_browser_polling_loop(
                 state.try_capture,
                 state.pdf_captured,
                 state.report_warning,
+                state.max_capture_bytes,
             )
             if state.pdf_captured():
                 break
@@ -237,6 +274,7 @@ async def run_browser_polling_loop(
                 state.try_capture,
                 state.pdf_captured,
                 state.report_warning,
+                state.max_capture_bytes,
             )
 
         if state.pdf_captured():
@@ -253,6 +291,7 @@ async def try_backfill_from_url(
     try_capture: Any,
     pdf_captured: Any,
     report_warning: Callable[[str], None],
+    max_capture_bytes: int = DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
 ) -> None:
     """If the page URL looks like a direct PDF link, fetch it via context.request."""
     if pdf_captured() or page.is_closed():
@@ -267,8 +306,15 @@ async def try_backfill_from_url(
     try:
         response = await context.request.get(url, timeout=20000)
         headers = response.headers
+        ensure_content_length_allowed(
+            headers,
+            max_bytes=max_capture_bytes,
+            label=f"Browser PDF backfill from {url}",
+        )
         ct = str(headers.get("content-type", ""))
         body = await response.body()
         try_capture(body, ct, url)
+    except SizeLimitError as exc:
+        report_warning(str(exc))
     except Exception as exc:
         report_warning(f"Direct PDF backfill failed for {url}: {exc.__class__.__name__}: {exc}")

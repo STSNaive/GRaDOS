@@ -125,7 +125,7 @@ def safe_doi_filename(doi: str) -> str:
     legacy_slug = legacy_safe_doi_filename(normalized).strip("_") or "doi"
     if len(legacy_slug) > 180:
         legacy_slug = legacy_slug[:180].rstrip("_") or "doi"
-    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(normalized.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     return f"{legacy_slug}__{digest}"
 
 

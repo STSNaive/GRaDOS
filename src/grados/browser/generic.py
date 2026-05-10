@@ -38,6 +38,7 @@ from grados.browser.session_runtime import (
 )
 from grados.browser.strategies import BrowserPageStrategyContext, build_browser_page_strategies
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
+from grados.http_limits import DEFAULT_MAX_BROWSER_CAPTURE_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ async def fetch_with_browser(
     paths: GRaDOSPaths,
     resume: dict[str, str] | None = None,
     target_url: str = "",
+    max_capture_bytes: int = DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
 ) -> BrowserFetchResult:
     """Fetch a paper PDF using browser automation."""
     runtime = None
@@ -120,7 +122,7 @@ async def fetch_with_browser(
                 warnings=["No compatible browser executable found. Run 'grados setup'."],
             )
 
-        state = BrowserFetchState()
+        state = BrowserFetchState(max_capture_bytes=max_capture_bytes)
         listeners = BrowserListenerRegistry(runtime.context, state)
         listeners.register(runtime.root_page)
 

@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
-from xml.etree import ElementTree as ET
+from typing import Any, cast
 
 import httpx
 from bs4 import BeautifulSoup
+from defusedxml import ElementTree as DefusedET  # type: ignore[import-untyped]
 
 from grados._retry import current_fetch_timeout, http_retry
+from grados.http_limits import DEFAULT_MAX_REMOTE_TEXT_BYTES, limited_async_get
+
+XmlElement = Any
 
 
 @dataclass
@@ -95,12 +98,19 @@ async def _elsevier_article_xml(
     client: httpx.AsyncClient,
     base: str,
     api_key: str,
+    max_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
 ) -> httpx.Response:
-    resp = await client.get(
-        base,
-        params={"view": "FULL"},
-        headers={"X-ELS-APIKey": api_key, "Accept": "application/xml"},
-        timeout=current_fetch_timeout(),
+    resp = cast(
+        httpx.Response,
+        await limited_async_get(
+            client,
+            base,
+            params={"view": "FULL"},
+            headers={"X-ELS-APIKey": api_key, "Accept": "application/xml"},
+            timeout=current_fetch_timeout(),
+            max_bytes=max_text_bytes,
+            label="Elsevier XML response",
+        ),
     )
     if resp.status_code >= 500 or resp.status_code == 429:
         resp.raise_for_status()
@@ -112,11 +122,18 @@ async def _elsevier_article_json(
     client: httpx.AsyncClient,
     base: str,
     api_key: str,
+    max_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
 ) -> httpx.Response:
-    resp = await client.get(
-        base,
-        headers={"X-ELS-APIKey": api_key, "Accept": "application/json"},
-        timeout=current_fetch_timeout(),
+    resp = cast(
+        httpx.Response,
+        await limited_async_get(
+            client,
+            base,
+            headers={"X-ELS-APIKey": api_key, "Accept": "application/json"},
+            timeout=current_fetch_timeout(),
+            max_bytes=max_text_bytes,
+            label="Elsevier JSON response",
+        ),
     )
     if resp.status_code >= 500 or resp.status_code == 429:
         resp.raise_for_status()
@@ -127,6 +144,8 @@ async def fetch_elsevier_article(
     doi: str,
     api_key: str,
     client: httpx.AsyncClient,
+    *,
+    max_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
 ) -> ElsevierFetchResult:
     """Fetch article via Elsevier TDM API with waterfall: XML FULL → metadata."""
     if not api_key:
@@ -136,7 +155,7 @@ async def fetch_elsevier_article(
 
     # 1. FULL XML
     try:
-        resp = await _elsevier_article_xml(client, base, api_key)
+        resp = await _elsevier_article_xml(client, base, api_key, max_text_bytes=max_text_bytes)
         if resp.status_code == 200 and resp.text:
             text, metadata = _extract_elsevier_markdown_from_xml(resp.text, fallback_doi=doi)
             if text and len(text) > 1000:
@@ -152,7 +171,7 @@ async def fetch_elsevier_article(
 
     # 2. Metadata only
     try:
-        resp = await _elsevier_article_json(client, base, api_key)
+        resp = await _elsevier_article_json(client, base, api_key, max_text_bytes=max_text_bytes)
         if resp.status_code == 200:
             metadata = extract_metadata_signal(resp.json(), doi)
             return ElsevierFetchResult(
@@ -171,7 +190,7 @@ def _extract_elsevier_markdown_from_xml(
     *,
     fallback_doi: str,
 ) -> tuple[str, ElsevierMetadataSignal | None]:
-    root = ET.fromstring(xml_payload)
+    root = cast(XmlElement, DefusedET.fromstring(xml_payload))
     metadata = _extract_metadata_from_xml(root, fallback_doi=fallback_doi)
 
     parts: list[str] = []
@@ -203,7 +222,7 @@ def _extract_elsevier_markdown_from_xml(
     return markdown, metadata
 
 
-def _extract_metadata_from_xml(root: ET.Element, *, fallback_doi: str) -> ElsevierMetadataSignal | None:
+def _extract_metadata_from_xml(root: XmlElement, *, fallback_doi: str) -> ElsevierMetadataSignal | None:
     coredata = _find_first_local(root, "coredata")
     if coredata is None:
         return None
@@ -233,7 +252,7 @@ def _extract_metadata_from_xml(root: ET.Element, *, fallback_doi: str) -> Elsevi
     )
 
 
-def _extract_authors_from_xml(root: ET.Element) -> list[str]:
+def _extract_authors_from_xml(root: XmlElement) -> list[str]:
     names: list[str] = []
     author_group = _find_first_local(root, "author-group")
     if author_group is None:
@@ -248,7 +267,7 @@ def _extract_authors_from_xml(root: ET.Element) -> list[str]:
     return names
 
 
-def _extract_keywords_from_xml(root: ET.Element) -> list[str]:
+def _extract_keywords_from_xml(root: XmlElement) -> list[str]:
     keywords: list[str] = []
     for keyword in _find_all_local(root, "keyword"):
         text = _clean_inline_text(" ".join(keyword.itertext()))
@@ -257,7 +276,7 @@ def _extract_keywords_from_xml(root: ET.Element) -> list[str]:
     return keywords
 
 
-def _extract_sections_from_xml(root: ET.Element) -> list[str]:
+def _extract_sections_from_xml(root: XmlElement) -> list[str]:
     sections_root = _find_first_local(root, "sections")
     if sections_root is None:
         return []
@@ -268,7 +287,7 @@ def _extract_sections_from_xml(root: ET.Element) -> list[str]:
     return rendered
 
 
-def _render_elsevier_section(section: ET.Element, *, depth: int) -> list[str]:
+def _render_elsevier_section(section: XmlElement, *, depth: int) -> list[str]:
     parts: list[str] = []
     title = _text_for_first_local(section, "section-title") or _text_for_first_local(section, "title")
     if title:
@@ -286,7 +305,7 @@ def _render_elsevier_section(section: ET.Element, *, depth: int) -> list[str]:
     return parts
 
 
-def _extract_references_from_xml(root: ET.Element) -> list[str]:
+def _extract_references_from_xml(root: XmlElement) -> list[str]:
     bibliography = _find_first_local(root, "bibliography-sec")
     if bibliography is None:
         bibliography = _find_first_local(root, "bibliography")
@@ -301,26 +320,26 @@ def _extract_references_from_xml(root: ET.Element) -> list[str]:
     return references
 
 
-def _local_name(element: ET.Element) -> str:
-    return element.tag.split("}", 1)[-1]
+def _local_name(element: XmlElement) -> str:
+    return str(element.tag).split("}", 1)[-1]
 
 
-def _find_first_local(root: ET.Element, name: str) -> ET.Element | None:
+def _find_first_local(root: XmlElement, name: str) -> XmlElement | None:
     for element in root.iter():
         if _local_name(element) == name:
             return element
     return None
 
 
-def _find_all_local(root: ET.Element, name: str) -> list[ET.Element]:
+def _find_all_local(root: XmlElement, name: str) -> list[XmlElement]:
     return [element for element in root.iter() if _local_name(element) == name]
 
 
-def _find_children_local(root: ET.Element, name: str) -> list[ET.Element]:
+def _find_children_local(root: XmlElement, name: str) -> list[XmlElement]:
     return [element for element in list(root) if _local_name(element) == name]
 
 
-def _text_for_first_local(root: ET.Element, name: str) -> str:
+def _text_for_first_local(root: XmlElement, name: str) -> str:
     element = _find_first_local(root, name)
     if element is None:
         return ""

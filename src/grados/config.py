@@ -9,6 +9,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
+from grados.http_limits import (
+    DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
+    DEFAULT_MAX_LOCAL_PDF_BYTES,
+    DEFAULT_MAX_MINERU_FULL_MD_BYTES,
+    DEFAULT_MAX_MINERU_ZIP_BYTES,
+    DEFAULT_MAX_REMOTE_PDF_BYTES,
+    DEFAULT_MAX_REMOTE_TEXT_BYTES,
+)
 from grados.secrets import SecretResolutionSummary, iter_api_key_specs, resolve_api_keys
 
 __all__ = [
@@ -270,6 +278,39 @@ class QAConfig(BaseModel):
     min_characters: int = 1500
 
 
+class ExtractSecurityConfig(BaseModel):
+    max_remote_pdf_bytes: int = Field(
+        default=DEFAULT_MAX_REMOTE_PDF_BYTES,
+        ge=1,
+        description="Maximum bytes allowed for remote PDF responses before fetch fallback/failure.",
+    )
+    max_remote_text_bytes: int = Field(
+        default=DEFAULT_MAX_REMOTE_TEXT_BYTES,
+        ge=1,
+        description="Maximum bytes allowed for remote native text, HTML, XML, and JSON article responses.",
+    )
+    max_local_pdf_bytes: int = Field(
+        default=DEFAULT_MAX_LOCAL_PDF_BYTES,
+        ge=1,
+        description="Maximum bytes allowed when parsing or importing a local PDF path.",
+    )
+    max_browser_capture_bytes: int = Field(
+        default=DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
+        ge=1,
+        description="Maximum bytes allowed for browser-captured PDF bodies or download temp files.",
+    )
+    max_mineru_zip_bytes: int = Field(
+        default=DEFAULT_MAX_MINERU_ZIP_BYTES,
+        ge=1,
+        description="Maximum bytes allowed for MinerU result zip downloads.",
+    )
+    max_mineru_full_md_bytes: int = Field(
+        default=DEFAULT_MAX_MINERU_FULL_MD_BYTES,
+        ge=1,
+        description="Maximum uncompressed bytes allowed for MinerU full.md inside the result zip.",
+    )
+
+
 class TDMConfig(BaseModel):
     order: list[str] = Field(default=["Elsevier", "Springer"])
     enabled: dict[str, bool] = Field(default_factory=lambda: {
@@ -286,6 +327,7 @@ class ExtractConfig(BaseModel):
     headless_browser: HeadlessBrowserConfig = Field(default_factory=HeadlessBrowserConfig)
     parsing: ParsingConfig = Field(default_factory=ParsingConfig)
     qa: QAConfig = Field(default_factory=QAConfig)
+    security: ExtractSecurityConfig = Field(default_factory=ExtractSecurityConfig)
     fetch_connect_timeout: float = Field(
         default=15.0,
         ge=1.0,
@@ -511,6 +553,24 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     data["extract"]["_comment_fetch_read_timeout"] = (
         "Response read timeout in seconds for PDF and landing-page downloads. "
         "Keep generous: large PDFs and intermediate redirects can stream slowly."
+    )
+    data["extract"]["security"]["_comment_max_remote_pdf_bytes"] = (
+        "Maximum remote PDF response size in bytes. The default is intentionally generous for normal papers."
+    )
+    data["extract"]["security"]["_comment_max_remote_text_bytes"] = (
+        "Maximum remote native text, HTML, XML, or JSON article payload size in bytes."
+    )
+    data["extract"]["security"]["_comment_max_local_pdf_bytes"] = (
+        "Maximum local PDF size in bytes for parse_pdf_file and import-pdfs."
+    )
+    data["extract"]["security"]["_comment_max_browser_capture_bytes"] = (
+        "Maximum PDF body or download temp-file size captured by the browser strategy."
+    )
+    data["extract"]["security"]["_comment_max_mineru_zip_bytes"] = (
+        "Maximum MinerU result zip size in bytes. GRaDOS only reads full.md from the zip."
+    )
+    data["extract"]["security"]["_comment_max_mineru_full_md_bytes"] = (
+        "Maximum uncompressed full.md size in bytes inside the MinerU result zip."
     )
     data["extract"]["fetch_strategy"]["_comment_order"] = (
         "PDF/full-text retrieval order. `codex` is a disabled-by-default Codex Chrome extension handoff."

@@ -7,6 +7,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
+- Added `extract.security` byte ceilings for remote PDF downloads, native text/XML/HTML article payloads, local PDF parsing/import, browser PDF captures, MinerU result zips, and MinerU `full.md` extraction.
 - Added MinerU as the authenticated cloud PDF parser fallback in the parsing waterfall (`Docling -> MinerU -> Marker -> PyMuPDF`), including signed-upload polling, zip `full.md` extraction, config knobs, keychain support via `MINERU_API_KEY`, and smoke-test coverage.
 - Added disabled-by-default `codex` fetch-strategy support so Codex host agents can place the Codex Chrome extension download handoff anywhere in `extract.fetch_strategy.order`.
 - Added agent-side evidence anchors to saved-paper search and Stage B research helpers so snippets, grids, comparisons, and audits can point agents back to canonical `read_saved_paper` paragraph windows before citation.
@@ -27,6 +28,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed Elsevier XML parsing to use `defusedxml`, and changed remote/local document reads to reject oversized payloads before buffering whenever content length or streamed byte counts exceed configured limits.
 - Changed the legacy cloud-parser API-key surface to MinerU; the old cloud-parser key is no longer part of the generated config, docs, or managed secret list.
 - Changed the optional `codex` fetch-strategy handoff to the Codex Chrome extension.
 - Changed Unpaywall from an `oa` download strategy into an optional `extract.unpaywall.enabled` resolver that supplies OA `url_for_pdf` / `url_for_landing_page` start URLs to `codex` and `browser` without affecting `api` or `scihub`.
@@ -65,6 +67,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed CI and PyPI publishing preflight to enforce `mypy` strict-mode checks alongside Ruff, pytest, native-TLS package builds, and local wheel smoke installs before release publication.
 
 ### Fixed
+- Fixed Bandit high-severity findings for non-security SHA1 fingerprints by explicitly marking those digest uses as `usedforsecurity=False`.
 - Fixed saved-paper selector handling so caller-provided `safe_doi` values and `grados://papers/...` suffixes are treated as opaque IDs, validated against a filename-token allowlist, and resolved under the canonical `papers/` directory before reading.
 - Fixed Springer metadata-only fetches so a successful Meta API record is preserved as `metadata_only` with metadata and asset hints when JATS, HTML, and PDF full text are unavailable.
 - Fixed Sci-Hub endpoint fallback behavior so one endpoint returning `not_found` no longer prevents later configured endpoints from being tried; a final `not_found` is returned only after all endpoints miss.

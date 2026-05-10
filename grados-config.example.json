@@ -114,6 +114,20 @@
         "qa": {
             "min_characters": 1500
         },
+        "security": {
+            "max_remote_pdf_bytes": 209715200,
+            "max_remote_text_bytes": 52428800,
+            "max_local_pdf_bytes": 209715200,
+            "max_browser_capture_bytes": 209715200,
+            "max_mineru_zip_bytes": 268435456,
+            "max_mineru_full_md_bytes": 104857600,
+            "_comment_max_remote_pdf_bytes": "Maximum remote PDF response size in bytes. The default is intentionally generous for normal papers.",
+            "_comment_max_remote_text_bytes": "Maximum remote native text, HTML, XML, or JSON article payload size in bytes.",
+            "_comment_max_local_pdf_bytes": "Maximum local PDF size in bytes for parse_pdf_file and import-pdfs.",
+            "_comment_max_browser_capture_bytes": "Maximum PDF body or download temp-file size captured by the browser strategy.",
+            "_comment_max_mineru_zip_bytes": "Maximum MinerU result zip size in bytes. GRaDOS only reads full.md from the zip.",
+            "_comment_max_mineru_full_md_bytes": "Maximum uncompressed full.md size in bytes inside the MinerU result zip."
+        },
         "fetch_connect_timeout": 15.0,
         "fetch_read_timeout": 60.0,
         "_comment_fetch_connect_timeout": "TCP connect timeout in seconds for api / unpaywall / scihub HTTP calls.",

@@ -122,7 +122,7 @@ def checkpoint_folder_name(*, started_at: str, user_question: str, search_querie
         ensure_ascii=False,
         sort_keys=True,
     )
-    short_hash = hashlib.sha1(digest_input.encode("utf-8")).hexdigest()[:8]
+    short_hash = hashlib.sha1(digest_input.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
     return f"{timestamp}_{slug}_{short_hash}"
 
 
@@ -143,7 +143,8 @@ def make_research_checkpoint(
             {"started_at": started_at, "user_question": user_question, "search_queries": search_queries},
             ensure_ascii=False,
             sort_keys=True,
-        ).encode("utf-8")
+        ).encode("utf-8"),
+        usedforsecurity=False,
     ).hexdigest()[:12]
     return ResearchCheckpoint(
         conversation_id=f"research_{digest}",

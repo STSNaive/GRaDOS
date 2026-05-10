@@ -10,6 +10,7 @@ from pathlib import Path
 from grados.config import GRaDOSPaths, load_config
 from grados.extract.parse import parse_pdf_with_diagnostics
 from grados.extract.qa import is_valid_paper_content
+from grados.http_limits import SizeLimitError, ensure_byte_limit
 from grados.publisher.common import normalize_doi, safe_doi_filename
 from grados.storage.papers import list_saved_papers
 from grados.workflows.library import (
@@ -67,6 +68,25 @@ async def import_local_pdf_library(
 
     for pdf_file in pdf_files:
         result.scanned += 1
+        try:
+            ensure_byte_limit(
+                pdf_file.stat().st_size,
+                max_bytes=config.extract.security.max_local_pdf_bytes,
+                label=f"Local PDF {pdf_file}",
+            )
+        except SizeLimitError as exc:
+            result.failed += 1
+            result.items.append(
+                ImportItemResult(
+                    source_path=str(pdf_file),
+                    status="failed",
+                    detail="file_too_large",
+                    warnings=[str(exc)],
+                )
+            )
+            result.warnings.append(f"{pdf_file.name}: {exc}")
+            continue
+
         pdf_bytes = pdf_file.read_bytes()
 
         if pdf_bytes[:5] != b"%PDF-":
@@ -108,6 +128,8 @@ async def import_local_pdf_library(
                 mineru_enable_formula=config.extract.parsing.mineru_enable_formula,
                 mineru_enable_table=config.extract.parsing.mineru_enable_table,
                 mineru_is_ocr=config.extract.parsing.mineru_is_ocr,
+                mineru_max_zip_bytes=config.extract.security.max_mineru_zip_bytes,
+                mineru_max_full_md_bytes=config.extract.security.max_mineru_full_md_bytes,
             )
         )
         parser_warnings = list(artifact.warnings)

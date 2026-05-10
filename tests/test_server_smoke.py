@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from grados.config import IndexingConfig
+from grados.config import GRaDOSPaths, IndexingConfig, generate_default_config
 from grados.publisher.common import PublisherMetadata, safe_doi_filename
 from grados.search.academic import PaperMetadata
 from grados.search.resumable import ResumableSearchResult
@@ -1052,6 +1053,24 @@ def test_parse_pdf_file_returns_preview_and_qa_warning(tmp_path: Path, monkeypat
     assert "QA validation failed — content may be incomplete." in result
     assert "parser emitted partial text" in result
     assert "fallback:pymupdf" in result
+
+
+def test_parse_pdf_file_rejects_oversized_local_pdf(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    config = generate_default_config(paths)
+    config["extract"]["security"]["max_local_pdf_bytes"] = 8
+    paths.config_file.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+
+    pdf_path = tmp_path / "too-large.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n" + b"x" * 32)
+
+    result = asyncio.run(parse_pdf_file(file_path=str(pdf_path)))
+
+    assert "PDF file is too large" in result
+    assert "Local PDF" in result
 
 
 def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(

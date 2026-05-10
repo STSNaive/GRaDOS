@@ -13,6 +13,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from grados.config import IndexingConfig
+from grados.http_limits import SizeLimitError, ensure_byte_limit
 from grados.publisher.common import PublisherMetadata, normalize_publisher_metadata, safe_doi_filename
 from grados.server_tools.shared import (
     format_paper_index_resource,
@@ -331,6 +332,9 @@ async def extract_paper_full_text(
         paths=paths,
         browser_resume=browser_resume if resume_browser else None,
         unpaywall_enabled=bool(getattr(config.extract.unpaywall, "enabled", True)),
+        max_remote_pdf_bytes=config.extract.security.max_remote_pdf_bytes,
+        max_remote_text_bytes=config.extract.security.max_remote_text_bytes,
+        max_browser_capture_bytes=config.extract.security.max_browser_capture_bytes,
     )
 
     metadata = normalize_publisher_metadata(fetch_result.metadata)
@@ -440,6 +444,8 @@ async def extract_paper_full_text(
                 mineru_enable_formula=config.extract.parsing.mineru_enable_formula,
                 mineru_enable_table=config.extract.parsing.mineru_enable_table,
                 mineru_is_ocr=config.extract.parsing.mineru_is_ocr,
+                mineru_max_zip_bytes=config.extract.security.max_mineru_zip_bytes,
+                mineru_max_full_md_bytes=config.extract.security.max_mineru_full_md_bytes,
             )
         )
         if not artifact.markdown:
@@ -744,12 +750,21 @@ async def parse_pdf_file(
     if not path.is_file():
         return f"File not found: {file_path}"
 
+    paths, config = get_paths_and_config()
+    try:
+        ensure_byte_limit(
+            path.stat().st_size,
+            max_bytes=config.extract.security.max_local_pdf_bytes,
+            label=f"Local PDF {path}",
+        )
+    except SizeLimitError as exc:
+        return f"PDF file is too large: {exc}"
+
     pdf_buffer = path.read_bytes()
     if pdf_buffer[:5] != b"%PDF-":
         return f"Not a valid PDF file: {file_path}"
     pdf_hash = hashlib.sha256(pdf_buffer).hexdigest()
 
-    paths, config = get_paths_and_config()
     artifact = await build_library_document_artifact(
         lambda: parse_pdf_with_diagnostics(
             pdf_buffer,
@@ -765,6 +780,8 @@ async def parse_pdf_file(
             mineru_enable_formula=config.extract.parsing.mineru_enable_formula,
             mineru_enable_table=config.extract.parsing.mineru_enable_table,
             mineru_is_ocr=config.extract.parsing.mineru_is_ocr,
+            mineru_max_zip_bytes=config.extract.security.max_mineru_zip_bytes,
+            mineru_max_full_md_bytes=config.extract.security.max_mineru_full_md_bytes,
         )
     )
     if not artifact.markdown:

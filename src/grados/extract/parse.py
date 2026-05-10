@@ -19,6 +19,13 @@ from typing import Any, Protocol, cast
 
 import httpx
 
+from grados.http_limits import (
+    DEFAULT_MAX_MINERU_FULL_MD_BYTES,
+    DEFAULT_MAX_MINERU_ZIP_BYTES,
+    ensure_byte_limit,
+    limited_sync_get,
+)
+
 
 @dataclass
 class ParsePipelineResult:
@@ -48,6 +55,8 @@ class PdfParserContext:
     mineru_enable_formula: bool = True
     mineru_enable_table: bool = True
     mineru_is_ocr: bool = False
+    mineru_max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES
+    mineru_max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,8 @@ def _run_mineru_pdf_parser(context: PdfParserContext) -> _ParserAttemptResult:
         enable_formula=context.mineru_enable_formula,
         enable_table=context.mineru_enable_table,
         is_ocr=context.mineru_is_ocr,
+        max_zip_bytes=context.mineru_max_zip_bytes,
+        max_full_md_bytes=context.mineru_max_full_md_bytes,
     )
 
 
@@ -215,6 +226,8 @@ async def parse_pdf(
     mineru_enable_formula: bool = True,
     mineru_enable_table: bool = True,
     mineru_is_ocr: bool = False,
+    mineru_max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
+    mineru_max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
 ) -> str | None:
     """Parse a PDF buffer into markdown text using the configured pipeline.
 
@@ -234,6 +247,8 @@ async def parse_pdf(
         mineru_enable_formula=mineru_enable_formula,
         mineru_enable_table=mineru_enable_table,
         mineru_is_ocr=mineru_is_ocr,
+        mineru_max_zip_bytes=mineru_max_zip_bytes,
+        mineru_max_full_md_bytes=mineru_max_full_md_bytes,
     )
     return result.markdown
 
@@ -252,6 +267,8 @@ async def parse_pdf_with_diagnostics(
     mineru_enable_formula: bool = True,
     mineru_enable_table: bool = True,
     mineru_is_ocr: bool = False,
+    mineru_max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
+    mineru_max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
 ) -> ParsePipelineResult:
     """Parse a PDF buffer and preserve parser warnings/debug for caller-facing receipts."""
     strategies = build_pdf_parser_strategies(parse_order)
@@ -270,6 +287,8 @@ async def parse_pdf_with_diagnostics(
         mineru_enable_formula=mineru_enable_formula,
         mineru_enable_table=mineru_enable_table,
         mineru_is_ocr=mineru_is_ocr,
+        mineru_max_zip_bytes=mineru_max_zip_bytes,
+        mineru_max_full_md_bytes=mineru_max_full_md_bytes,
     )
 
     for strategy in strategies:
@@ -472,6 +491,8 @@ def _parse_mineru(
     enable_formula: bool = True,
     enable_table: bool = True,
     is_ocr: bool = False,
+    max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
+    max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
 ) -> str | None:
     return _parse_mineru_attempt(
         pdf_buffer,
@@ -484,6 +505,8 @@ def _parse_mineru(
         enable_formula=enable_formula,
         enable_table=enable_table,
         is_ocr=is_ocr,
+        max_zip_bytes=max_zip_bytes,
+        max_full_md_bytes=max_full_md_bytes,
     ).markdown
 
 
@@ -499,6 +522,8 @@ def _parse_mineru_attempt(
     enable_formula: bool,
     enable_table: bool,
     is_ocr: bool,
+    max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
+    max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
 ) -> _ParserAttemptResult:
     """Parse PDF through MinerU's authenticated cloud API."""
     token = (api_key or os.environ.get("MINERU_API_KEY", "")).strip()
@@ -549,7 +574,12 @@ def _parse_mineru_attempt(
                     zip_url = str(result.get("full_zip_url") or "")
                     if not zip_url:
                         raise ValueError("MinerU task completed without full_zip_url.")
-                    markdown = _download_mineru_markdown(client, zip_url)
+                    markdown = _download_mineru_markdown(
+                        client,
+                        zip_url,
+                        max_zip_bytes=max_zip_bytes,
+                        max_full_md_bytes=max_full_md_bytes,
+                    )
                     if len(markdown) > 100:
                         return _ParserAttemptResult(
                             markdown=markdown,
@@ -662,8 +692,19 @@ def _poll_mineru_batch_result(
     return first
 
 
-def _download_mineru_markdown(client: httpx.Client, zip_url: str) -> str:
-    response = client.get(zip_url)
+def _download_mineru_markdown(
+    client: httpx.Client,
+    zip_url: str,
+    *,
+    max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
+    max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
+) -> str:
+    response = limited_sync_get(
+        client,
+        zip_url,
+        max_bytes=max_zip_bytes,
+        label="MinerU result zip",
+    )
     response.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         markdown_names = [
@@ -671,8 +712,20 @@ def _download_mineru_markdown(client: httpx.Client, zip_url: str) -> str:
         ]
         if not markdown_names:
             raise ValueError("MinerU result zip did not contain full.md.")
-        with archive.open(markdown_names[0]) as handle:
-            return _compact_markdown(handle.read().decode("utf-8", errors="replace"))
+        info = archive.getinfo(markdown_names[0])
+        ensure_byte_limit(
+            info.file_size,
+            max_bytes=max_full_md_bytes,
+            label="MinerU full.md",
+        )
+        with archive.open(info) as handle:
+            markdown_bytes = handle.read(max_full_md_bytes + 1)
+            ensure_byte_limit(
+                len(markdown_bytes),
+                max_bytes=max_full_md_bytes,
+                label="MinerU full.md",
+            )
+            return _compact_markdown(markdown_bytes.decode("utf-8", errors="replace"))
 
 
 def _mineru_response_data(response: httpx.Response) -> dict[str, Any]:

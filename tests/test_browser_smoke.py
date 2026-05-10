@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from grados.browser.fetch_runtime import BrowserFetchState, try_backfill_from_url
 from grados.browser.generic import build_browser_page_strategies
 from grados.browser.manager import (
     VIEWPORTS,
@@ -40,6 +41,64 @@ def test_pdf_classification_and_bot_detection() -> None:
     assert classify_pdf_content(pdf_data, "application/pdf") == {"is_pdf": True, "reason": "ok"}
     assert classify_pdf_content(html_data, "text/html")["reason"] == "html_or_challenge_page"
     assert detect_bot_challenge("Just a moment...", "<html>captcha</html>", "https://example.com") is True
+
+
+def test_browser_fetch_state_rejects_oversized_pdf_capture() -> None:
+    state = BrowserFetchState(max_capture_bytes=8)
+
+    captured = state.try_capture(
+        b"%PDF-1.4\n" + b"x" * 32,
+        "application/pdf",
+        "https://example.com/paper.pdf",
+    )
+
+    assert captured is False
+    assert state.pdf_buffer is None
+    assert any(
+        "Browser PDF capture from https://example.com/paper.pdf exceeds configured size limit" in warning
+        for warning in state.warnings
+    )
+
+
+def test_direct_pdf_backfill_rejects_oversized_content_length() -> None:
+    class FakePage:
+        url = "https://example.com/paper.pdf"
+
+        def is_closed(self) -> bool:
+            return False
+
+    class FakeResponse:
+        headers = {"content-length": "2048", "content-type": "application/pdf"}
+
+        async def body(self) -> bytes:
+            raise AssertionError("oversized response body should not be read")
+
+    class FakeRequest:
+        async def get(self, url: str, timeout: int | None = None) -> FakeResponse:
+            _ = (url, timeout)
+            return FakeResponse()
+
+    class FakeContext:
+        request = FakeRequest()
+
+    warnings: list[str] = []
+
+    asyncio.run(
+        try_backfill_from_url(
+            FakePage(),
+            FakeContext(),
+            set(),
+            lambda *args: False,
+            lambda: False,
+            warnings.append,
+            max_capture_bytes=8,
+        )
+    )
+
+    assert any(
+        "Browser PDF backfill from https://example.com/paper.pdf exceeds configured size limit" in warning
+        for warning in warnings
+    )
 
 
 def test_browser_page_strategy_registry_preserves_order_and_filters_unknown_names() -> None:

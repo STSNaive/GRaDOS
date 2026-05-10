@@ -99,7 +99,7 @@ def _stable_paper_id(*, doi: str, title: str, year: str, source: str, source_id:
         source.strip().lower(),
         source_id.strip().lower(),
     ])
-    digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha1(fingerprint.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
     return f"remote_{digest}"
 
 

@@ -116,6 +116,12 @@ def test_default_config_exposes_disabled_codex_chrome_extension_strategy() -> No
     ]
     assert config.extract.fetch_strategy.enabled["codex"] is False
     assert config.extract.unpaywall.enabled is True
+    assert config.extract.security.max_remote_pdf_bytes == 200 * 1024 * 1024
+    assert config.extract.security.max_remote_text_bytes == 50 * 1024 * 1024
+    assert config.extract.security.max_local_pdf_bytes == 200 * 1024 * 1024
+    assert config.extract.security.max_browser_capture_bytes == 200 * 1024 * 1024
+    assert config.extract.security.max_mineru_zip_bytes == 256 * 1024 * 1024
+    assert config.extract.security.max_mineru_full_md_bytes == 100 * 1024 * 1024
 
 
 def test_scihub_legacy_fallback_mirror_populates_endpoints() -> None:

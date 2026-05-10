@@ -16,6 +16,13 @@ from bs4 import BeautifulSoup
 
 from grados._retry import current_fetch_timeout, current_pdf_timeout, http_retry
 from grados.config import DEFAULT_SCI_HUB_ENDPOINT, FetchStrategyConfig, GRaDOSPaths, HeadlessBrowserConfig
+from grados.http_limits import (
+    DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
+    DEFAULT_MAX_REMOTE_PDF_BYTES,
+    DEFAULT_MAX_REMOTE_TEXT_BYTES,
+    SizeLimitError,
+    limited_async_get,
+)
 from grados.publisher.common import (
     PublisherMetadata,
     classify_pdf_content,
@@ -59,6 +66,9 @@ class FetchStrategyContext:
     paths: GRaDOSPaths | None
     browser_resume: dict[str, str] | None
     unpaywall: UnpaywallResolution | None = None
+    max_remote_pdf_bytes: int = DEFAULT_MAX_REMOTE_PDF_BYTES
+    max_remote_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES
+    max_browser_capture_bytes: int = DEFAULT_MAX_BROWSER_CAPTURE_BYTES
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,8 @@ class TDMProviderContext:
     doi: str
     api_keys: dict[str, str]
     client: httpx.AsyncClient
+    max_remote_pdf_bytes: int = DEFAULT_MAX_REMOTE_PDF_BYTES
+    max_remote_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES
 
 
 class FetchStrategy(Protocol):
@@ -116,11 +128,19 @@ async def _run_tdm_fetch_strategy(context: FetchStrategyContext) -> FetchResult:
         context.client,
         context.tdm_order,
         context.tdm_enabled,
+        max_remote_pdf_bytes=context.max_remote_pdf_bytes,
+        max_remote_text_bytes=context.max_remote_text_bytes,
     )
 
 
 async def _run_scihub_fetch_strategy(context: FetchStrategyContext) -> FetchResult:
-    return await _fetch_scihub(context.doi, context.client, context.sci_hub_config)
+    return await _fetch_scihub(
+        context.doi,
+        context.client,
+        context.sci_hub_config,
+        max_remote_pdf_bytes=context.max_remote_pdf_bytes,
+        max_remote_text_bytes=context.max_remote_text_bytes,
+    )
 
 
 async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchResult:
@@ -144,6 +164,7 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
             if context.browser_resume is not None
             else _unpaywall_selected_url(context.unpaywall)
         ),
+        max_capture_bytes=context.max_browser_capture_bytes,
     )
     if browser_result.pdf_buffer:
         return FetchResult(
@@ -208,7 +229,12 @@ async def _run_elsevier_tdm_provider(context: TDMProviderContext) -> FetchResult
     if not key:
         return FetchResult(outcome="failed", via="api", state="error")
 
-    result: ElsevierFetchResult = await fetch_elsevier_article(context.doi, key, context.client)
+    result: ElsevierFetchResult = await fetch_elsevier_article(
+        context.doi,
+        key,
+        context.client,
+        max_text_bytes=context.max_remote_text_bytes,
+    )
     if result.outcome == "native_full_text":
         return FetchResult(
             text=result.text,
@@ -236,7 +262,14 @@ async def _run_springer_tdm_provider(context: TDMProviderContext) -> FetchResult
     if not meta_key:
         return FetchResult(outcome="failed", via="api", state="error")
 
-    result: SpringerFetchResult = await fetch_springer_article(context.doi, meta_key, oa_key, context.client)
+    result: SpringerFetchResult = await fetch_springer_article(
+        context.doi,
+        meta_key,
+        oa_key,
+        context.client,
+        max_pdf_bytes=context.max_remote_pdf_bytes,
+        max_text_bytes=context.max_remote_text_bytes,
+    )
     if result.outcome == "native_full_text":
         return FetchResult(
             text=result.text,
@@ -439,7 +472,8 @@ def _trace_fetch_result(doi: str, result: FetchResult) -> dict[str, Any]:
         "resume": result.resume,
     }
     digest = hashlib.sha1(
-        json.dumps({"doi": doi, **payload}, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        json.dumps({"doi": doi, **payload}, sort_keys=True, ensure_ascii=False).encode("utf-8"),
+        usedforsecurity=False,
     ).hexdigest()[:16]
     return {
         **payload,
@@ -461,6 +495,9 @@ async def fetch_paper(
     paths: GRaDOSPaths | None = None,
     browser_resume: dict[str, str] | None = None,
     unpaywall_enabled: bool = True,
+    max_remote_pdf_bytes: int = DEFAULT_MAX_REMOTE_PDF_BYTES,
+    max_remote_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
+    max_browser_capture_bytes: int = DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
 ) -> FetchResult:
     """Execute the fetch waterfall for a DOI."""
     strategies = build_fetch_strategies(fetch_order)
@@ -484,6 +521,9 @@ async def fetch_paper(
             headless_config=headless_config,
             paths=paths,
             browser_resume=browser_resume,
+            max_remote_pdf_bytes=max_remote_pdf_bytes,
+            max_remote_text_bytes=max_remote_text_bytes,
+            max_browser_capture_bytes=max_browser_capture_bytes,
         )
         unpaywall: UnpaywallResolution | None = None
 
@@ -498,7 +538,12 @@ async def fetch_paper(
                 and context.paths is not None
             )
             if needs_unpaywall and unpaywall_enabled and unpaywall is None:
-                unpaywall = await _resolve_unpaywall_locations(doi, etiquette_email, client)
+                unpaywall = await _resolve_unpaywall_locations(
+                    doi,
+                    etiquette_email,
+                    client,
+                    max_remote_text_bytes=max_remote_text_bytes,
+                )
                 warnings.extend(unpaywall.warnings)
 
             result = await strategy.run(replace(context, unpaywall=unpaywall))
@@ -541,10 +586,18 @@ async def _fetch_tdm(
     client: httpx.AsyncClient,
     tdm_order: list[str] | None = None,
     tdm_enabled: dict[str, bool] | None = None,
+    max_remote_pdf_bytes: int = DEFAULT_MAX_REMOTE_PDF_BYTES,
+    max_remote_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
 ) -> FetchResult:
     providers = build_tdm_providers(tdm_order)
     enabled = tdm_enabled or {provider.name: True for provider in providers}
-    context = TDMProviderContext(doi=doi, api_keys=api_keys, client=client)
+    context = TDMProviderContext(
+        doi=doi,
+        api_keys=api_keys,
+        client=client,
+        max_remote_pdf_bytes=max_remote_pdf_bytes,
+        max_remote_text_bytes=max_remote_text_bytes,
+    )
     partial_result: FetchResult | None = None
 
     for provider in providers:
@@ -570,11 +623,19 @@ async def _unpaywall_lookup(
     client: httpx.AsyncClient,
     doi: str,
     etiquette_email: str,
+    *,
+    max_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
 ) -> httpx.Response:
-    resp = await client.get(
-        f"https://api.unpaywall.org/v2/{doi}",
-        params={"email": etiquette_email},
-        timeout=current_fetch_timeout(),
+    resp = cast(
+        httpx.Response,
+        await limited_async_get(
+            client,
+            f"https://api.unpaywall.org/v2/{doi}",
+            params={"email": etiquette_email},
+            timeout=current_fetch_timeout(),
+            max_bytes=max_text_bytes,
+            label="Unpaywall response",
+        ),
     )
     # Non-2xx that is retryable (429/5xx) raises via raise_for_status; 404 stays
     # as a caller-decided outcome.
@@ -633,10 +694,12 @@ async def _resolve_unpaywall_locations(
     doi: str,
     etiquette_email: str,
     client: httpx.AsyncClient,
+    *,
+    max_remote_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
 ) -> UnpaywallResolution:
     warnings: list[str] = []
     try:
-        resp = await _unpaywall_lookup(client, doi, etiquette_email)
+        resp = await _unpaywall_lookup(client, doi, etiquette_email, max_text_bytes=max_remote_text_bytes)
         if resp.status_code == 404:
             return UnpaywallResolution()
         if resp.status_code != 200:
@@ -665,8 +728,23 @@ async def _resolve_unpaywall_locations(
 
 
 @http_retry()
-async def _download_pdf(client: httpx.AsyncClient, url: str) -> httpx.Response:
-    resp = await client.get(url, timeout=current_pdf_timeout(), follow_redirects=True)
+async def _download_pdf(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    max_bytes: int = DEFAULT_MAX_REMOTE_PDF_BYTES,
+) -> httpx.Response:
+    resp = cast(
+        httpx.Response,
+        await limited_async_get(
+            client,
+            url,
+            timeout=current_pdf_timeout(),
+            follow_redirects=True,
+            max_bytes=max_bytes,
+            label="Remote PDF response",
+        ),
+    )
     if resp.status_code >= 500 or resp.status_code == 429:
         resp.raise_for_status()
     return resp
@@ -750,7 +828,8 @@ def _scihub_trace(
         "pdf_host": _scihub_host(pdf_url) if pdf_url else "",
     }
     digest = hashlib.sha1(
-        json.dumps({"doi": doi, **payload}, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        json.dumps({"doi": doi, **payload}, sort_keys=True, ensure_ascii=False).encode("utf-8"),
+        usedforsecurity=False,
     ).hexdigest()[:16]
     return {
         **payload,
@@ -834,11 +913,25 @@ def _prefer_scihub_endpoint_failure(
 
 
 @http_retry()
-async def _scihub_landing(client: httpx.AsyncClient, endpoint: str, doi: str) -> httpx.Response:
-    resp = await client.get(
-        f"{endpoint}/{doi}",
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0"},
-        timeout=current_fetch_timeout(),
+async def _scihub_landing(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    doi: str,
+    *,
+    max_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
+) -> httpx.Response:
+    resp = cast(
+        httpx.Response,
+        await limited_async_get(
+            client,
+            f"{endpoint}/{doi}",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0"
+            },
+            timeout=current_fetch_timeout(),
+            max_bytes=max_text_bytes,
+            label="Sci-Hub landing response",
+        ),
     )
     if resp.status_code >= 500 or resp.status_code == 429:
         resp.raise_for_status()
@@ -850,10 +943,22 @@ async def _fetch_scihub_endpoint(
     client: httpx.AsyncClient,
     endpoint: str,
     index: int,
+    *,
+    max_remote_pdf_bytes: int = DEFAULT_MAX_REMOTE_PDF_BYTES,
+    max_remote_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
 ) -> FetchResult:
     label = _scihub_endpoint_label(endpoint, index)
     try:
-        resp = await _scihub_landing(client, endpoint, doi)
+        resp = await _scihub_landing(client, endpoint, doi, max_text_bytes=max_remote_text_bytes)
+    except SizeLimitError as exc:
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="error",
+            warning=_format_fetch_warning(f"{label} landing rejected", exc),
+            reason="landing_size_limit",
+        )
     except httpx.TimeoutException as exc:
         return _scihub_failed_result(
             doi,
@@ -945,7 +1050,16 @@ async def _fetch_scihub_endpoint(
         )
 
     try:
-        pdf_resp = await _download_pdf(client, pdf_url)
+        pdf_resp = await _download_pdf(client, pdf_url, max_bytes=max_remote_pdf_bytes)
+    except SizeLimitError as exc:
+        return _scihub_failed_result(
+            doi,
+            endpoint=endpoint,
+            index=index,
+            state="invalid_pdf",
+            warning=_format_fetch_warning(f"{label} PDF download rejected", exc),
+            reason="pdf_size_limit",
+        )
     except httpx.TimeoutException as exc:
         return _scihub_failed_result(
             doi,
@@ -1036,13 +1150,23 @@ async def _fetch_scihub(
     doi: str,
     client: httpx.AsyncClient,
     config: dict[str, Any],
+    *,
+    max_remote_pdf_bytes: int = DEFAULT_MAX_REMOTE_PDF_BYTES,
+    max_remote_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
 ) -> FetchResult:
     warnings: list[str] = []
     trace: list[dict[str, Any]] = []
     failure_result: FetchResult | None = None
 
     for index, endpoint in enumerate(_resolve_scihub_endpoints(config)):
-        result = await _fetch_scihub_endpoint(doi, client, endpoint, index)
+        result = await _fetch_scihub_endpoint(
+            doi,
+            client,
+            endpoint,
+            index,
+            max_remote_pdf_bytes=max_remote_pdf_bytes,
+            max_remote_text_bytes=max_remote_text_bytes,
+        )
         warnings.extend(result.warnings)
         trace.extend(result.trace or [_trace_fetch_result(doi, result)])
         if _is_fetch_success(result):

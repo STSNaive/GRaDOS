@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+import pytest
+from defusedxml.common import EntitiesForbidden
 
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 from grados.extract.fetch import (
@@ -21,7 +23,8 @@ from grados.publisher.springer import SpringerFetchResult
 def test_fetch_tdm_respects_order_and_enabled_publishers(monkeypatch) -> None:
     calls: list[str] = []
 
-    async def fake_elsevier(doi, key, client):
+    async def fake_elsevier(doi, key, client, **kwargs):
+        _ = kwargs
         calls.append("Elsevier")
         return ElsevierFetchResult(
             text="ignored",
@@ -29,7 +32,8 @@ def test_fetch_tdm_respects_order_and_enabled_publishers(monkeypatch) -> None:
             asset_hints=[{"kind": "object_api_meta", "url": "https://example.com/object"}],
         )
 
-    async def fake_springer(doi, meta_key, oa_key, client):
+    async def fake_springer(doi, meta_key, oa_key, client, **kwargs):
+        _ = kwargs
         calls.append("Springer")
         return SpringerFetchResult(
             text="springer full text",
@@ -85,7 +89,8 @@ def test_fetch_strategy_builders_default_to_config_order() -> None:
 
 
 def test_fetch_tdm_returns_metadata_only_when_no_full_text_available(monkeypatch) -> None:
-    async def fake_elsevier(doi, key, client):
+    async def fake_elsevier(doi, key, client, **kwargs):
+        _ = kwargs
         return ElsevierFetchResult(
             metadata=ElsevierMetadataSignal(
                 doi=doi,
@@ -100,7 +105,8 @@ def test_fetch_tdm_returns_metadata_only_when_no_full_text_available(monkeypatch
             asset_hints=[{"kind": "article_landing", "url": "https://example.com/article"}],
         )
 
-    async def fake_springer(doi, meta_key, oa_key, client):
+    async def fake_springer(doi, meta_key, oa_key, client, **kwargs):
+        _ = kwargs
         return SpringerFetchResult(outcome="failed")
 
     monkeypatch.setattr("grados.extract.fetch.fetch_elsevier_article", fake_elsevier)
@@ -178,7 +184,7 @@ def test_fetch_paper_preserves_browser_challenge_in_final_result(monkeypatch, tm
     async def fake_fetch_tdm(*args, **kwargs):
         return FetchResult(outcome="failed", via="api", state="error", warnings=["api miss"])
 
-    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url=""):  # noqa: ANN001
+    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url="", **kwargs):  # noqa: ANN001
         _ = (doi, config, paths, resume, target_url)
         return BrowserFetchResult(
             source="Browser",
@@ -236,7 +242,7 @@ def test_fetch_paper_stops_after_browser_success(monkeypatch, tmp_path) -> None:
         calls.append("scihub")
         return FetchResult(outcome="failed", via="scihub", state="error")
 
-    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url=""):  # noqa: ANN001
+    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url="", **kwargs):  # noqa: ANN001
         _ = (doi, config, paths, resume, target_url)
         calls.append("browser")
         return BrowserFetchResult(
@@ -393,7 +399,7 @@ def test_fetch_paper_resume_starts_at_browser_and_passes_resume(monkeypatch, tmp
         _ = (args, kwargs)
         raise AssertionError("resume should not rerun api")
 
-    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url=""):  # noqa: ANN001
+    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url="", **kwargs):  # noqa: ANN001
         _ = (doi, config, paths, target_url)
         calls.append("browser")
         assert resume == {
@@ -501,6 +507,34 @@ def test_unpaywall_resolver_falls_back_to_landing_page() -> None:
     assert result.selected_url_source == "unpaywall.best_oa_location.url_for_landing_page"
 
 
+def test_unpaywall_resolver_rejects_oversized_response() -> None:
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-length": "2048"}
+        content = b"{}"
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            raise AssertionError("oversized Unpaywall payload should not be parsed")
+
+    class FakeClient:
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            _ = (url, kwargs)
+            return FakeResponse()
+
+    result = asyncio.run(
+        _resolve_unpaywall_locations(
+            "10.1234/demo",
+            "test@example.com",
+            FakeClient(),  # type: ignore[arg-type]
+            max_remote_text_bytes=8,
+        )
+    )
+
+    assert result.selected_url == ""
+    assert any("Unpaywall response exceeds configured size limit" in warning for warning in result.warnings)
+
+
 def test_fetch_paper_does_not_resolve_unpaywall_for_api_only(monkeypatch) -> None:
     import grados.extract.fetch as fetch_module
 
@@ -574,7 +608,7 @@ def test_fetch_paper_browser_uses_unpaywall_target_url(monkeypatch, tmp_path) ->
             selected_url_source="unpaywall.best_oa_location.url_for_pdf",
         )
 
-    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url=""):  # noqa: ANN001
+    async def fake_fetch_with_browser(doi, config, paths, resume=None, target_url="", **kwargs):  # noqa: ANN001
         _ = (doi, config, paths, resume)
         captured["target_url"] = target_url
         return BrowserFetchResult(
@@ -609,11 +643,13 @@ def _http_response(
     text: str = "",
     content: bytes | None = None,
     content_type: str = "text/html",
+    headers: dict[str, str] | None = None,
 ) -> httpx.Response:
+    response_headers = {"content-type": content_type, **(headers or {})}
     return httpx.Response(
         status_code,
         content=content if content is not None else text.encode("utf-8"),
-        headers={"content-type": content_type},
+        headers=response_headers,
         request=httpx.Request("GET", url),
     )
 
@@ -639,6 +675,33 @@ def test_fetch_scihub_surfaces_warning_when_pdf_link_missing() -> None:
     assert result.warnings == ["Sci-Hub primary endpoint sci-hub.se page did not expose a PDF link"]
     assert result.trace[0]["endpoint_role"] == "primary"
     assert result.trace[0]["reason"] == "pdf_link_missing"
+
+
+def test_fetch_scihub_rejects_oversized_landing_page() -> None:
+    from grados.extract.fetch import _fetch_scihub
+
+    class FakeClient:
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            _ = kwargs
+            return _http_response(
+                url,
+                text="<html></html>",
+                headers={"content-length": "2048", "content-type": "text/html"},
+            )
+
+    result = asyncio.run(
+        _fetch_scihub(
+            "10.1234/demo",
+            FakeClient(),  # type: ignore[arg-type]
+            {"endpoints": ["https://sci-hub.se"]},
+            max_remote_text_bytes=8,
+        )
+    )
+
+    assert result.outcome == "failed"
+    assert result.state == "error"
+    assert result.trace[0]["reason"] == "landing_size_limit"
+    assert any("Sci-Hub landing response exceeds configured size limit" in warning for warning in result.warnings)
 
 
 def test_extract_scihub_pdf_url_handles_common_mirror_markup() -> None:
@@ -836,6 +899,24 @@ def test_fetch_scihub_ignores_legacy_fallback_mirror_key() -> None:
     assert client.last_url == "https://sci-hub.se/10.1234/demo"
 
 
+def test_download_pdf_rejects_oversized_content_length() -> None:
+    from grados.extract.fetch import _download_pdf
+    from grados.http_limits import SizeLimitError
+
+    class FakeClient:
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            _ = kwargs
+            return httpx.Response(
+                200,
+                content=b"%PDF-1.4\n",
+                headers={"content-length": "2048", "content-type": "application/pdf"},
+                request=httpx.Request("GET", url),
+            )
+
+    with pytest.raises(SizeLimitError, match="Remote PDF response exceeds configured size limit"):
+        asyncio.run(_download_pdf(FakeClient(), "https://example.com/paper.pdf", max_bytes=1024))  # type: ignore[arg-type]
+
+
 def test_elsevier_xml_is_parsed_deterministically_into_markdown() -> None:
     xml_payload = """<?xml version="1.0" encoding="UTF-8"?>
 <full-text-retrieval-response xmlns="http://www.elsevier.com/xml/svapi/article/dtd"
@@ -896,3 +977,19 @@ def test_elsevier_xml_is_parsed_deterministically_into_markdown() -> None:
     assert "## References" in markdown
     assert "Intro paragraph." in markdown
     assert "Smith et al. Example reference." in markdown
+
+
+def test_elsevier_xml_rejects_entity_expansion() -> None:
+    xml_payload = """<?xml version="1.0"?>
+<!DOCTYPE demo [
+  <!ENTITY expand "unsafe">
+]>
+<full-text-retrieval-response>
+  <coredata>
+    <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">&expand;</dc:title>
+  </coredata>
+</full-text-retrieval-response>
+"""
+
+    with pytest.raises(EntitiesForbidden):
+        _extract_elsevier_markdown_from_xml(xml_payload, fallback_doi="10.1016/j.demo.2026.01.001")

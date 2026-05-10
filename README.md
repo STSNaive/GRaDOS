@@ -255,6 +255,10 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 - `extract.headless_browser`: legacy-named config section for the `browser` strategy (`deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`)
 - `retry_policy`: `max_attempts`, `max_wait`, `respect_retry_after`
 
+### Size Guards
+
+- `extract.security`: byte ceilings for remote PDFs, remote text/XML/HTML responses, local PDFs, browser PDF captures, MinerU result zips, and MinerU `full.md`. Defaults are intentionally generous for normal paper PDFs; raise them only for trusted oversized inputs.
+
 ### Commands 🧰
 
 | Command | Purpose |
@@ -314,6 +318,8 @@ Root selection priority:
 
 1. `GRADOS_HOME`
 2. `~/GRaDOS`
+
+Local PDF tools such as `parse_pdf_file` and `import_local_pdf_library` read host file paths from a trusted local MCP/CLI session and enforce `extract.security.max_local_pdf_bytes` before loading the file.
 
 ### API Keys 🔑
 
@@ -390,7 +396,7 @@ PDF parsing priority:
 }
 ```
 
-`MinerU` is an authenticated cloud parser. When enabled and `MINERU_API_KEY` is present, GRaDOS uploads the local PDF through MinerU's signed upload API, polls for the extraction zip, and reads `full.md` as the parser output. Use `grados auth set mineru` to store the token in the OS keychain.
+`MinerU` is an authenticated cloud parser. When enabled and `MINERU_API_KEY` is present, GRaDOS uploads the local PDF through MinerU's signed upload API, polls for the extraction zip, and reads `full.md` as the parser output. GRaDOS ignores other zip entries and enforces `extract.security.max_mineru_zip_bytes` plus `extract.security.max_mineru_full_md_bytes` before reading the result. Use `grados auth set mineru` to store the token in the OS keychain.
 
 ### Importing Existing PDF Libraries ♻️
 
