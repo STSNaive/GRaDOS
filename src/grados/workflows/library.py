@@ -11,6 +11,7 @@ from grados.extract.parse import ParsePipelineResult
 
 if TYPE_CHECKING:
     from grados.config import IndexingConfig
+    from grados.storage.assets import AssetLimits, PendingAsset
     from grados.storage.papers import PaperSavedSummary
 
 
@@ -20,6 +21,7 @@ class LibraryDocumentArtifact:
     parser_used: str = ""
     warnings: list[str] = field(default_factory=list)
     debug: list[str] = field(default_factory=list)
+    assets: list[PendingAsset] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ async def build_library_document_artifact(
         parser_used=result.parser_used,
         warnings=list(result.warnings),
         debug=list(result.debug),
+        assets=list(result.assets),
     )
 
 
@@ -134,6 +137,8 @@ def persist_reviewed_library_document(
     year: str = "",
     journal: str = "",
     asset_hints: list[dict[str, Any]] | None = None,
+    asset_mode: str = "all",
+    asset_limits: AssetLimits | None = None,
     copied_pdf_path: str = "",
     index_warning_message: str = "",
     indexing_config: IndexingConfig | None = None,
@@ -143,14 +148,34 @@ def persist_reviewed_library_document(
     if markdown is None:
         raise ValueError("persist_reviewed_library_document requires artifact.markdown to be present")
 
-    from grados.storage.papers import save_asset_manifest, save_paper_markdown
+    from grados.storage.papers import save_asset_bundle, save_asset_manifest, save_paper_markdown
 
     warnings = list(review.warnings)
     debug = list(review.debug)
     frontmatter = dict(extra_frontmatter or {})
     asset_manifest_path = ""
+    markdown_to_save = markdown
 
-    if asset_hints:
+    if review.artifact.assets and asset_mode != "none":
+        bundle_result = save_asset_bundle(
+            doi,
+            paths.papers,
+            source=source,
+            assets=review.artifact.assets,
+            mode=asset_mode,
+            limits=asset_limits,
+        )
+        warnings.extend(bundle_result.warnings)
+        if bundle_result.skipped_count:
+            warnings.append(
+                f"Parser asset bundle skipped {bundle_result.skipped_count} assets due to configured limits."
+            )
+        if bundle_result.manifest_path:
+            asset_manifest_path = bundle_result.manifest_path
+            frontmatter["assets_manifest_path"] = bundle_result.manifest_path
+            markdown_to_save = _rewrite_markdown_asset_refs(markdown_to_save, bundle_result.markdown_rewrites)
+
+    if not asset_manifest_path and asset_hints:
         manifest_path = save_asset_manifest(
             doi,
             paths.papers,
@@ -163,7 +188,7 @@ def persist_reviewed_library_document(
 
     summary = save_paper_markdown(
         doi=doi,
-        markdown=markdown,
+        markdown=markdown_to_save,
         papers_dir=paths.papers,
         title=title,
         source=source,
@@ -193,3 +218,15 @@ def persist_reviewed_library_document(
         copied_pdf_path=copied_pdf_path,
         asset_manifest_path=asset_manifest_path,
     )
+
+
+def _rewrite_markdown_asset_refs(markdown: str, rewrites: dict[str, str]) -> str:
+    result = markdown
+    for original, replacement in sorted(rewrites.items(), key=lambda item: len(item[0]), reverse=True):
+        if not original or not replacement:
+            continue
+        result = result.replace(f"]({original})", f"]({replacement})")
+        result = result.replace(f"](<{original}>)", f"](<{replacement}>)")
+        result = result.replace(f'src="{original}"', f'src="{replacement}"')
+        result = result.replace(f"src='{original}'", f"src='{replacement}'")
+    return result

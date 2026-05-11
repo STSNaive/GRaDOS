@@ -122,6 +122,12 @@ def test_default_config_exposes_disabled_codex_chrome_extension_strategy() -> No
     assert config.extract.security.max_browser_capture_bytes == 200 * 1024 * 1024
     assert config.extract.security.max_mineru_zip_bytes == 256 * 1024 * 1024
     assert config.extract.security.max_mineru_full_md_bytes == 100 * 1024 * 1024
+    assert config.extract.assets.mode == "all"
+    assert config.extract.assets.docling_image_scale == 2.0
+    assert config.extract.assets.max_asset_file_bytes == 32 * 1024 * 1024
+    assert config.extract.assets.max_asset_total_bytes == 512 * 1024 * 1024
+    assert config.extract.assets.max_asset_inline_bytes == 8 * 1024 * 1024
+    assert config.extract.assets.max_asset_count == 3000
 
 
 def test_scihub_legacy_fallback_mirror_populates_endpoints() -> None:

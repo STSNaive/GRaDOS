@@ -20,11 +20,16 @@ from typing import Any, Protocol, cast
 import httpx
 
 from grados.http_limits import (
+    DEFAULT_MAX_ASSET_COUNT,
+    DEFAULT_MAX_ASSET_FILE_BYTES,
+    DEFAULT_MAX_ASSET_INLINE_BYTES,
+    DEFAULT_MAX_ASSET_TOTAL_BYTES,
     DEFAULT_MAX_MINERU_FULL_MD_BYTES,
     DEFAULT_MAX_MINERU_ZIP_BYTES,
     ensure_byte_limit,
     limited_sync_get,
 )
+from grados.storage.assets import AssetLimits, PendingAsset
 
 
 @dataclass
@@ -33,13 +38,16 @@ class ParsePipelineResult:
     parser_used: str = ""
     warnings: list[str] = field(default_factory=list)
     debug: list[str] = field(default_factory=list)
+    assets: list[PendingAsset] = field(default_factory=list)
 
 
 @dataclass
 class _ParserAttemptResult:
     markdown: str | None
     warning: str = ""
+    warnings: list[str] = field(default_factory=list)
     debug: str = ""
+    assets: list[PendingAsset] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -57,6 +65,9 @@ class PdfParserContext:
     mineru_is_ocr: bool = False
     mineru_max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES
     mineru_max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES
+    asset_mode: str = "all"
+    docling_image_scale: float = 2.0
+    asset_limits: AssetLimits = field(default_factory=AssetLimits)
 
 
 @dataclass(frozen=True)
@@ -108,7 +119,13 @@ class _FormatDocumentNormalizerStrategy:
 
 
 def _run_docling_pdf_parser(context: PdfParserContext) -> _ParserAttemptResult:
-    return _parse_docling_attempt(context.pdf_buffer, context.filename)
+    return _parse_docling_attempt(
+        context.pdf_buffer,
+        context.filename,
+        asset_mode=context.asset_mode,
+        docling_image_scale=context.docling_image_scale,
+        asset_limits=context.asset_limits,
+    )
 
 
 def _run_marker_pdf_parser(context: PdfParserContext) -> _ParserAttemptResult:
@@ -133,6 +150,8 @@ def _run_mineru_pdf_parser(context: PdfParserContext) -> _ParserAttemptResult:
         is_ocr=context.mineru_is_ocr,
         max_zip_bytes=context.mineru_max_zip_bytes,
         max_full_md_bytes=context.mineru_max_full_md_bytes,
+        asset_mode=context.asset_mode,
+        asset_limits=context.asset_limits,
     )
 
 
@@ -228,6 +247,12 @@ async def parse_pdf(
     mineru_is_ocr: bool = False,
     mineru_max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
     mineru_max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
+    asset_mode: str = "all",
+    docling_image_scale: float = 2.0,
+    max_asset_file_bytes: int = DEFAULT_MAX_ASSET_FILE_BYTES,
+    max_asset_total_bytes: int = DEFAULT_MAX_ASSET_TOTAL_BYTES,
+    max_asset_inline_bytes: int = DEFAULT_MAX_ASSET_INLINE_BYTES,
+    max_asset_count: int = DEFAULT_MAX_ASSET_COUNT,
 ) -> str | None:
     """Parse a PDF buffer into markdown text using the configured pipeline.
 
@@ -249,6 +274,12 @@ async def parse_pdf(
         mineru_is_ocr=mineru_is_ocr,
         mineru_max_zip_bytes=mineru_max_zip_bytes,
         mineru_max_full_md_bytes=mineru_max_full_md_bytes,
+        asset_mode=asset_mode,
+        docling_image_scale=docling_image_scale,
+        max_asset_file_bytes=max_asset_file_bytes,
+        max_asset_total_bytes=max_asset_total_bytes,
+        max_asset_inline_bytes=max_asset_inline_bytes,
+        max_asset_count=max_asset_count,
     )
     return result.markdown
 
@@ -269,6 +300,12 @@ async def parse_pdf_with_diagnostics(
     mineru_is_ocr: bool = False,
     mineru_max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
     mineru_max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
+    asset_mode: str = "all",
+    docling_image_scale: float = 2.0,
+    max_asset_file_bytes: int = DEFAULT_MAX_ASSET_FILE_BYTES,
+    max_asset_total_bytes: int = DEFAULT_MAX_ASSET_TOTAL_BYTES,
+    max_asset_inline_bytes: int = DEFAULT_MAX_ASSET_INLINE_BYTES,
+    max_asset_count: int = DEFAULT_MAX_ASSET_COUNT,
 ) -> ParsePipelineResult:
     """Parse a PDF buffer and preserve parser warnings/debug for caller-facing receipts."""
     strategies = build_pdf_parser_strategies(parse_order)
@@ -289,6 +326,14 @@ async def parse_pdf_with_diagnostics(
         mineru_is_ocr=mineru_is_ocr,
         mineru_max_zip_bytes=mineru_max_zip_bytes,
         mineru_max_full_md_bytes=mineru_max_full_md_bytes,
+        asset_mode=asset_mode,
+        docling_image_scale=docling_image_scale,
+        asset_limits=AssetLimits(
+            max_asset_file_bytes=max_asset_file_bytes,
+            max_asset_total_bytes=max_asset_total_bytes,
+            max_asset_inline_bytes=max_asset_inline_bytes,
+            max_asset_count=max_asset_count,
+        ),
     )
 
     for strategy in strategies:
@@ -298,6 +343,7 @@ async def parse_pdf_with_diagnostics(
 
         if attempt.warning:
             warnings.append(attempt.warning)
+        warnings.extend(attempt.warnings)
         if attempt.debug:
             debug.append(attempt.debug)
         if attempt.markdown:
@@ -306,6 +352,7 @@ async def parse_pdf_with_diagnostics(
                 parser_used=strategy.name,
                 warnings=warnings,
                 debug=debug,
+                assets=attempt.assets,
             )
 
     return ParsePipelineResult(markdown=None, warnings=warnings, debug=debug)
@@ -493,6 +540,8 @@ def _parse_mineru(
     is_ocr: bool = False,
     max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
     max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
+    asset_mode: str = "all",
+    asset_limits: AssetLimits | None = None,
 ) -> str | None:
     return _parse_mineru_attempt(
         pdf_buffer,
@@ -507,6 +556,8 @@ def _parse_mineru(
         is_ocr=is_ocr,
         max_zip_bytes=max_zip_bytes,
         max_full_md_bytes=max_full_md_bytes,
+        asset_mode=asset_mode,
+        asset_limits=asset_limits or AssetLimits(),
     ).markdown
 
 
@@ -524,6 +575,8 @@ def _parse_mineru_attempt(
     is_ocr: bool,
     max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
     max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
+    asset_mode: str = "all",
+    asset_limits: AssetLimits | None = None,
 ) -> _ParserAttemptResult:
     """Parse PDF through MinerU's authenticated cloud API."""
     token = (api_key or os.environ.get("MINERU_API_KEY", "")).strip()
@@ -574,15 +627,20 @@ def _parse_mineru_attempt(
                     zip_url = str(result.get("full_zip_url") or "")
                     if not zip_url:
                         raise ValueError("MinerU task completed without full_zip_url.")
-                    markdown = _download_mineru_markdown(
+                    bundle = _download_mineru_bundle(
                         client,
                         zip_url,
                         max_zip_bytes=max_zip_bytes,
                         max_full_md_bytes=max_full_md_bytes,
+                        asset_mode=asset_mode,
+                        asset_limits=asset_limits or AssetLimits(),
                     )
+                    markdown = bundle.markdown or ""
                     if len(markdown) > 100:
                         return _ParserAttemptResult(
                             markdown=markdown,
+                            assets=bundle.assets,
+                            warnings=bundle.warnings,
                             debug=_parser_debug("MinerU", f"batch_id={batch_id}, data_id={data_id}"),
                         )
                     return _ParserAttemptResult(
@@ -671,6 +729,13 @@ class _MinerUApiError(ValueError):
         super().__init__(f"MinerU API returned code {code}: {message}")
 
 
+@dataclass
+class _MinerUBundle:
+    markdown: str | None
+    assets: list[PendingAsset] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
 def _poll_mineru_batch_result(
     client: httpx.Client,
     batch_id: str,
@@ -692,13 +757,15 @@ def _poll_mineru_batch_result(
     return first
 
 
-def _download_mineru_markdown(
+def _download_mineru_bundle(
     client: httpx.Client,
     zip_url: str,
     *,
     max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
     max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
-) -> str:
+    asset_mode: str = "all",
+    asset_limits: AssetLimits | None = None,
+) -> _MinerUBundle:
     response = limited_sync_get(
         client,
         zip_url,
@@ -706,10 +773,10 @@ def _download_mineru_markdown(
         label="MinerU result zip",
     )
     response.raise_for_status()
+    asset_limits = asset_limits or AssetLimits()
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        markdown_names = [
-            name for name in archive.namelist() if Path(name).name == "full.md" or name.endswith("/full.md")
-        ]
+        infos, warnings = _safe_mineru_zip_infos(archive, asset_limits=asset_limits)
+        markdown_names = [info.filename for info in infos if Path(info.filename).name == "full.md"]
         if not markdown_names:
             raise ValueError("MinerU result zip did not contain full.md.")
         info = archive.getinfo(markdown_names[0])
@@ -725,7 +792,324 @@ def _download_mineru_markdown(
                 max_bytes=max_full_md_bytes,
                 label="MinerU full.md",
             )
-            return _compact_markdown(markdown_bytes.decode("utf-8", errors="replace"))
+            markdown = _compact_markdown(markdown_bytes.decode("utf-8", errors="replace"))
+
+        assets: list[PendingAsset] = []
+        if (asset_mode or "all").lower() != "none":
+            assets, asset_warnings = _extract_mineru_assets(archive, infos, asset_mode=asset_mode)
+            warnings.extend(asset_warnings)
+        return _MinerUBundle(markdown=markdown, assets=assets, warnings=warnings)
+
+
+def _download_mineru_markdown(
+    client: httpx.Client,
+    zip_url: str,
+    *,
+    max_zip_bytes: int = DEFAULT_MAX_MINERU_ZIP_BYTES,
+    max_full_md_bytes: int = DEFAULT_MAX_MINERU_FULL_MD_BYTES,
+) -> str:
+    return _download_mineru_bundle(
+        client,
+        zip_url,
+        max_zip_bytes=max_zip_bytes,
+        max_full_md_bytes=max_full_md_bytes,
+        asset_mode="none",
+    ).markdown or ""
+
+
+_MINERU_ASSET_SUFFIXES = {
+    ".bmp",
+    ".csv",
+    ".gif",
+    ".htm",
+    ".html",
+    ".jpeg",
+    ".jpg",
+    ".json",
+    ".md",
+    ".png",
+    ".svg",
+    ".tex",
+    ".tif",
+    ".tiff",
+    ".txt",
+    ".webp",
+}
+
+
+def _safe_mineru_zip_infos(
+    archive: zipfile.ZipFile,
+    *,
+    asset_limits: AssetLimits,
+) -> tuple[list[zipfile.ZipInfo], list[str]]:
+    infos: list[zipfile.ZipInfo] = []
+    warnings: list[str] = []
+    asset_count = 0
+    asset_total_size = 0
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        normalized = info.filename.replace("\\", "/")
+        parts = [part for part in normalized.split("/") if part]
+        if normalized.startswith("/") or any(part == ".." for part in parts):
+            raise ValueError(f"Unsafe MinerU zip member path: {info.filename}")
+        if Path(normalized).name == "full.md":
+            infos.append(info)
+            continue
+
+        suffix = Path(normalized).suffix.lower()
+        if suffix not in _MINERU_ASSET_SUFFIXES:
+            warnings.append(f"MinerU asset skipped because its file type is unsupported: {normalized}")
+            continue
+
+        file_size = int(info.file_size)
+        if file_size > asset_limits.max_asset_file_bytes:
+            warnings.append(
+                f"MinerU asset skipped because it exceeds max_asset_file_bytes "
+                f"({file_size} > {asset_limits.max_asset_file_bytes}): {normalized}"
+            )
+            continue
+
+        if asset_count >= asset_limits.max_asset_count:
+            warnings.append(
+                f"MinerU asset skipped because max_asset_count={asset_limits.max_asset_count} was reached: "
+                f"{normalized}"
+            )
+            continue
+
+        if asset_total_size + file_size > asset_limits.max_asset_total_bytes:
+            warnings.append(
+                f"MinerU asset skipped because it would exceed max_asset_total_bytes "
+                f"({asset_total_size + file_size} > {asset_limits.max_asset_total_bytes}): {normalized}"
+            )
+            continue
+
+        asset_count += 1
+        asset_total_size += file_size
+        infos.append(info)
+    return infos, warnings
+
+
+def _extract_mineru_assets(
+    archive: zipfile.ZipFile,
+    infos: list[zipfile.ZipInfo],
+    *,
+    asset_mode: str,
+) -> tuple[list[PendingAsset], list[str]]:
+    info_by_name = {info.filename.replace("\\", "/"): info for info in infos}
+    content_lists: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    assets: list[PendingAsset] = []
+    referenced: set[str] = set()
+
+    for info in infos:
+        name = info.filename.replace("\\", "/")
+        if Path(name).name not in {"content_list_v2.json", "content_list.json"}:
+            continue
+        try:
+            payload = json.loads(archive.read(info).decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+            warnings.append(f"MinerU asset metadata skipped: {Path(name).name}: {_exception_summary(exc)}")
+            continue
+        if isinstance(payload, list):
+            content_lists.extend(item for item in payload if isinstance(item, dict))
+
+    for index, item in enumerate(content_lists, start=1):
+        kind = _mineru_item_kind(item)
+        if kind not in {"figure", "table", "formula"}:
+            continue
+        source_ref = _mineru_asset_source_ref(item)
+        matched_name, data = _read_mineru_asset_bytes(archive, info_by_name, source_ref)
+        if matched_name:
+            referenced.add(matched_name)
+        asset = PendingAsset(
+            kind=kind,
+            role="content",
+            source_ref=source_ref,
+            filename=Path(source_ref).name if source_ref else "",
+            data=data,
+            page=_mineru_page(item),
+            bbox=_mineru_bbox(item),
+            caption=_mineru_caption(item),
+            text=_mineru_text(item),
+            latex=_mineru_latex(item),
+            html=_mineru_html(item),
+            markdown=_mineru_markdown_table(item),
+            metadata={"source_index": index, "source_type": item.get("type", "")},
+        )
+        assets.append(asset)
+
+    if (asset_mode or "all").lower() != "all":
+        return assets, warnings
+
+    for info in infos:
+        name = info.filename.replace("\\", "/")
+        if name in referenced or Path(name).name == "full.md":
+            continue
+        suffix = Path(name).suffix.lower()
+        if suffix not in _MINERU_ASSET_SUFFIXES:
+            warnings.append(f"MinerU asset skipped because its file type is unsupported: {name}")
+            continue
+        try:
+            data = archive.read(info)
+        except OSError as exc:
+            warnings.append(f"MinerU asset skipped: {name}: {_exception_summary(exc)}")
+            continue
+        assets.append(
+            PendingAsset(
+                kind=_mineru_scanned_asset_kind(name),
+                role=_mineru_scanned_asset_role(name),
+                source_ref=name,
+                filename=Path(name).name,
+                data=data,
+                metadata={"source": "mineru_zip"},
+            )
+        )
+
+    return assets, warnings
+
+
+def _read_mineru_asset_bytes(
+    archive: zipfile.ZipFile,
+    info_by_name: dict[str, zipfile.ZipInfo],
+    source_ref: str,
+) -> tuple[str, bytes | None]:
+    if not source_ref:
+        return "", None
+    normalized = source_ref.replace("\\", "/").lstrip("/")
+    candidates = [normalized]
+    candidates.extend(
+        name
+        for name in info_by_name
+        if name.endswith(f"/{normalized}") or Path(name).name == Path(normalized).name
+    )
+    for candidate in candidates:
+        info = info_by_name.get(candidate)
+        if info is None:
+            continue
+        if Path(candidate).suffix.lower() not in _MINERU_ASSET_SUFFIXES:
+            return "", None
+        return candidate, archive.read(info)
+    return "", None
+
+
+def _mineru_item_kind(item: dict[str, Any]) -> str:
+    raw = str(item.get("type") or item.get("kind") or "").lower()
+    if raw in {"equation", "formula", "interline_equation", "inline_equation"} or "equation" in raw:
+        return "formula"
+    if "table" in raw:
+        return "table"
+    if "image" in raw or "chart" in raw or "figure" in raw:
+        return "figure"
+    return "object"
+
+
+def _mineru_asset_source_ref(item: dict[str, Any]) -> str:
+    keys = (
+        "img_path",
+        "image_path",
+        "table_img_path",
+        "chart_img_path",
+        "page_img_path",
+        "path",
+        "image",
+    )
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _mineru_caption(item: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key in ("caption", "image_caption", "table_caption", "chart_caption"):
+        value = item.get(key)
+        if isinstance(value, list):
+            values.extend(str(part).strip() for part in value if str(part).strip())
+        elif isinstance(value, str) and value.strip():
+            values.append(value.strip())
+    return " ".join(values)
+
+
+def _mineru_text(item: dict[str, Any]) -> str:
+    for key in ("text", "content", "table_body"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _mineru_latex(item: dict[str, Any]) -> str:
+    for key in ("math_content", "latex", "latex_content"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if _mineru_item_kind(item) == "formula":
+        return _mineru_text(item)
+    return ""
+
+
+def _mineru_html(item: dict[str, Any]) -> str:
+    value = item.get("table_body")
+    if isinstance(value, str) and "<table" in value.lower():
+        return value.strip()
+    value = item.get("html")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _mineru_markdown_table(item: dict[str, Any]) -> str:
+    for key in ("table_markdown", "markdown"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _mineru_page(item: dict[str, Any]) -> int | None:
+    for key in ("page", "page_no", "page_idx", "page_number"):
+        value = item.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def _mineru_bbox(item: dict[str, Any]) -> list[float]:
+    value = item.get("bbox") or item.get("position")
+    if not isinstance(value, list):
+        return []
+    out: list[float] = []
+    for part in value:
+        if isinstance(part, int | float):
+            out.append(float(part))
+        elif isinstance(part, list):
+            out.extend(float(inner) for inner in part if isinstance(inner, int | float))
+    return out[:8]
+
+
+def _mineru_scanned_asset_kind(name: str) -> str:
+    lowered = name.lower()
+    suffix = Path(lowered).suffix
+    if "page" in lowered and suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+        return "page"
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".svg"}:
+        return "figure"
+    if "layout" in lowered or "span" in lowered:
+        return "debug"
+    return "object"
+
+
+def _mineru_scanned_asset_role(name: str) -> str:
+    lowered = name.lower()
+    if "content_list" in lowered or "middle" in lowered or "model" in lowered:
+        return "source"
+    if "layout" in lowered or "span" in lowered:
+        return "debug"
+    if "page" in lowered:
+        return "page"
+    return "supporting"
 
 
 def _mineru_response_data(response: httpx.Response) -> dict[str, Any]:
@@ -765,13 +1149,23 @@ def _normalize_with_docling(content: bytes, *, suffix: str, filename: str) -> st
     ).markdown
 
 
-def _parse_docling_attempt(pdf_buffer: bytes, filename: str) -> _ParserAttemptResult:
+def _parse_docling_attempt(
+    pdf_buffer: bytes,
+    filename: str,
+    *,
+    asset_mode: str = "all",
+    docling_image_scale: float = 2.0,
+    asset_limits: AssetLimits | None = None,
+) -> _ParserAttemptResult:
     return _normalize_with_docling_attempt(
         pdf_buffer,
         suffix=".pdf",
         filename=filename,
         context_label="parse",
         fallback=True,
+        asset_mode=asset_mode,
+        docling_image_scale=docling_image_scale,
+        asset_limits=asset_limits or AssetLimits(),
     )
 
 
@@ -782,19 +1176,35 @@ def _normalize_with_docling_attempt(
     filename: str,
     context_label: str,
     fallback: bool,
+    asset_mode: str = "none",
+    docling_image_scale: float = 2.0,
+    asset_limits: AssetLimits | None = None,
 ) -> _ParserAttemptResult:
     try:
-        from docling.document_converter import DocumentConverter
-
         with tempfile.NamedTemporaryFile(suffix=suffix, prefix=_safe_stem(filename), delete=True) as tmp:
             tmp.write(content)
             tmp.flush()
-            converter = DocumentConverter()
+            enable_assets = suffix.lower() == ".pdf" and (asset_mode or "all").lower() != "none"
+            converter = _build_docling_converter(
+                enable_assets=enable_assets,
+                image_scale=docling_image_scale,
+            )
             result = converter.convert(Path(tmp.name))
-            md = result.document.export_to_markdown()
+            if enable_assets:
+                md, assets, asset_warnings = _export_docling_assets(
+                    result.document,
+                    filename=filename,
+                    image_scale=docling_image_scale,
+                    asset_limits=asset_limits or AssetLimits(),
+                    mode=asset_mode,
+                )
+            else:
+                md = result.document.export_to_markdown()
+                assets = []
+                asset_warnings = []
             cleaned = md.strip() if md else ""
             if len(cleaned) > 100:
-                return _ParserAttemptResult(markdown=cleaned)
+                return _ParserAttemptResult(markdown=cleaned, assets=assets, warnings=asset_warnings)
             return _ParserAttemptResult(
                 markdown=None,
                 warning=_parser_warning(
@@ -816,6 +1226,312 @@ def _normalize_with_docling_attempt(
             warning=_parser_warning("Docling", f"{context_label} failed", fallback=fallback),
             debug=_parser_debug("Docling", _exception_summary(exc)),
         )
+
+
+def _build_docling_converter(*, enable_assets: bool, image_scale: float):
+    from docling.document_converter import DocumentConverter
+
+    if not enable_assets:
+        return DocumentConverter()
+
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import PdfFormatOption
+
+    pipeline_options = PdfPipelineOptions()
+    if hasattr(pipeline_options, "enable_remote_services"):
+        pipeline_options.enable_remote_services = False
+    if hasattr(pipeline_options, "images_scale"):
+        pipeline_options.images_scale = image_scale
+    if hasattr(pipeline_options, "generate_page_images"):
+        pipeline_options.generate_page_images = True
+    if hasattr(pipeline_options, "generate_picture_images"):
+        pipeline_options.generate_picture_images = True
+    if hasattr(pipeline_options, "generate_table_images"):
+        pipeline_options.generate_table_images = True
+    if hasattr(pipeline_options, "do_formula_enrichment"):
+        pipeline_options.do_formula_enrichment = True
+
+    return DocumentConverter(
+        allowed_formats=[InputFormat.PDF],
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+        },
+    )
+
+
+def _export_docling_assets(
+    document: Any,
+    *,
+    filename: str,
+    image_scale: float,
+    asset_limits: AssetLimits,
+    mode: str,
+) -> tuple[str, list[PendingAsset], list[str]]:
+    _ = image_scale
+    warnings: list[str] = []
+    assets: list[PendingAsset] = []
+    with tempfile.TemporaryDirectory(prefix=_safe_stem(filename) + "docling_assets_") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        markdown_path = tmp_path / "full.md"
+        artifacts_dir = tmp_path / "artifacts"
+        try:
+            from docling_core.types.doc.base import ImageRefMode
+
+            document.save_as_markdown(
+                markdown_path,
+                artifacts_dir=artifacts_dir,
+                image_mode=ImageRefMode.REFERENCED,
+            )
+            md = markdown_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            warnings.append(f"Docling referenced markdown export failed: {_exception_summary(exc)}")
+            md = document.export_to_markdown()
+
+        try:
+            from docling_core.types.doc.base import ImageRefMode
+
+            source_path = tmp_path / "docling.json"
+            document.save_as_json(source_path, artifacts_dir=artifacts_dir, image_mode=ImageRefMode.REFERENCED)
+            source_size = source_path.stat().st_size
+            if source_size <= asset_limits.max_asset_file_bytes:
+                assets.append(
+                    PendingAsset(
+                        kind="object",
+                        role="source",
+                        source_ref="docling.json",
+                        filename="docling.json",
+                        data=source_path.read_bytes(),
+                        metadata={"source": "docling"},
+                    )
+                )
+            else:
+                warnings.append(
+                    f"Docling JSON asset skipped because it exceeds max_asset_file_bytes "
+                    f"({source_size} > {asset_limits.max_asset_file_bytes})."
+                )
+        except Exception as exc:
+            warnings.append(f"Docling JSON asset skipped: {_exception_summary(exc)}")
+
+        assets.extend(
+            _collect_docling_referenced_files(
+                tmp_path,
+                artifacts_dir,
+                warnings=warnings,
+                asset_limits=asset_limits,
+            )
+        )
+        assets.extend(_collect_docling_tables(document, warnings=warnings))
+        assets.extend(_collect_docling_pictures(document, warnings=warnings))
+        assets.extend(_collect_docling_pages(document, warnings=warnings))
+        assets.extend(_collect_docling_formulas(document, warnings=warnings))
+
+    if (mode or "all").lower() == "referenced":
+        assets = [
+            asset for asset in assets
+            if asset.role == "content" and asset.kind in {"figure", "table", "formula"}
+        ]
+
+    if len(assets) > asset_limits.max_asset_count:
+        warnings.append(
+            f"Docling produced {len(assets)} assets; only the first {asset_limits.max_asset_count} will be saved."
+        )
+        assets = assets[: asset_limits.max_asset_count]
+    return md, assets, warnings
+
+
+def _collect_docling_referenced_files(
+    tmp_path: Path,
+    artifacts_dir: Path,
+    *,
+    warnings: list[str],
+    asset_limits: AssetLimits,
+) -> list[PendingAsset]:
+    assets: list[PendingAsset] = []
+    if not artifacts_dir.is_dir():
+        return assets
+    for path in sorted(artifacts_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            size = path.stat().st_size
+            if size > asset_limits.max_asset_file_bytes:
+                warnings.append(
+                    f"Docling asset skipped because it exceeds max_asset_file_bytes "
+                    f"({size} > {asset_limits.max_asset_file_bytes}): {path.name}"
+                )
+                continue
+            rel = path.relative_to(tmp_path).as_posix()
+            assets.append(
+                PendingAsset(
+                    kind=_docling_file_asset_kind(path),
+                    role="content",
+                    source_ref=rel,
+                    filename=path.name,
+                    data=path.read_bytes(),
+                    metadata={"source": "docling_referenced_file"},
+                )
+            )
+        except OSError as exc:
+            warnings.append(f"Docling asset skipped: {path.name}: {_exception_summary(exc)}")
+    return assets
+
+
+def _collect_docling_tables(document: Any, *, warnings: list[str]) -> list[PendingAsset]:
+    assets: list[PendingAsset] = []
+    for index, table in enumerate(getattr(document, "tables", []) or [], start=1):
+        try:
+            image = table.get_image(document)
+            data = _pil_to_png_bytes(image) if image is not None else None
+            dataframe = table.export_to_dataframe(document)
+            csv_text = dataframe.to_csv(index=False) if dataframe is not None else ""
+            assets.append(
+                PendingAsset(
+                    kind="table",
+                    role="content",
+                    filename=f"docling_table_{index}.png",
+                    data=data,
+                    page=_docling_page(table),
+                    bbox=_docling_bbox(table),
+                    caption=_docling_caption(table, document),
+                    html=table.export_to_html(document),
+                    csv=csv_text,
+                    markdown=table.export_to_markdown(document),
+                    metadata={"source": "docling_table", "source_index": index},
+                )
+            )
+        except Exception as exc:
+            warnings.append(f"Docling table asset skipped #{index}: {_exception_summary(exc)}")
+    return assets
+
+
+def _collect_docling_pictures(document: Any, *, warnings: list[str]) -> list[PendingAsset]:
+    assets: list[PendingAsset] = []
+    for index, picture in enumerate(getattr(document, "pictures", []) or [], start=1):
+        try:
+            image = picture.get_image(document)
+            data = _pil_to_png_bytes(image) if image is not None else None
+            assets.append(
+                PendingAsset(
+                    kind="figure",
+                    role="content",
+                    filename=f"docling_figure_{index}.png",
+                    data=data,
+                    page=_docling_page(picture),
+                    bbox=_docling_bbox(picture),
+                    caption=_docling_caption(picture, document),
+                    metadata={"source": "docling_picture", "source_index": index},
+                )
+            )
+        except Exception as exc:
+            warnings.append(f"Docling picture asset skipped #{index}: {_exception_summary(exc)}")
+    return assets
+
+
+def _collect_docling_pages(document: Any, *, warnings: list[str]) -> list[PendingAsset]:
+    assets: list[PendingAsset] = []
+    pages = getattr(document, "pages", {}) or {}
+    for page_no, page in sorted(pages.items()):
+        try:
+            image_ref = getattr(page, "image", None)
+            image = getattr(image_ref, "pil_image", None) if image_ref is not None else None
+            data = _pil_to_png_bytes(image) if image is not None else None
+            if data is None:
+                continue
+            assets.append(
+                PendingAsset(
+                    kind="page",
+                    role="page",
+                    filename=f"docling_page_{page_no}.png",
+                    data=data,
+                    page=int(page_no),
+                    metadata={"source": "docling_page"},
+                )
+            )
+        except Exception as exc:
+            warnings.append(f"Docling page asset skipped #{page_no}: {_exception_summary(exc)}")
+    return assets
+
+
+def _collect_docling_formulas(document: Any, *, warnings: list[str]) -> list[PendingAsset]:
+    assets: list[PendingAsset] = []
+    try:
+        items = document.iterate_items()
+    except Exception as exc:
+        warnings.append(f"Docling formula scan skipped: {_exception_summary(exc)}")
+        return assets
+    for index, (item, _level) in enumerate(items, start=1):
+        label = getattr(getattr(item, "label", ""), "value", getattr(item, "label", ""))
+        if str(label).lower() != "formula":
+            continue
+        text = str(getattr(item, "text", "") or "").strip()
+        assets.append(
+            PendingAsset(
+                kind="formula",
+                role="content",
+                page=_docling_page(item),
+                bbox=_docling_bbox(item),
+                text=text,
+                latex=text,
+                metadata={"source": "docling_formula", "source_index": index},
+            )
+        )
+    return assets
+
+
+def _pil_to_png_bytes(image: Any) -> bytes | None:
+    if image is None:
+        return None
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _docling_file_asset_kind(path: Path) -> str:
+    suffix = path.suffix.lower()
+    lowered = path.as_posix().lower()
+    if "page" in lowered and suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+        return "page"
+    if "table" in lowered:
+        return "table"
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".tif", ".tiff"}:
+        return "figure"
+    return "object"
+
+
+def _docling_caption(item: Any, document: Any) -> str:
+    caption_text = getattr(item, "caption_text", None)
+    if callable(caption_text):
+        try:
+            return str(caption_text(document) or "").strip()
+        except Exception:
+            return ""
+    return ""
+
+
+def _docling_page(item: Any) -> int | None:
+    prov = getattr(item, "prov", None) or []
+    if not prov:
+        return None
+    page_no = getattr(prov[0], "page_no", None)
+    return int(page_no) if isinstance(page_no, int) else None
+
+
+def _docling_bbox(item: Any) -> list[float]:
+    prov = getattr(item, "prov", None) or []
+    if not prov:
+        return []
+    bbox = getattr(prov[0], "bbox", None)
+    if bbox is None:
+        return []
+    as_tuple = getattr(bbox, "as_tuple", None)
+    try:
+        values = as_tuple() if callable(as_tuple) else bbox
+    except Exception:
+        return []
+    if not isinstance(values, tuple | list):
+        return []
+    return [float(value) for value in values if isinstance(value, int | float)][:8]
 
 
 def _safe_stem(filename: str) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import subprocess
 import zipfile
 from typing import Any
@@ -56,7 +57,9 @@ def test_parse_pdf_prefers_docling_before_pymupdf(monkeypatch) -> None:
     monkeypatch.setattr(
         parse_module,
         "_parse_docling_attempt",
-        lambda pdf_buffer, filename: parse_module._ParserAttemptResult(markdown="# Docling\n\nConverted by Docling."),
+        lambda pdf_buffer, filename, **kwargs: parse_module._ParserAttemptResult(
+            markdown="# Docling\n\nConverted by Docling."
+        ),
     )
     monkeypatch.setattr(
         parse_module,
@@ -243,13 +246,145 @@ def test_mineru_markdown_reader_rejects_oversized_full_md() -> None:
         )
 
 
+def test_mineru_bundle_extracts_markdown_assets_and_structured_blocks() -> None:
+    import grados.extract.parse as parse_module
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as archive:
+        archive.writestr("paper/full.md", "# MinerU\n\n" + ("Parsed by MinerU cloud. " * 12))
+        archive.writestr("paper/images/fig1.png", b"image-bytes")
+        archive.writestr("paper/middle.json", json.dumps({"layout": "debug"}))
+        archive.writestr(
+            "paper/content_list_v2.json",
+            json.dumps(
+                [
+                    {
+                        "type": "image",
+                        "img_path": "images/fig1.png",
+                        "image_caption": ["Figure 1. Demo."],
+                        "page_idx": 2,
+                        "bbox": [1, 2, 3, 4],
+                    },
+                    {
+                        "type": "equation",
+                        "math_content": "E = mc^2",
+                        "page_idx": 3,
+                    },
+                    {
+                        "type": "table",
+                        "table_body": "<table><tr><td>A</td></tr></table>",
+                        "table_caption": ["Table 1."],
+                    },
+                ]
+            ),
+        )
+
+    class FakeResponse:
+        headers = {"content-length": str(len(zip_buffer.getvalue()))}
+        content = zip_buffer.getvalue()
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeClient:
+        def get(self, url: str, **kwargs):  # noqa: ANN003
+            _ = (url, kwargs)
+            return FakeResponse()
+
+    bundle = parse_module._download_mineru_bundle(  # noqa: SLF001
+        FakeClient(),  # type: ignore[arg-type]
+        "https://cdn.example/result.zip",
+        max_zip_bytes=4096,
+    )
+
+    assert bundle.markdown is not None
+    kinds = [asset.kind for asset in bundle.assets]
+    assert "figure" in kinds
+    assert "formula" in kinds
+    assert "table" in kinds
+    assert any(asset.role == "source" for asset in bundle.assets)
+    assert any(asset.latex == "E = mc^2" for asset in bundle.assets)
+
+
+def test_mineru_bundle_rejects_path_traversal() -> None:
+    import grados.extract.parse as parse_module
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as archive:
+        archive.writestr("paper/full.md", "# MinerU\n\n" + ("Parsed by MinerU cloud. " * 12))
+        archive.writestr("../evil.png", b"bad")
+
+    class FakeResponse:
+        headers = {"content-length": str(len(zip_buffer.getvalue()))}
+        content = zip_buffer.getvalue()
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeClient:
+        def get(self, url: str, **kwargs):  # noqa: ANN003
+            _ = (url, kwargs)
+            return FakeResponse()
+
+    with pytest.raises(ValueError, match="Unsafe MinerU zip member path"):
+        parse_module._download_mineru_bundle(  # noqa: SLF001
+            FakeClient(),  # type: ignore[arg-type]
+            "https://cdn.example/result.zip",
+            max_zip_bytes=4096,
+        )
+
+
+def test_mineru_bundle_skips_oversized_assets_without_losing_markdown() -> None:
+    import grados.extract.parse as parse_module
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as archive:
+        archive.writestr("paper/full.md", "# MinerU\n\n" + ("Parsed by MinerU cloud. " * 12))
+        archive.writestr("paper/images/huge.png", b"x" * 256)
+        archive.writestr(
+            "paper/content_list_v2.json",
+            json.dumps(
+                [
+                    {
+                        "type": "image",
+                        "img_path": "images/huge.png",
+                        "image_caption": ["Oversized figure."],
+                    }
+                ]
+            ),
+        )
+
+    class FakeResponse:
+        headers = {"content-length": str(len(zip_buffer.getvalue()))}
+        content = zip_buffer.getvalue()
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeClient:
+        def get(self, url: str, **kwargs):  # noqa: ANN003
+            _ = (url, kwargs)
+            return FakeResponse()
+
+    bundle = parse_module._download_mineru_bundle(  # noqa: SLF001
+        FakeClient(),  # type: ignore[arg-type]
+        "https://cdn.example/result.zip",
+        max_zip_bytes=4096,
+        asset_limits=parse_module.AssetLimits(max_asset_file_bytes=192),
+    )
+
+    assert bundle.markdown is not None
+    assert any("max_asset_file_bytes" in warning for warning in bundle.warnings)
+    assert any(asset.kind == "figure" and asset.data is None for asset in bundle.assets)
+
+
 def test_parse_pdf_falls_back_after_marker_timeout(monkeypatch) -> None:
     import grados.extract.parse as parse_module
 
     monkeypatch.setattr(
         parse_module,
         "_parse_docling_attempt",
-        lambda pdf_buffer, filename: parse_module._ParserAttemptResult(markdown=None),
+        lambda pdf_buffer, filename, **kwargs: parse_module._ParserAttemptResult(markdown=None),
     )
     monkeypatch.setattr(
         parse_module,
@@ -281,7 +416,7 @@ def test_parse_pdf_with_diagnostics_preserves_standardized_parser_messages(monke
     monkeypatch.setattr(
         parse_module,
         "_parse_docling_attempt",
-        lambda pdf_buffer, filename: parse_module._ParserAttemptResult(
+        lambda pdf_buffer, filename, **kwargs: parse_module._ParserAttemptResult(
             markdown=None,
             warning="Docling: parse failed; falling back to next parser.",
             debug="Docling debug: RuntimeError: cold start failed",

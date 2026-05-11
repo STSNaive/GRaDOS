@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -26,6 +26,7 @@ from grados.storage.frontmatter import (
 
 if TYPE_CHECKING:
     from grados.config import IndexingConfig
+    from grados.storage.assets import AssetBundleSaveResult, AssetLimits, PendingAsset
 
 # ── Save / Read ──────────────────────────────────────────────────────────────
 
@@ -184,6 +185,34 @@ def save_asset_manifest(
     return str(manifest_path.relative_to(papers_dir))
 
 
+def save_asset_bundle(
+    doi: str,
+    papers_dir: Path,
+    *,
+    source: str = "",
+    assets: list[PendingAsset] | None = None,
+    mode: str = "all",
+    limits: AssetLimits | None = None,
+) -> AssetBundleSaveResult:
+    """Persist parser-generated assets in the v2 paper-bound bundle format."""
+    from grados.storage.assets import persist_asset_bundle
+
+    if not assets:
+        from grados.storage.assets import AssetBundleSaveResult
+
+        return AssetBundleSaveResult()
+    safe = _safe_doi_for_write(papers_dir, doi)
+    return persist_asset_bundle(
+        doi=doi,
+        safe_doi=safe,
+        papers_dir=papers_dir,
+        source=source,
+        assets=assets,
+        mode=mode,
+        limits=limits,
+    )
+
+
 # ── Paper reading with paragraph windowing ───────────────────────────────────
 
 
@@ -196,6 +225,8 @@ class PaperReadResult:
     total_paragraphs: int
     truncated: bool
     section_headings: list[str]
+    safe_doi: str = ""
+    assets_manifest_path: str = ""
 
 
 @dataclass
@@ -263,6 +294,12 @@ class PaperAssetsSummary:
     figures: int
     tables: int
     objects: int
+    formulas: int = 0
+    pages: int = 0
+    debug: int = 0
+    skipped: int = 0
+    schema_version: int = 1
+    asset_refs: list[dict[str, Any]] = field(default_factory=list)
 
 
 def load_paper_record(
@@ -355,6 +392,8 @@ def read_paper(
         total_paragraphs=len(paragraphs),
         truncated=start_paragraph + max_paragraphs < len(paragraphs),
         section_headings=headings[:20],
+        safe_doi=safe_doi,
+        assets_manifest_path=metadata.get("assets_manifest_path", ""),
     )
 
 
@@ -542,29 +581,45 @@ def _load_assets_summary(papers_dir: Path, record: PaperRecord) -> PaperAssetsSu
     if not manifest_path:
         return summary
 
-    manifest_file = Path(manifest_path)
-    if not manifest_file.is_absolute():
-        manifest_file = papers_dir / manifest_file
-    if not manifest_file.is_file():
-        return PaperAssetsSummary(
-            has_assets=False,
-            manifest_path=manifest_path,
-            figures=0,
-            tables=0,
-            objects=0,
-        )
+    from grados.storage.assets import compact_asset_refs, load_asset_manifest, manifest_assets
 
-    try:
-        payload = json.loads(manifest_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    payload = load_asset_manifest(papers_dir, manifest_path)
+    if payload is None:
         return summary
+
+    assets = manifest_assets(payload)
+    if assets:
+        figures = sum(1 for asset in assets if asset.get("kind") == "figure")
+        tables = sum(1 for asset in assets if asset.get("kind") == "table")
+        formulas = sum(1 for asset in assets if asset.get("kind") == "formula")
+        pages = sum(1 for asset in assets if asset.get("kind") == "page")
+        debug = sum(1 for asset in assets if asset.get("kind") == "debug" or asset.get("role") in {"debug", "source"})
+        objects = max(0, len(assets) - figures - tables - formulas - pages - debug)
+        return PaperAssetsSummary(
+            has_assets=True,
+            manifest_path=manifest_path,
+            figures=figures,
+            tables=tables,
+            objects=objects,
+            formulas=formulas,
+            pages=pages,
+            debug=debug,
+            skipped=len(payload.get("skipped_assets", [])) if isinstance(payload.get("skipped_assets"), list) else 0,
+            schema_version=int(payload.get("schema_version") or 1),
+            asset_refs=compact_asset_refs(payload, limit=12),
+        )
 
     return PaperAssetsSummary(
         has_assets=True,
         manifest_path=manifest_path,
         figures=len(payload.get("figures", [])) if isinstance(payload, dict) else 0,
         tables=len(payload.get("tables", [])) if isinstance(payload, dict) else 0,
+        formulas=len(payload.get("formulas", [])) if isinstance(payload, dict) else 0,
+        pages=len(payload.get("pages", [])) if isinstance(payload, dict) else 0,
+        debug=len(payload.get("debug", [])) if isinstance(payload, dict) else 0,
         objects=len(payload.get("objects", [])) if isinstance(payload, dict) else 0,
+        skipped=len(payload.get("skipped_assets", [])) if isinstance(payload.get("skipped_assets"), list) else 0,
+        schema_version=int(payload.get("schema_version") or 1),
     )
 
 

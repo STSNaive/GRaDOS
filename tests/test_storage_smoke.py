@@ -5,6 +5,13 @@ from pathlib import Path
 
 from grados.config import IndexingConfig
 from grados.publisher.common import safe_doi_filename
+from grados.storage.assets import (
+    AssetLimits,
+    PendingAsset,
+    load_asset_manifest,
+    manifest_assets,
+    resolve_manifest_relative_path,
+)
 from grados.storage.chunking import extract_reference_dois, split_paragraphs
 from grados.storage.frontmatter import read_frontmatter_metadata
 from grados.storage.papers import (
@@ -12,6 +19,7 @@ from grados.storage.papers import (
     get_paper_structure,
     list_saved_papers,
     read_paper,
+    save_asset_bundle,
     save_asset_manifest,
     save_paper_markdown,
     save_pdf,
@@ -465,3 +473,115 @@ def test_asset_manifest_is_saved_and_exposed_in_structure_summary(tmp_path: Path
     assert structure.assets_summary.figures == 1
     assert structure.assets_summary.tables == 1
     assert structure.assets_summary.objects == 1
+
+
+def test_asset_bundle_v2_saves_files_and_compact_structure_refs(tmp_path: Path, monkeypatch) -> None:
+    papers_dir = tmp_path / "papers"
+
+    import grados.storage.vector as vector
+
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: 1)
+
+    bundle = save_asset_bundle(
+        doi="10.1234/demo",
+        papers_dir=papers_dir,
+        source="MinerU",
+        assets=[
+            PendingAsset(
+                kind="figure",
+                role="content",
+                source_ref="images/fig1.png",
+                filename="fig1.png",
+                data=b"image-bytes",
+                caption="Figure 1. Demo",
+                page=2,
+            ),
+            PendingAsset(
+                kind="formula",
+                role="content",
+                latex="E = mc^2",
+                page=3,
+            ),
+            PendingAsset(
+                kind="table",
+                role="content",
+                html="<table><tr><td>A</td></tr></table>",
+                csv="A\n1\n",
+                markdown="| A |\n|---|\n| 1 |",
+            ),
+        ],
+    )
+    assert bundle.manifest_path.endswith("/manifest.json")
+    assert bundle.markdown_rewrites == {"images/fig1.png": "_assets/10_1234_demo__51facb5bc98d/files/fig_001.png"}
+
+    save_paper_markdown(
+        doi="10.1234/demo",
+        markdown="# Demo\n\nSee ![Figure](images/fig1.png).",
+        papers_dir=papers_dir,
+        title="Demo",
+        extra_frontmatter={"assets_manifest_path": bundle.manifest_path},
+    )
+
+    manifest = load_asset_manifest(papers_dir, bundle.manifest_path)
+    assets = manifest_assets(manifest)
+    assert [asset["kind"] for asset in assets] == ["figure", "formula", "table"]
+    fig_path = papers_dir / "_assets" / "10_1234_demo__51facb5bc98d" / "files" / "fig_001.png"
+    assert fig_path.read_bytes() == b"image-bytes"
+
+    structure = get_paper_structure(papers_dir=papers_dir, doi="10.1234/demo")
+    assert structure is not None
+    assert structure.assets_summary.schema_version == 2
+    assert structure.assets_summary.figures == 1
+    assert structure.assets_summary.formulas == 1
+    assert structure.assets_summary.tables == 1
+    assert structure.assets_summary.asset_refs[0]["asset_id"] == "fig_001"
+
+
+def test_asset_bundle_skips_assets_over_limits(tmp_path: Path) -> None:
+    bundle = save_asset_bundle(
+        doi="10.1234/demo",
+        papers_dir=tmp_path / "papers",
+        assets=[
+            PendingAsset(kind="figure", filename="big.png", data=b"x" * 16),
+            PendingAsset(kind="formula", latex="a+b"),
+        ],
+        limits=AssetLimits(max_asset_file_bytes=4, max_asset_total_bytes=64, max_asset_count=10),
+    )
+
+    assert bundle.manifest_path
+    manifest = load_asset_manifest(tmp_path / "papers", bundle.manifest_path)
+    assets = manifest_assets(manifest)
+    assert [asset["kind"] for asset in assets] == ["formula"]
+    assert bundle.skipped_count == 1
+
+
+def test_asset_bundle_records_manifest_when_all_assets_are_skipped(tmp_path: Path) -> None:
+    papers_dir = tmp_path / "papers"
+    bundle = save_asset_bundle(
+        doi="10.1234/demo",
+        papers_dir=papers_dir,
+        assets=[PendingAsset(kind="figure", filename="big.png", data=b"x" * 16)],
+        limits=AssetLimits(max_asset_file_bytes=4, max_asset_total_bytes=64, max_asset_count=10),
+    )
+
+    assert bundle.manifest_path
+    assert bundle.asset_count == 0
+    assert bundle.skipped_count == 1
+    manifest = load_asset_manifest(papers_dir, bundle.manifest_path)
+    assert manifest is not None
+    assert manifest["assets"] == []
+    assert manifest["skipped_assets"][0]["reason"] == "asset_file_size_limit"
+
+
+def test_asset_manifest_relative_paths_stay_inside_bundle(tmp_path: Path) -> None:
+    papers_dir = tmp_path / "papers"
+    bundle = save_asset_bundle(
+        doi="10.1234/demo",
+        papers_dir=papers_dir,
+        assets=[PendingAsset(kind="figure", source_ref="fig.png", filename="fig.png", data=b"image")],
+    )
+    outside = papers_dir / "outside.txt"
+    outside.write_text("do not leak", encoding="utf-8")
+
+    assert resolve_manifest_relative_path(papers_dir, bundle.manifest_path, "files/fig_001.png") is not None
+    assert resolve_manifest_relative_path(papers_dir, bundle.manifest_path, "../../outside.txt") is None

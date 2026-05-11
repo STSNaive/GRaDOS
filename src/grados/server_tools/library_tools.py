@@ -7,7 +7,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from pydantic import Field
@@ -21,6 +21,7 @@ from grados.server_tools.shared import (
     get_paths_and_config,
     missing_paper_selector_message,
 )
+from grados.storage.assets import AssetLimits
 from grados.workflows.library import (
     build_library_document_artifact,
     maybe_save_library_pdf,
@@ -36,6 +37,7 @@ __all__ = [
     "paper_overview_resource",
     "papers_index_resource",
     "parse_pdf_file",
+    "read_paper_asset",
     "read_saved_paper",
     "register_library_tools",
 ]
@@ -51,6 +53,16 @@ def _format_asset_hint_lines(asset_hints: Sequence[Mapping[str, object]]) -> lis
         else:
             lines.append(f"- {label}")
     return lines
+
+
+def _asset_limits_from_config(config: object) -> AssetLimits:
+    assets = getattr(getattr(config, "extract", object()), "assets", object())
+    return AssetLimits(
+        max_asset_file_bytes=int(getattr(assets, "max_asset_file_bytes", 32 * 1024 * 1024)),
+        max_asset_total_bytes=int(getattr(assets, "max_asset_total_bytes", 512 * 1024 * 1024)),
+        max_asset_inline_bytes=int(getattr(assets, "max_asset_inline_bytes", 8 * 1024 * 1024)),
+        max_asset_count=int(getattr(assets, "max_asset_count", 3000)),
+    )
 
 
 def _metadata_only_receipt(
@@ -446,6 +458,12 @@ async def extract_paper_full_text(
                 mineru_is_ocr=config.extract.parsing.mineru_is_ocr,
                 mineru_max_zip_bytes=config.extract.security.max_mineru_zip_bytes,
                 mineru_max_full_md_bytes=config.extract.security.max_mineru_full_md_bytes,
+                asset_mode=config.extract.assets.mode,
+                docling_image_scale=config.extract.assets.docling_image_scale,
+                max_asset_file_bytes=config.extract.assets.max_asset_file_bytes,
+                max_asset_total_bytes=config.extract.assets.max_asset_total_bytes,
+                max_asset_inline_bytes=config.extract.assets.max_asset_inline_bytes,
+                max_asset_count=config.extract.assets.max_asset_count,
             )
         )
         if not artifact.markdown:
@@ -514,6 +532,8 @@ async def extract_paper_full_text(
         year=year,
         journal=journal,
         asset_hints=fetch_result.asset_hints,
+        asset_mode=config.extract.assets.mode,
+        asset_limits=_asset_limits_from_config(config),
         copied_pdf_path=copied_pdf_path,
         index_warning_message=(
             "Search index refresh failed — canonical markdown was saved to papers/ only. "
@@ -561,6 +581,8 @@ async def extract_paper_full_text(
     result += f"- **Index Status:** {persisted.summary.index_status}\n"
     if persisted.artifact.parser_used:
         result += f"- **Parser Used:** {persisted.artifact.parser_used}\n"
+    if persisted.asset_manifest_path:
+        result += f"- **Assets Manifest:** {persisted.asset_manifest_path}\n"
     if persisted.summary.section_headings:
         result += "\n### Sections\n" + "\n".join(f"- {heading}" for heading in persisted.summary.section_headings)
     if persisted.warnings:
@@ -596,6 +618,10 @@ async def read_saved_paper(
         bool,
         Field(description="Include YAML front matter when reading from canonical markdown."),
     ] = False,
+    include_asset_refs: Annotated[
+        bool,
+        Field(description="Append compact asset references found in this paragraph window; images are not inlined."),
+    ] = True,
 ) -> str:
     """Read a previously saved paper with paragraph windowing."""
     from grados.storage.papers import read_paper
@@ -630,7 +656,21 @@ async def read_saved_paper(
     if result.section_headings:
         footer = "\n\n---\n### Available Sections\n" + "\n".join(f"- {heading}" for heading in result.section_headings)
 
-    return header + result.text + footer
+    asset_block = ""
+    if include_asset_refs and result.assets_manifest_path:
+        from grados.storage.assets import load_asset_manifest, matching_asset_refs_for_text
+
+        manifest = load_asset_manifest(paths.papers, result.assets_manifest_path)
+        refs = matching_asset_refs_for_text(manifest, result.text)
+        if refs:
+            asset_lines = [
+                f"- `{ref['asset_id']}` ({ref['kind']}, page {ref['page'] or 'unknown'}): "
+                f"{ref['caption'] or ref['uri']}"
+                for ref in refs
+            ]
+            asset_block = "\n\n---\n### Asset References\n" + "\n".join(asset_lines)
+
+    return header + result.text + asset_block + footer
 
 
 async def get_saved_paper_structure(
@@ -667,6 +707,241 @@ async def get_saved_paper_structure(
     payload = asdict(structure)
     payload["found"] = True
     return payload
+
+
+async def read_paper_asset(
+    doi: Annotated[str | None, Field(description="Paper DOI. Provide this, safe_doi, uri, or asset_uri.")] = None,
+    safe_doi: Annotated[
+        str | None,
+        Field(description="Opaque GRaDOS paper ID such as `10_1234_demo__51facb5bc98d`."),
+    ] = None,
+    uri: Annotated[
+        str | None,
+        Field(description="Canonical paper URI such as `grados://papers/10_1234_demo__51facb5bc98d`."),
+    ] = None,
+    asset_id: Annotated[
+        str | None,
+        Field(description="Asset id from get_saved_paper_structure/read_saved_paper, such as `fig_001`."),
+    ] = None,
+    asset_uri: Annotated[
+        str | None,
+        Field(description="Asset URI such as `grados://papers/{safe_doi}/assets/{asset_id}`."),
+    ] = None,
+    kind: Annotated[
+        str | None,
+        Field(description="Optional list-mode kind filter: figure, table, formula, page, debug, or object."),
+    ] = None,
+    role: Annotated[
+        str | None,
+        Field(description="Optional list-mode role filter: content, page, debug, source, or supporting."),
+    ] = None,
+    offset: Annotated[int, Field(ge=0, description="List-mode offset.")] = 0,
+    limit: Annotated[int, Field(ge=1, le=100, description="List-mode result limit.")] = 20,
+    include_pages: Annotated[bool, Field(description="Include page image assets in list mode.")] = False,
+    include_debug: Annotated[bool, Field(description="Include source/debug assets in list mode.")] = False,
+    include_image: Annotated[
+        bool,
+        Field(
+            description=(
+                "Return image content inline when reading one image asset and it is under the inline byte limit."
+            )
+        ),
+    ] = False,
+) -> object:
+    """List or read assets for a saved paper."""
+    from grados.storage.assets import (
+        is_image_asset,
+        load_asset_manifest,
+        manifest_assets,
+        parse_asset_uri,
+        resolve_asset_path,
+        resolve_manifest_relative_path,
+    )
+    from grados.storage.papers import load_paper_record
+
+    parsed_asset = parse_asset_uri(asset_uri or "") if asset_uri else None
+    if parsed_asset:
+        parsed_safe_doi, parsed_asset_id = parsed_asset
+        if safe_doi and safe_doi != parsed_safe_doi:
+            return {
+                "found": False,
+                "message": f"asset_uri safe_doi does not match safe_doi parameter: {parsed_safe_doi} != {safe_doi}",
+            }
+        safe_doi = safe_doi or parsed_safe_doi
+        asset_id = asset_id or parsed_asset_id
+    elif asset_uri:
+        return {"found": False, "message": f"Invalid asset_uri: {asset_uri}"}
+
+    selector_error = missing_paper_selector_message(doi=doi, safe_doi=safe_doi, uri=uri)
+    if selector_error:
+        return {"found": False, "message": selector_error}
+
+    paths, config = get_paths_and_config()
+    record = load_paper_record(paths.papers, doi=doi, safe_doi=safe_doi, uri=uri)
+    if record is None:
+        return {"found": False, "message": f"Paper not found. doi={doi}, safe_doi={safe_doi}, uri={uri}"}
+    if not record.assets_manifest_path:
+        return {
+            "found": False,
+            "doi": record.doi,
+            "safe_doi": record.safe_doi,
+            "message": "Paper has no asset manifest. Re-extract or re-import the PDF to generate assets.",
+        }
+
+    manifest = load_asset_manifest(paths.papers, record.assets_manifest_path)
+    assets = manifest_assets(manifest)
+    if manifest is None or not assets:
+        return {
+            "found": False,
+            "doi": record.doi,
+            "safe_doi": record.safe_doi,
+            "manifest_path": record.assets_manifest_path,
+            "message": "Asset manifest was missing or empty.",
+        }
+
+    if not asset_id:
+        filtered = _filter_asset_list(
+            assets,
+            kind=kind,
+            role=role,
+            include_pages=include_pages,
+            include_debug=include_debug,
+        )
+        selected = filtered[offset : offset + limit]
+        return {
+            "found": True,
+            "mode": "list",
+            "doi": record.doi,
+            "safe_doi": record.safe_doi,
+            "manifest_path": record.assets_manifest_path,
+            "total": len(filtered),
+            "offset": offset,
+            "limit": limit,
+            "truncated": offset + limit < len(filtered),
+            "assets": [_compact_server_asset(asset) for asset in selected],
+        }
+
+    asset = next((item for item in assets if str(item.get("asset_id", "")) == asset_id), None)
+    if asset is None:
+        return {
+            "found": False,
+            "doi": record.doi,
+            "safe_doi": record.safe_doi,
+            "manifest_path": record.assets_manifest_path,
+            "message": f"Asset not found: {asset_id}",
+        }
+
+    primary_path = resolve_asset_path(paths.papers, record.assets_manifest_path, asset)
+    payload: dict[str, Any] = {
+        "found": True,
+        "mode": "read",
+        "doi": record.doi,
+        "safe_doi": record.safe_doi,
+        "manifest_path": record.assets_manifest_path,
+        "asset": dict(asset),
+        "absolute_path": str(primary_path) if primary_path is not None else "",
+        "table_html": _read_manifest_text(
+            paths.papers,
+            record.assets_manifest_path,
+            str(asset.get("html_path") or ""),
+        ),
+        "table_csv": _read_manifest_text(
+            paths.papers,
+            record.assets_manifest_path,
+            str(asset.get("csv_path") or ""),
+        ),
+        "table_markdown": _read_manifest_text(
+            paths.papers,
+            record.assets_manifest_path,
+            str(asset.get("markdown_path") or ""),
+        ),
+    }
+
+    if include_image:
+        if primary_path is None or not is_image_asset(asset):
+            payload["image_warning"] = "Asset has no readable image file."
+        else:
+            size = primary_path.stat().st_size
+            max_inline = config.extract.assets.max_asset_inline_bytes
+            if size > max_inline:
+                payload["image_warning"] = (
+                    f"Image is larger than max_asset_inline_bytes ({size} > {max_inline}); returning path only."
+                )
+            else:
+                from fastmcp.tools import ToolResult
+                from fastmcp.utilities.types import Image
+                from mcp.types import TextContent
+
+                return ToolResult(
+                    content=[
+                        TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, indent=2)),
+                        Image(path=str(primary_path)),
+                    ],
+                    structured_content=payload,
+                )
+
+    # Touch structured paths through the resolver so invalid manifest values never leak arbitrary files.
+    for path_key in ("html_path", "csv_path", "markdown_path"):
+        rel = str(asset.get(path_key) or "")
+        if rel:
+            resolved = resolve_manifest_relative_path(paths.papers, record.assets_manifest_path, rel)
+            payload[f"absolute_{path_key}"] = str(resolved) if resolved else ""
+    return payload
+
+
+def _filter_asset_list(
+    assets: list[dict[str, Any]],
+    *,
+    kind: str | None,
+    role: str | None,
+    include_pages: bool,
+    include_debug: bool,
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    kind_filter = (kind or "").strip().lower()
+    role_filter = (role or "").strip().lower()
+    for asset in assets:
+        asset_kind = str(asset.get("kind") or "").lower()
+        asset_role = str(asset.get("role") or "").lower()
+        if kind_filter and asset_kind != kind_filter:
+            continue
+        if role_filter and asset_role != role_filter:
+            continue
+        if asset_kind == "page" and not include_pages:
+            continue
+        if (asset_kind == "debug" or asset_role in {"debug", "source"}) and not include_debug:
+            continue
+        filtered.append(asset)
+    return filtered
+
+
+def _compact_server_asset(asset: dict[str, Any]) -> dict[str, Any]:
+    caption = str(asset.get("caption") or asset.get("text") or asset.get("latex") or "")
+    return {
+        "asset_id": asset.get("asset_id", ""),
+        "kind": asset.get("kind", ""),
+        "role": asset.get("role", ""),
+        "uri": asset.get("uri", ""),
+        "page": asset.get("page"),
+        "caption": caption[:240],
+        "relative_path": asset.get("relative_path", ""),
+        "mime_type": asset.get("mime_type", ""),
+        "bytes": asset.get("bytes", 0),
+    }
+
+
+def _read_manifest_text(papers_dir: Path, manifest_path: str, relative_path: str, *, max_chars: int = 20000) -> str:
+    if not relative_path:
+        return ""
+    from grados.storage.assets import resolve_manifest_relative_path
+
+    path = resolve_manifest_relative_path(papers_dir, manifest_path, relative_path)
+    if path is None:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
+    except OSError:
+        return ""
 
 
 async def import_local_pdf_library(
@@ -782,6 +1057,12 @@ async def parse_pdf_file(
             mineru_is_ocr=config.extract.parsing.mineru_is_ocr,
             mineru_max_zip_bytes=config.extract.security.max_mineru_zip_bytes,
             mineru_max_full_md_bytes=config.extract.security.max_mineru_full_md_bytes,
+            asset_mode=config.extract.assets.mode,
+            docling_image_scale=config.extract.assets.docling_image_scale,
+            max_asset_file_bytes=config.extract.assets.max_asset_file_bytes,
+            max_asset_total_bytes=config.extract.assets.max_asset_total_bytes,
+            max_asset_inline_bytes=config.extract.assets.max_asset_inline_bytes,
+            max_asset_count=config.extract.assets.max_asset_count,
         )
     )
     if not artifact.markdown:
@@ -827,6 +1108,8 @@ async def parse_pdf_file(
             source=source,
             fetch_outcome="local_parse",
             extra_frontmatter=extra_frontmatter,
+            asset_mode=config.extract.assets.mode,
+            asset_limits=_asset_limits_from_config(config),
             copied_pdf_path=copied_pdf_path,
             index_warning_message=(
                 "Search index refresh failed — canonical markdown was saved to papers/ only. "
@@ -865,6 +1148,8 @@ async def parse_pdf_file(
         result += f"- **Index Status:** {persisted.summary.index_status}\n"
         if persisted.artifact.parser_used:
             result += f"- **Parser Used:** {persisted.artifact.parser_used}\n"
+        if persisted.asset_manifest_path:
+            result += f"- **Assets Manifest:** {persisted.asset_manifest_path}\n"
         warnings = persisted.warnings
         parser_debug = persisted.debug
         if remote_warning:
@@ -915,6 +1200,13 @@ def register_library_tools(mcp: FastMCP) -> None:
             "Use this to screen a paper before calling `read_saved_paper`; it is not the full citation source."
         )
     )(get_saved_paper_structure)
+
+    mcp.tool(
+        description=(
+            "List or read parser-generated paper assets such as figures, tables, formulas, page images, "
+            "and debug/source files. Use `include_image=true` only for a specific image asset."
+        )
+    )(read_paper_asset)
 
     mcp.tool(
         description=(

@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from grados.http_limits import (
+    DEFAULT_MAX_ASSET_COUNT,
+    DEFAULT_MAX_ASSET_FILE_BYTES,
+    DEFAULT_MAX_ASSET_INLINE_BYTES,
+    DEFAULT_MAX_ASSET_TOTAL_BYTES,
     DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
     DEFAULT_MAX_LOCAL_PDF_BYTES,
     DEFAULT_MAX_MINERU_FULL_MD_BYTES,
@@ -278,6 +282,38 @@ class QAConfig(BaseModel):
     min_characters: int = 1500
 
 
+class AssetsConfig(BaseModel):
+    mode: Literal["all", "referenced", "none"] = Field(
+        default="all",
+        description="Asset persistence mode for parser-generated figures, tables, formulas, pages, and debug files.",
+    )
+    docling_image_scale: float = Field(
+        default=2.0,
+        gt=0,
+        description="Docling image scale used when generating referenced page, picture, and table images.",
+    )
+    max_asset_file_bytes: int = Field(
+        default=DEFAULT_MAX_ASSET_FILE_BYTES,
+        ge=1,
+        description="Maximum bytes allowed for one persisted parser asset.",
+    )
+    max_asset_total_bytes: int = Field(
+        default=DEFAULT_MAX_ASSET_TOTAL_BYTES,
+        ge=1,
+        description="Maximum total bytes allowed for one paper's persisted asset bundle.",
+    )
+    max_asset_inline_bytes: int = Field(
+        default=DEFAULT_MAX_ASSET_INLINE_BYTES,
+        ge=1,
+        description="Maximum image bytes returned inline by read_paper_asset.",
+    )
+    max_asset_count: int = Field(
+        default=DEFAULT_MAX_ASSET_COUNT,
+        ge=1,
+        description="Maximum number of assets saved for one paper.",
+    )
+
+
 class ExtractSecurityConfig(BaseModel):
     max_remote_pdf_bytes: int = Field(
         default=DEFAULT_MAX_REMOTE_PDF_BYTES,
@@ -327,6 +363,7 @@ class ExtractConfig(BaseModel):
     headless_browser: HeadlessBrowserConfig = Field(default_factory=HeadlessBrowserConfig)
     parsing: ParsingConfig = Field(default_factory=ParsingConfig)
     qa: QAConfig = Field(default_factory=QAConfig)
+    assets: AssetsConfig = Field(default_factory=AssetsConfig)
     security: ExtractSecurityConfig = Field(default_factory=ExtractSecurityConfig)
     fetch_connect_timeout: float = Field(
         default=15.0,
@@ -554,6 +591,25 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "Response read timeout in seconds for PDF and landing-page downloads. "
         "Keep generous: large PDFs and intermediate redirects can stream slowly."
     )
+    data["extract"]["assets"]["_comment_mode"] = (
+        "Parser asset persistence mode. `all` saves all allowed parser assets, "
+        "`referenced` keeps content-linked assets, and `none` disables asset bundles."
+    )
+    data["extract"]["assets"]["_comment_docling_image_scale"] = (
+        "Image scale used by Docling when generating referenced page, picture, and table images."
+    )
+    data["extract"]["assets"]["_comment_max_asset_file_bytes"] = (
+        "Maximum size in bytes for one persisted parser asset file."
+    )
+    data["extract"]["assets"]["_comment_max_asset_total_bytes"] = (
+        "Maximum total size in bytes for one saved paper's asset bundle."
+    )
+    data["extract"]["assets"]["_comment_max_asset_inline_bytes"] = (
+        "Maximum image size in bytes that read_paper_asset may return inline."
+    )
+    data["extract"]["assets"]["_comment_max_asset_count"] = (
+        "Maximum number of parser assets saved for one paper."
+    )
     data["extract"]["security"]["_comment_max_remote_pdf_bytes"] = (
         "Maximum remote PDF response size in bytes. The default is intentionally generous for normal papers."
     )
@@ -567,7 +623,7 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "Maximum PDF body or download temp-file size captured by the browser strategy."
     )
     data["extract"]["security"]["_comment_max_mineru_zip_bytes"] = (
-        "Maximum MinerU result zip size in bytes. GRaDOS only reads full.md from the zip."
+        "Maximum MinerU result zip size in bytes before markdown and asset extraction."
     )
     data["extract"]["security"]["_comment_max_mineru_full_md_bytes"] = (
         "Maximum uncompressed full.md size in bytes inside the MinerU result zip."

@@ -42,6 +42,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `extract_paper_full_text` | 按 DOI 抓取、解析并保存单篇论文的 canonical 全文。返回的是包含 URI、文件路径、章节和 warning 的紧凑保存回执，而不是全文正文。 |
 | GRaDOS | `read_saved_paper` | 从单篇已保存论文中读取段落窗口，用于 canonical 深读与引用核验。可通过 DOI、safe DOI 或 `grados://papers/...` URI 定位论文。 |
 | GRaDOS | `get_saved_paper_structure` | 返回单篇论文的低 token 结构卡片，包含预览、章节标题与资产摘要。适合深读前筛选，不应替代最终引用依据。 |
+| GRaDOS | `read_paper_asset` | 列出或读取已保存论文的 parser assets，包括图片、表格、公式、页面图和 debug/source 文件。图片只在显式请求且低于尺寸上限时内联返回。 |
 | GRaDOS | `import_local_pdf_library` | 把本地 PDF 文件或目录导入 canonical 论文库与检索索引。返回导入摘要以及前 25 条条目结果。 |
 | GRaDOS | `parse_pdf_file` | 把本地 PDF 解析为 markdown。未提供 DOI 时返回截断预览；提供 DOI 时会保存进 canonical 论文库并返回保存回执。 |
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 把单篇论文保存到当前配置的 Zotero 库，通常用于最终答案里实际引用到的论文。 |
@@ -258,6 +259,7 @@ cp -R skills/grados "<skills-root>/"
 ### 尺寸保护
 
 - `extract.security`：远端 PDF、远端文本/XML/HTML、本地 PDF、浏览器 PDF 捕获、MinerU 结果 zip、MinerU `full.md` 的字节上限。默认值刻意保守地放宽到正常论文 PDF 足够使用；只有可信的大文件才需要调高。
+- `extract.assets`：控制 `papers/_assets/{safe_doi}/` 下的 parser asset bundle（`mode=all|referenced|none`）、Docling 图片缩放、单文件/总资产尺寸、内联图片上限和最大资产数量。资产二进制与 canonical Markdown 绑定保存，通过 `read_paper_asset` 按需读取，不进入 Chroma 索引。
 
 ### 命令 🧰
 
@@ -396,7 +398,7 @@ PDF 解析优先级：
 }
 ```
 
-`MinerU` 是认证云端解析器。启用且存在 `MINERU_API_KEY` 时，GRaDOS 会通过 MinerU 签名上传 API 上传本地 PDF，轮询解析 zip，并读取其中的 `full.md` 作为解析结果。GRaDOS 会忽略 zip 中的其他条目，并在读取前检查 `extract.security.max_mineru_zip_bytes` 和 `extract.security.max_mineru_full_md_bytes`。用 `grados auth set mineru` 可把 token 存入系统 keychain。
+`MinerU` 是认证云端解析器。启用且存在 `MINERU_API_KEY` 时，GRaDOS 会通过 MinerU 签名上传 API 上传本地 PDF，轮询解析 zip，读取其中的 `full.md` 作为正文，并把允许类型的图片、表格、公式、页面/debug 文件和 source JSON 保存到该论文的 asset bundle。GRaDOS 会在暴露资产前检查 `extract.security.max_mineru_zip_bytes`、`extract.security.max_mineru_full_md_bytes` 和 `extract.assets.*` 尺寸/数量上限。用 `grados auth set mineru` 可把 token 存入系统 keychain。
 
 ### 导入现有 PDF 库 ♻️
 

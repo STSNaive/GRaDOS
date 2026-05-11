@@ -42,6 +42,7 @@ Host agents may use their own reasoning model to plan queries, screen candidates
 | GRaDOS | `extract_paper_full_text` | Fetch, parse, and save one paper's canonical full text by DOI. Returns a compact save receipt with URI, file path, sections, and warnings rather than the full paper text. |
 | GRaDOS | `read_saved_paper` | Read paragraph windows from one saved paper for canonical deep reading and citation verification. Accepts a DOI, safe DOI, or `grados://papers/...` URI. |
 | GRaDOS | `get_saved_paper_structure` | Return a low-token structure card for one saved paper with preview text, headings, and asset summary. Use it for screening before deep reading, not as the final citation source. |
+| GRaDOS | `read_paper_asset` | List or read parser-generated figures, tables, formulas, page images, and debug/source assets for a saved paper. Images are returned inline only on request and within configured size limits. |
 | GRaDOS | `import_local_pdf_library` | Import a local PDF file or directory into the canonical paper store and retrieval index. Returns an import summary plus the first 25 item results. |
 | GRaDOS | `parse_pdf_file` | Parse a local PDF into markdown. Without a DOI it returns a truncated preview; with a DOI it saves the paper into the canonical library and returns a save receipt. |
 | GRaDOS | `save_paper_to_zotero` | Save one paper to the configured Zotero library through the Web API, typically for papers that actually support the final answer. |
@@ -258,6 +259,7 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 ### Size Guards
 
 - `extract.security`: byte ceilings for remote PDFs, remote text/XML/HTML responses, local PDFs, browser PDF captures, MinerU result zips, and MinerU `full.md`. Defaults are intentionally generous for normal paper PDFs; raise them only for trusted oversized inputs.
+- `extract.assets`: controls parser asset bundles under `papers/_assets/{safe_doi}/` (`mode=all|referenced|none`), Docling image scale, per-file/total asset size ceilings, inline image ceiling, and max asset count. Asset bytes are stored beside canonical Markdown and are fetched with `read_paper_asset`, not indexed into Chroma.
 
 ### Commands 🧰
 
@@ -396,7 +398,7 @@ PDF parsing priority:
 }
 ```
 
-`MinerU` is an authenticated cloud parser. When enabled and `MINERU_API_KEY` is present, GRaDOS uploads the local PDF through MinerU's signed upload API, polls for the extraction zip, and reads `full.md` as the parser output. GRaDOS ignores other zip entries and enforces `extract.security.max_mineru_zip_bytes` plus `extract.security.max_mineru_full_md_bytes` before reading the result. Use `grados auth set mineru` to store the token in the OS keychain.
+`MinerU` is an authenticated cloud parser. When enabled and `MINERU_API_KEY` is present, GRaDOS uploads the local PDF through MinerU's signed upload API, polls for the extraction zip, reads `full.md` as the parser output, and saves allowed images, tables, formulas, page/debug files, and source JSON into the paper's asset bundle. GRaDOS enforces `extract.security.max_mineru_zip_bytes`, `extract.security.max_mineru_full_md_bytes`, and `extract.assets.*` size/count limits before exposing assets. Use `grados auth set mineru` to store the token in the OS keychain.
 
 ### Importing Existing PDF Libraries ♻️
 

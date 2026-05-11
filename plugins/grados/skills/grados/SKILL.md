@@ -40,8 +40,9 @@ GRaDOS keeps screening lightweight while preserving canonical full text for cita
 2. `grados:get_saved_paper_structure` and `grados://papers/{safe_doi}` are low-token paper cards for deciding what to read.
 3. `grados:extract_paper_full_text`, `grados:import_local_pdf_library`, and `grados:parse_pdf_file` are storage/indexing actions. Their receipts are not citable.
 4. Final synthesis requires `grados:read_saved_paper`. Every factual claim must be supported by canonical saved-paper paragraph windows actually read in this session.
-5. If a helper output has no exact paragraph coordinates, call `grados:get_saved_paper_structure` and then `grados:read_saved_paper` before citing.
-6. After context compression, handoff, or before revising a citation-heavy draft, reread each key anchor from `canonical_uri` or `safe_doi` before final support judgment.
+5. If a claim depends on a figure, table, or formula asset, use `grados:read_paper_asset` after rereading the relevant paragraph window.
+6. If a helper output has no exact paragraph coordinates, call `grados:get_saved_paper_structure` and then `grados:read_saved_paper` before citing.
+7. After context compression, handoff, or before revising a citation-heavy draft, reread each key anchor from `canonical_uri` or `safe_doi` before final support judgment.
 
 ## Host Agent Boundary
 
@@ -87,7 +88,7 @@ Before querying remote databases:
 
 ### 4. Read, Synthesize, And Save
 
-1. For each paper you might cite, call `grados:get_saved_paper_structure` first, then `grados:read_saved_paper` for the relevant paragraph windows.
+1. For each paper you might cite, call `grados:get_saved_paper_structure` first, then `grados:read_saved_paper` for the relevant paragraph windows. If those windows refer to an asset, call `grados:read_paper_asset` by asset id before relying on it.
 2. Focus on the **3-5 most relevant papers** for deep reading. For 1-8 highly relevant papers, use `grados:get_papers_full_context(mode="estimate")` first, then `mode="full"` only if the context budget is acceptable.
 3. Treat Stage B tools as structure and audit helpers, never as substitutes for canonical reading:
    - `grados:build_evidence_grid` before drafting a literature-grounded subsection.

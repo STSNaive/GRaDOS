@@ -114,6 +114,20 @@
         "qa": {
             "min_characters": 1500
         },
+        "assets": {
+            "mode": "all",
+            "docling_image_scale": 2.0,
+            "max_asset_file_bytes": 33554432,
+            "max_asset_total_bytes": 536870912,
+            "max_asset_inline_bytes": 8388608,
+            "max_asset_count": 3000,
+            "_comment_mode": "Parser asset persistence mode. `all` saves all allowed parser assets, `referenced` keeps content-linked assets, and `none` disables asset bundles.",
+            "_comment_docling_image_scale": "Image scale used by Docling when generating referenced page, picture, and table images.",
+            "_comment_max_asset_file_bytes": "Maximum size in bytes for one persisted parser asset file.",
+            "_comment_max_asset_total_bytes": "Maximum total size in bytes for one saved paper's asset bundle.",
+            "_comment_max_asset_inline_bytes": "Maximum image size in bytes that read_paper_asset may return inline.",
+            "_comment_max_asset_count": "Maximum number of parser assets saved for one paper."
+        },
         "security": {
             "max_remote_pdf_bytes": 209715200,
             "max_remote_text_bytes": 52428800,
@@ -125,7 +139,7 @@
             "_comment_max_remote_text_bytes": "Maximum remote native text, HTML, XML, or JSON article payload size in bytes.",
             "_comment_max_local_pdf_bytes": "Maximum local PDF size in bytes for parse_pdf_file and import-pdfs.",
             "_comment_max_browser_capture_bytes": "Maximum PDF body or download temp-file size captured by the browser strategy.",
-            "_comment_max_mineru_zip_bytes": "Maximum MinerU result zip size in bytes. GRaDOS only reads full.md from the zip.",
+            "_comment_max_mineru_zip_bytes": "Maximum MinerU result zip size in bytes before markdown and asset extraction.",
             "_comment_max_mineru_full_md_bytes": "Maximum uncompressed full.md size in bytes inside the MinerU result zip."
         },
         "fetch_connect_timeout": 15.0,

@@ -13,6 +13,7 @@ from grados.server_tools.library_tools import (
     paper_overview_resource,
     papers_index_resource,
     parse_pdf_file,
+    read_paper_asset,
     read_saved_paper,
     register_library_tools,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "papers_index_resource",
     "parse_pdf_file",
     "query_research_artifacts",
+    "read_paper_asset",
     "read_saved_paper",
     "run_server",
     "save_paper_to_zotero",

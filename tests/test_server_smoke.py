@@ -22,6 +22,7 @@ from grados.server import (
     mcp,
     parse_pdf_file,
     query_research_artifacts,
+    read_paper_asset,
     read_saved_paper,
     save_research_artifact,
     search_academic_papers,
@@ -48,6 +49,7 @@ def test_server_registers_expected_tools() -> None:
         "manage_failure_cases",
         "parse_pdf_file",
         "query_research_artifacts",
+        "read_paper_asset",
         "read_saved_paper",
         "save_paper_to_zotero",
         "save_research_artifact",
@@ -73,6 +75,11 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
     assert "Provide one of `doi`, `safe_doi`, or `uri`" in (read_tool.description or "")
     assert read_tool.parameters["properties"]["start_paragraph"]["minimum"] == 0
     assert read_tool.parameters["properties"]["max_paragraphs"]["maximum"] == 100
+
+    asset_tool = tools["read_paper_asset"]
+    assert "figures, tables, formulas" in (asset_tool.description or "")
+    assert asset_tool.parameters["properties"]["limit"]["maximum"] == 100
+    assert "include_image" in asset_tool.parameters["properties"]
 
     search_saved = tools["search_saved_papers"]
     assert "screening/reranking material" in (search_saved.description or "")
@@ -458,6 +465,61 @@ def test_get_saved_paper_structure_returns_compact_structure_card(
     assert result["title"] == "Demo Paper Title"
     assert result["preview_excerpt"].startswith("This study investigates")
     assert result["section_headings"] == ["Demo Paper Title", "Abstract", "Methods", "Results"]
+
+
+def test_read_saved_paper_and_asset_tool_expose_parser_assets(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.storage.vector as vector
+    from grados.storage.assets import PendingAsset
+    from grados.storage.papers import save_asset_bundle, save_paper_markdown
+
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: 1)
+    paths = GRaDOSPaths()
+    bundle = save_asset_bundle(
+        doi="10.1234/demo",
+        papers_dir=paths.papers,
+        source="MinerU",
+        assets=[
+            PendingAsset(
+                kind="figure",
+                role="content",
+                source_ref="images/fig1.png",
+                filename="fig1.png",
+                data=b"image-bytes",
+                caption="Figure 1. Demo",
+                page=2,
+            ),
+            PendingAsset(kind="table", role="content", html="<table><tr><td>A</td></tr></table>", csv="A\n1\n"),
+            PendingAsset(kind="formula", role="content", latex="E = mc^2", page=3),
+            PendingAsset(kind="page", role="page", filename="page.png", data=b"page-bytes"),
+        ],
+    )
+    markdown = "# Demo\n\nSee ![Figure](images/fig1.png).\n\nFormula: E = mc^2"
+    for original, replacement in bundle.markdown_rewrites.items():
+        markdown = markdown.replace(original, replacement)
+    summary = save_paper_markdown(
+        doi="10.1234/demo",
+        markdown=markdown,
+        papers_dir=paths.papers,
+        title="Demo",
+        extra_frontmatter={"assets_manifest_path": bundle.manifest_path},
+    )
+
+    read_result = asyncio.run(read_saved_paper(safe_doi=summary.safe_doi, max_paragraphs=5))
+    assert "### Asset References" in read_result
+    assert "`fig_001`" in read_result
+
+    listed = asyncio.run(read_paper_asset(safe_doi=summary.safe_doi))
+    assert listed["found"] is True
+    assert [asset["asset_id"] for asset in listed["assets"]] == ["fig_001", "table_001", "formula_001"]
+
+    table = asyncio.run(read_paper_asset(safe_doi=summary.safe_doi, asset_id="table_001"))
+    assert table["found"] is True
+    assert "<table>" in table["table_html"]
+
+    pages = asyncio.run(read_paper_asset(safe_doi=summary.safe_doi, include_pages=True))
+    assert any(asset["asset_id"] == "page_001" for asset in pages["assets"])
 
 
 def test_get_saved_paper_structure_requires_a_locator() -> None:

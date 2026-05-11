@@ -12,6 +12,7 @@ from grados.extract.parse import parse_pdf_with_diagnostics
 from grados.extract.qa import is_valid_paper_content
 from grados.http_limits import SizeLimitError, ensure_byte_limit
 from grados.publisher.common import normalize_doi, safe_doi_filename
+from grados.storage.assets import AssetLimits
 from grados.storage.papers import list_saved_papers
 from grados.workflows.library import (
     build_library_document_artifact,
@@ -130,6 +131,12 @@ async def import_local_pdf_library(
                 mineru_is_ocr=config.extract.parsing.mineru_is_ocr,
                 mineru_max_zip_bytes=config.extract.security.max_mineru_zip_bytes,
                 mineru_max_full_md_bytes=config.extract.security.max_mineru_full_md_bytes,
+                asset_mode=config.extract.assets.mode,
+                docling_image_scale=config.extract.assets.docling_image_scale,
+                max_asset_file_bytes=config.extract.assets.max_asset_file_bytes,
+                max_asset_total_bytes=config.extract.assets.max_asset_total_bytes,
+                max_asset_inline_bytes=config.extract.assets.max_asset_inline_bytes,
+                max_asset_count=config.extract.assets.max_asset_count,
             )
         )
         parser_warnings = list(artifact.warnings)
@@ -200,6 +207,13 @@ async def import_local_pdf_library(
                 "original_pdf_path": str(pdf_file),
                 "source_pdf_hash": pdf_hash,
             },
+            asset_mode=config.extract.assets.mode,
+            asset_limits=AssetLimits(
+                max_asset_file_bytes=config.extract.assets.max_asset_file_bytes,
+                max_asset_total_bytes=config.extract.assets.max_asset_total_bytes,
+                max_asset_inline_bytes=config.extract.assets.max_asset_inline_bytes,
+                max_asset_count=config.extract.assets.max_asset_count,
+            ),
             copied_pdf_path=copied_pdf_path,
             index_warning_message="Search index refresh failed — paper saved to papers/ only. Error: {index_error}",
             indexing_config=config.indexing,

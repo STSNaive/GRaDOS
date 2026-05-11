@@ -7,6 +7,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
+- Added parser asset bundles under `papers/_assets/{safe_doi}/` plus `read_paper_asset`, so saved papers can expose parser-generated figures, tables, formulas, page images, and source/debug files without inlining large payloads into `read_saved_paper`.
 - Added `extract.security` byte ceilings for remote PDF downloads, native text/XML/HTML article payloads, local PDF parsing/import, browser PDF captures, MinerU result zips, and MinerU `full.md` extraction.
 - Added MinerU as the authenticated cloud PDF parser fallback in the parsing waterfall (`Docling -> MinerU -> Marker -> PyMuPDF`), including signed-upload polling, zip `full.md` extraction, config knobs, keychain support via `MINERU_API_KEY`, and smoke-test coverage.
 - Added disabled-by-default `codex` fetch-strategy support so Codex host agents can place the Codex Chrome extension download handoff anywhere in `extract.fetch_strategy.order`.

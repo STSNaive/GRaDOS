@@ -87,16 +87,22 @@ def format_paper_overview_resource(structure: PaperStructureResult) -> str:
                 f"- Manifest: {assets_summary.manifest_path}",
                 f"- Figures: {assets_summary.figures}",
                 f"- Tables: {assets_summary.tables}",
+                f"- Formulas: {assets_summary.formulas}",
+                f"- Pages: {assets_summary.pages}",
                 f"- Objects: {assets_summary.objects}",
             ]
         )
+        if assets_summary.asset_refs:
+            refs = ", ".join(str(ref.get("asset_id", "")) for ref in assets_summary.asset_refs[:8])
+            lines.append("- Asset refs: " + refs)
 
     lines.extend(
         [
             "",
             "## Next Step",
             "",
-            "Use `read_saved_paper` for canonical deep reading and citation verification.",
+            "Use `read_saved_paper` for canonical deep reading and `read_paper_asset` for figures, "
+            "tables, and formulas.",
         ]
     )
     return "\n".join(lines).strip()
