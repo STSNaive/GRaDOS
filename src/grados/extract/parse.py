@@ -1228,7 +1228,7 @@ def _normalize_with_docling_attempt(
         )
 
 
-def _build_docling_converter(*, enable_assets: bool, image_scale: float):
+def _build_docling_converter(*, enable_assets: bool, image_scale: float) -> Any:
     from docling.document_converter import DocumentConverter
 
     if not enable_assets:
