@@ -170,7 +170,14 @@
             "_comment_enabled": "Default off. When enabled, search uses the same limit for metadata candidates and full-text attempts.",
             "_comment_auto_summarize": "Generate query-independent paper_summary artifacts after successful full-text saves."
         },
-        "_comment_indepth": "Indepth mode is disabled by default. Enable per request with `--indepth` or set research.indepth.enabled=true to make search materialize returned candidates."
+        "external_synthesis": {
+            "enabled": false,
+            "model": "",
+            "_comment_enabled": "Default off. When false, GRaDOS does not open Chrome, call ChatGPT, or alter evidence reading.",
+            "_comment_model": "ChatGPT UI model label to confirm via the host model picker when enabled, not an API model id."
+        },
+        "_comment_indepth": "Indepth mode is disabled by default. Enable per request with `--indepth` or set research.indepth.enabled=true to make search materialize returned candidates.",
+        "_comment_external_synthesis": "Default-off host-side ChatGPT Pro reviewer/synthesizer protocol. GRaDOS still only prepares and verifies canonical evidence."
     },
     "indexing": {
         "provider": "harrier",

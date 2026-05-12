@@ -261,6 +261,11 @@ This fallback assumes the `grados` MCP server is already registered in your clie
 
 Keep [grados-config.example.json](./grados-config.example.json) as the commented reference; edits take effect on the next CLI run or MCP server restart.
 
+### Research Workflow Knobs
+
+- `research.indepth`: disabled by default; controls whether remote search immediately materializes returned candidates for checkpointed full-text review.
+- `research.external_synthesis`: disabled by default; a host-side ChatGPT Pro reviewer/synthesizer protocol with only `enabled` and `model`. GRaDOS does not call ChatGPT, open Chrome, or change evidence reading when this is off.
+
 ### Timeout / Retry Knobs
 
 - `search`: `connect_timeout`, `read_timeout`
@@ -393,6 +398,8 @@ Legacy fetch-strategy aliases such as `TDM`, `SciHub`, and `Headless` are still 
 The browser strategy is a first-class path for institutional publisher access. If a publisher verification page blocks PDF capture, GRaDOS records a `challenge` with manual-resume metadata in `remote_metadata`; complete the verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true` to continue from the saved browser URL/profile instead of restarting at `api`.
 
 `codex` is disabled by default. When enabled and placed in `extract.fetch_strategy.order`, it acts as a Codex Chrome extension host-agent handoff at that exact point in the order: `extract_paper_full_text` returns a Chrome download receipt, then the host agent downloads the PDF in Chrome with the [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) and calls `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`. If Unpaywall finds an OA URL, the receipt starts from that URL instead of `https://doi.org/{doi}`.
+
+If `research.external_synthesis.enabled=true`, the same host agent may use ChatGPT Pro only after GRaDOS has prepared and verified an evidence pack. The configured `model` is a ChatGPT UI label, not an API model id, and must be confirmed in the ChatGPT model picker before sending evidence. When `codex` downloads and ChatGPT Pro synthesis are both enabled, the host must treat Chrome as one shared resource: finish `chrome_acquisition` first when possible, keep publisher/PDF tabs separate from the ChatGPT conversation tab, resume the same ChatGPT conversation URL for later synthesis turns, and stop with a report if Chrome extension state, tabs, or the conversation cannot be recovered.
 
 PDF parsing priority:
 

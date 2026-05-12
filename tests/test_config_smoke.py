@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
+import pytest
 from pydantic import BaseModel
 
 from grados.config import GRaDOSConfig, GRaDOSPaths, _snake_to_camel_keys, generate_default_config
@@ -169,3 +170,22 @@ def test_indepth_defaults_to_disabled() -> None:
 
     assert config.research.indepth.enabled is False
     assert config.research.indepth.auto_summarize is True
+
+
+def test_external_synthesis_defaults_to_disabled() -> None:
+    config = GRaDOSConfig()
+
+    assert config.research.external_synthesis.enabled is False
+    assert config.research.external_synthesis.model == ""
+
+
+def test_external_synthesis_model_is_required_when_enabled() -> None:
+    with pytest.raises(ValueError, match="research.external_synthesis.model"):
+        GRaDOSConfig.model_validate({"research": {"external_synthesis": {"enabled": True}}})
+
+    config = GRaDOSConfig.model_validate(
+        {"research": {"external_synthesis": {"enabled": True, "model": "GPT-5.5 Pro"}}}
+    )
+
+    assert config.research.external_synthesis.enabled is True
+    assert config.research.external_synthesis.model == "GPT-5.5 Pro"

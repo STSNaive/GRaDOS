@@ -520,3 +520,29 @@
 ### 结果与影响
 - 旧论文缺少 `_parsed` 仍可正常 read/search/reindex。
 - 未来可以在不改 canonical text contract 的前提下增加 page/bbox、figure/table/OCR 等解析复用能力。
+
+---
+
+## ADR-020：ChatGPT Pro 外部综合是 host-side reviewer 协议
+
+- 状态：Accepted
+- 日期：2026-05-12
+
+### 背景
+- ChatGPT Pro 可见模型可能对 evidence pack 的归纳、claim review 和写作建议有价值。
+- GRaDOS 的证据纪律要求最终引用只来自 canonical `papers/*.md` 与经过验证的 paragraph windows。
+- `codex` 下载路径和 ChatGPT Pro 外部综合都可能使用同一个 Codex Chrome extension / Chrome UI surface；如果两者各自独立开关 Chrome，会造成 tab、extension backend 或 conversation lifecycle 冲突。
+
+### 决策
+- 新增极简配置 `research.external_synthesis.enabled/model`，默认关闭；`model` 是 ChatGPT UI 模型标签，不是 API model id。
+- `enabled=false` 时，GRaDOS 行为不变：不打开 Chrome、不调用 ChatGPT、不改变 evidence pack、`read_saved_paper` 或最终综合路径。
+- `enabled=true` 只表示 host-side orchestration 协议。GRaDOS server 仍只负责搜索、抽取、canonical anchors、evidence pack、saved-paper reread 和验证，不直接调用 ChatGPT Pro。
+- ChatGPT Pro 输出只能作为 reviewer/synthesizer 建议，不是 citation evidence；它不得新增未提供的论文、DOI、事实或引用。最终引用必须回到 GRaDOS 验证后的 canonical paragraph windows。
+- 一次 GRaDOS workflow 使用一个 ChatGPT conversation。host agent 需要确认目标模型标签，发送一次英文 protocol prompt，记录可恢复 conversation URL/标识，并把后续 evidence pack、outline、claim review 追加到同一对话。
+- 当 `research.external_synthesis.enabled=true` 且 `extract.fetch_strategy.enabled.codex=true` 时，host agent 必须把 Chrome 当作一个 workflow-level shared resource：同一时间只允许一个 Chrome task；优先先完成 `chrome_acquisition`，再进入 `chrome_synthesis`；确需交错时保持 publisher/PDF tab 与 ChatGPT tab 分离，并恢复同一 ChatGPT conversation。
+- Chrome extension 不可用、Chrome resource 状态不一致、目标模型无法确认、对话无法恢复、ChatGPT 输出越界、pack 过大或 `verify_evidence_pack current_valid=false` 时，默认停止并报告，不静默降级或自动另开新 ChatGPT 对话。
+
+### 结果与影响
+- GRaDOS 可以公开一个 default-off 的 ChatGPT Pro 增强开关，同时维持 server/runtime 边界。
+- `codex` 下载和 ChatGPT Pro 综合共享 Chrome extension 时有明确的串行协调协议，避免两个 host-side 功能互相抢占 browser lifecycle。
+- 文档和 skill protocol 负责指导 host agent；后续若真实任务证明需要机器可读 session receipt，再另行设计而不是提前扩展配置面。

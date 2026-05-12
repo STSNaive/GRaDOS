@@ -3,6 +3,7 @@
 ## Contents
 
 - [GRaDOS Server Tools](#grados-server-tools)
+- [Optional ChatGPT Pro External Synthesis](#optional-chatgpt-pro-external-synthesis)
 - [Indepth Mode](#indepth-mode)
 - [Optional Codex Chrome Extension](#optional-codex-chrome-extension)
 - [MCP Resources](#mcp-resources)
@@ -48,6 +49,35 @@ Outputs from `search_saved_papers`, `build_evidence_grid`, `compare_papers`, and
 Evidence packs are the durable citation handoff layer. `prepare_evidence_pack` stores canonical block snapshots from `papers/*.md` through `research_artifacts(kind="evidence_pack")`; `verify_evidence_pack` must return `current_valid=true` before a restored pack is treated as current evidence. Pack-scoped audit tools never search the whole saved-paper library to fill gaps.
 
 For broad tasks, a host client may use subagents to triage independent paper sets, claim sets, or subquestions. Subagents are not GRaDOS server tools; their output should be limited to candidate anchors, rejected/weak items, gaps, warnings, and exact reread selectors such as `canonical_uri`, `paragraph_start`, and `paragraph_count`. The main host agent must reread accepted anchors through `grados:read_saved_paper` before citation or final support judgment.
+
+## Optional ChatGPT Pro External Synthesis
+
+Config shape:
+
+```json
+{
+  "research": {
+    "external_synthesis": {
+      "enabled": false,
+      "model": ""
+    }
+  }
+}
+```
+
+`enabled=false` preserves the existing GRaDOS workflow: no Chrome is opened for ChatGPT, no ChatGPT call is made, and evidence reading still goes through canonical `papers/*.md` plus GRaDOS verification tools.
+
+`enabled=true` is a host-side orchestration protocol, not a GRaDOS server call to ChatGPT Pro. GRaDOS prepares and verifies evidence; ChatGPT Pro can only review or synthesize compact evidence packs. The configured `model` is a visible ChatGPT UI label, not an API model id, and the host must confirm it through the model picker or equivalent UI state before sending evidence.
+
+Use one ChatGPT conversation per GRaDOS workflow. Send one English protocol prompt, then append evidence packs, outlines, and claim-review requests to that same conversation. Store a recoverable conversation URL or identifier. If the page, tab, or extension backend is lost, recover that same conversation; if recovery fails, stop and report.
+
+When both this protocol and the optional `codex` Chrome-extension download route are enabled, the host must coordinate a single shared Chrome resource. Only one Chrome task may be active at a time. Prefer `chrome_acquisition` first (publisher/DOI/PDF download, `ingest_codex_downloaded_pdf` or `parse_pdf_file`, canonical read), then `chrome_synthesis` (ChatGPT Pro review). If interleaving is unavoidable, keep publisher/PDF tabs separate from the ChatGPT tab and resume the same ChatGPT conversation.
+
+Evidence sent to ChatGPT Pro should be minimal and verified. Each item should include `anchor_id`, DOI or `safe_doi`, `canonical_uri`, `paragraph_start`, `paragraph_count`, a short excerpt, candidate claim, and limitations. Do not send the full local paper library, unrelated full text, publisher/PDF pages, login state, download artifacts, or unverified web content.
+
+Request structured output with `claims`, `anchor_ids`, `confidence`, `caveat`, and `missing_evidence` / `gaps`. ChatGPT Pro must not add papers, DOIs, facts, or citations that were not in the provided pack. After receiving the response, the host must verify every claim with `read_saved_paper` or `verify_evidence_pack`; final citations may only use verified canonical paragraph windows.
+
+Stop and report rather than silently degrading when Chrome extension is unavailable, Chrome resource state is inconsistent, the target model cannot be confirmed, the ChatGPT conversation cannot be recovered, ChatGPT adds outside evidence, the evidence pack is too large, or `verify_evidence_pack` returns `current_valid=false`.
 
 ## Indepth Mode
 

@@ -25,6 +25,7 @@ from grados.secrets import SecretResolutionSummary, iter_api_key_specs, resolve_
 
 __all__ = [
     "CodexHandoffConfig",
+    "ExternalSynthesisConfig",
     "GRaDOSConfig",
     "GRaDOSPaths",
     "IndexingConfig",
@@ -491,8 +492,32 @@ class IndepthConfig(BaseModel):
     )
 
 
+class ExternalSynthesisConfig(BaseModel):
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable the host-side ChatGPT Pro synthesis protocol. GRaDOS itself does not call "
+            "ChatGPT or open Chrome."
+        ),
+    )
+    model: str = Field(
+        default="",
+        description=(
+            "Target ChatGPT UI model label, not an API model id. The host agent must confirm this "
+            "label in the ChatGPT model picker before sending evidence packs."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _require_model_when_enabled(self) -> ExternalSynthesisConfig:
+        if self.enabled and not self.model.strip():
+            raise ValueError("research.external_synthesis.model is required when enabled=true")
+        return self
+
+
 class ResearchConfig(BaseModel):
     indepth: IndepthConfig = Field(default_factory=IndepthConfig)
+    external_synthesis: ExternalSynthesisConfig = Field(default_factory=ExternalSynthesisConfig)
 
 
 class GRaDOSConfig(BaseModel):
@@ -615,6 +640,16 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     )
     data["research"]["indepth"]["_comment_auto_summarize"] = (
         "Generate query-independent paper_summary artifacts after successful full-text saves."
+    )
+    data["research"]["_comment_external_synthesis"] = (
+        "Default-off host-side ChatGPT Pro reviewer/synthesizer protocol. "
+        "GRaDOS still only prepares and verifies canonical evidence."
+    )
+    data["research"]["external_synthesis"]["_comment_enabled"] = (
+        "Default off. When false, GRaDOS does not open Chrome, call ChatGPT, or alter evidence reading."
+    )
+    data["research"]["external_synthesis"]["_comment_model"] = (
+        "ChatGPT UI model label to confirm via the host model picker when enabled, not an API model id."
     )
 
     # Timeout / retry surface (ADR-008)

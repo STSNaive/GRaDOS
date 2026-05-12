@@ -60,6 +60,8 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
 
     tools_reference = (canonical_skill_root / "references" / "tools.md").read_text(encoding="utf-8")
     assert "`codex` is a disabled-by-default fetch-strategy entry" in tools_reference
+    assert "Optional ChatGPT Pro External Synthesis" in tools_reference
+    assert "single shared Chrome resource" in tools_reference
     assert "Docling -> MinerU -> Marker -> PyMuPDF" in tools_reference
     assert "TDM -> OA -> Sci-Hub -> Headless" not in tools_reference
     assert "PyMuPDF -> Marker -> Docling" not in tools_reference
