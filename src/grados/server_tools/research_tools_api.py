@@ -11,15 +11,20 @@ from pydantic import Field
 from grados.server_tools.shared import get_paths_and_config
 
 __all__ = [
+    "audit_answer_against_pack",
     "audit_draft_support",
     "build_evidence_grid",
     "compare_papers",
     "get_citation_graph",
     "get_papers_full_context",
     "manage_failure_cases",
+    "prepare_evidence_pack",
     "query_research_artifacts",
+    "read_evidence_pack",
     "register_research_tools_api",
     "save_research_artifact",
+    "suggest_missing_evidence",
+    "verify_evidence_pack",
 ]
 
 
@@ -99,6 +104,64 @@ async def query_research_artifacts(
         detail=detail,
         limit=limit,
     )
+
+
+async def prepare_evidence_pack(
+    topic: Annotated[
+        str,
+        Field(min_length=1, description="Research topic or question the evidence pack should cover."),
+    ],
+    subquestions: Annotated[
+        list[str] | None,
+        Field(description="Optional focused subquestions. If omitted, the topic is used as one question."),
+    ] = None,
+    scoped_dois: Annotated[
+        list[str] | None,
+        Field(description="Optional saved-paper DOI scope used only for candidate selection."),
+    ] = None,
+    max_windows: Annotated[
+        int,
+        Field(ge=1, le=25, description="Maximum candidate windows to materialize per subquestion."),
+    ] = 8,
+) -> dict[str, object]:
+    """Prepare and persist a canonical evidence pack."""
+    from grados.research_tools import prepare_evidence_pack as run_prepare
+
+    paths, _ = get_paths_and_config()
+    return run_prepare(
+        paths.database_chroma,
+        paths.database_state,
+        topic=topic,
+        subquestions=subquestions,
+        scoped_dois=scoped_dois,
+        max_windows=max_windows,
+    )
+
+
+async def read_evidence_pack(
+    pack_id: Annotated[
+        str,
+        Field(min_length=1, description="Evidence pack id returned by `prepare_evidence_pack`."),
+    ],
+) -> dict[str, object]:
+    """Read a persisted evidence pack by id."""
+    from grados.research_tools import read_evidence_pack as run_read
+
+    paths, _ = get_paths_and_config()
+    return run_read(paths.database_state, pack_id=pack_id)
+
+
+async def verify_evidence_pack(
+    pack_id: Annotated[
+        str,
+        Field(min_length=1, description="Evidence pack id returned by `prepare_evidence_pack`."),
+    ],
+) -> dict[str, object]:
+    """Verify an evidence pack against current canonical paper Markdown."""
+    from grados.research_tools import verify_evidence_pack as run_verify
+
+    paths, _ = get_paths_and_config()
+    return run_verify(paths.database_state, paths.papers, pack_id=pack_id)
 
 
 async def manage_failure_cases(
@@ -361,6 +424,70 @@ async def audit_draft_support(
     )
 
 
+async def audit_answer_against_pack(
+    pack_id: Annotated[
+        str,
+        Field(min_length=1, description="Evidence pack id returned by `prepare_evidence_pack`."),
+    ],
+    draft: Annotated[
+        str,
+        Field(min_length=1, description="Markdown or plain-text draft to audit claim by claim."),
+    ],
+    strict: Annotated[
+        bool,
+        Field(description="When true, use only current-valid pack evidence and do not soften missing citations."),
+    ] = True,
+    citation_style: Annotated[
+        Literal["author_year", "numeric"],
+        Field(description="Citation style used in the draft for marker extraction."),
+    ] = "author_year",
+    return_claim_map: Annotated[
+        bool,
+        Field(description="Include a compact claim-to-pack-evidence map."),
+    ] = True,
+) -> dict[str, object]:
+    """Audit a draft strictly against one materialized evidence pack."""
+    from grados.research_tools import audit_answer_against_pack as run_audit_pack
+
+    paths, _ = get_paths_and_config()
+    return run_audit_pack(
+        paths.database_state,
+        paths.papers,
+        pack_id=pack_id,
+        draft=draft,
+        strict=strict,
+        citation_style=citation_style,
+        return_claim_map=return_claim_map,
+    )
+
+
+async def suggest_missing_evidence(
+    pack_id: Annotated[
+        str,
+        Field(min_length=1, description="Evidence pack id returned by `prepare_evidence_pack`."),
+    ],
+    draft: Annotated[
+        str,
+        Field(min_length=1, description="Draft whose weak or unsupported claims need follow-up evidence."),
+    ],
+    max_suggestions: Annotated[
+        int,
+        Field(ge=1, le=25, description="Maximum follow-up evidence suggestions to return."),
+    ] = 8,
+) -> dict[str, object]:
+    """Suggest follow-up evidence work without changing strict pack-audit verdicts."""
+    from grados.research_tools import suggest_missing_evidence as run_suggest
+
+    paths, _ = get_paths_and_config()
+    return run_suggest(
+        paths.database_state,
+        paths.papers,
+        pack_id=pack_id,
+        draft=draft,
+        max_suggestions=max_suggestions,
+    )
+
+
 def register_research_tools_api(mcp: FastMCP) -> None:
     mcp.tool(
         description=(
@@ -376,6 +503,28 @@ def register_research_tools_api(mcp: FastMCP) -> None:
             "Set `detail=true` to load the full stored content."
         )
     )(query_research_artifacts)
+
+    mcp.tool(
+        description=(
+            "Prepare a citation-grade evidence pack by materializing retrieved candidate anchors "
+            "back into canonical paragraph blocks from `papers/*.md`. Returns a compact receipt, "
+            "`pack_id`, `pack_sha256`, and answerability flags."
+        )
+    )(prepare_evidence_pack)
+
+    mcp.tool(
+        description=(
+            "Read a previously saved evidence pack from research artifacts. "
+            "Use this before drafting or pack-scoped auditing."
+        )
+    )(read_evidence_pack)
+
+    mcp.tool(
+        description=(
+            "Verify an evidence pack by rereading current `papers/*.md` canonical blocks. "
+            "Does not use Chroma, FTS, or retrieval scores for current-valid evidence."
+        )
+    )(verify_evidence_pack)
 
     mcp.tool(
         description=(
@@ -425,3 +574,18 @@ def register_research_tools_api(mcp: FastMCP) -> None:
             "`misattributed` currently requires resolvable author-year citations."
         )
     )(audit_draft_support)
+
+    mcp.tool(
+        description=(
+            "Audit draft claims against one evidence pack only. Strict mode does not search the full "
+            "library for replacement evidence; unsupported claims stay unsupported until a separate "
+            "evidence-gathering step extends or prepares a pack."
+        )
+    )(audit_answer_against_pack)
+
+    mcp.tool(
+        description=(
+            "Suggest follow-up evidence queries for weak or unsupported pack-audit claims. "
+            "This is suggestion-only and does not alter strict audit verdicts."
+        )
+    )(suggest_missing_evidence)

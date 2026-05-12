@@ -28,26 +28,34 @@ GRaDOS is designed to sit inside an agent research workflow:
 2. Search remote academic sources in configured priority order
 3. Resolve optional Unpaywall OA locations, then fetch full text through the configured `api`, `browser`, optional `codex`, and `scihub` routes
 4. Parse PDFs through `Docling -> MinerU -> Marker -> PyMuPDF`
-5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, the paper index to `database/chroma/`, and remote metadata to `database/remote_metadata/`
+5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, parser provenance sidecars to `papers/_parsed/`, parser assets to `papers/_assets/`, semantic search to `database/chroma/`, lexical FTS fallback to `database/fts.sqlite3`, and remote metadata to `database/remote_metadata/`
 6. Re-open saved papers with low-token structure cards and deep-reading windows before citing them
 
 Host agents may use their own reasoning model to plan queries, screen candidates, rerank anchors, judge support, and synthesize prose. GRaDOS does not call that model directly: snippets, scores, evidence grids, comparisons, and audits are navigation material until the agent rereads the canonical paragraph window with `read_saved_paper`.
+
+For handoff-safe citation work, `prepare_evidence_pack` materializes canonical blocks from `papers/*.md` into a persisted pack. A pack becomes current citation evidence only when `verify_evidence_pack` reports `current_valid=true`; strict pack audits never search the whole library to silently patch missing evidence.
 
 ### MCP Tools 🔧
 
 | Server | Tool | Description |
 | --- | --- | --- |
 | GRaDOS | `search_academic_papers` | Search remote academic databases for paper metadata, DOI deduplication, resumable continuation tokens, and local saved/full-text/summary state. Optional `indepth=true` materializes returned candidates with the same `limit`; default config is off. |
-| GRaDOS | `search_saved_papers` | Search the local saved-paper library with semantic retrieval, metadata filters, and optional lexical reranking. Returned snippets and Evidence Anchor JSON blocks are screening/reranking material, not citation evidence. |
+| GRaDOS | `search_saved_papers` | Search the local saved-paper library with semantic retrieval, SQLite FTS/BM25 fallback, exact lookup, metadata filters, and hybrid RRF. Returned snippets and Evidence Anchor JSON blocks are screening/reranking material, not citation evidence. |
 | GRaDOS | `extract_paper_full_text` | Fetch, parse, and save one paper's canonical full text by DOI. Returns a compact save receipt with URI, file path, sections, and warnings rather than the full paper text. |
 | GRaDOS | `read_saved_paper` | Read paragraph windows from one saved paper for canonical deep reading and citation verification. Accepts a DOI, safe DOI, or `grados://papers/...` URI. |
-| GRaDOS | `get_saved_paper_structure` | Return a low-token structure card for one saved paper with preview text, headings, and asset summary. Use it for screening before deep reading, not as the final citation source. |
+| GRaDOS | `get_saved_paper_structure` | Return a low-token structure card for one saved paper with preview text, headings, asset summary, and parser provenance summary when available. Use it for screening before deep reading, not as the final citation source. |
 | GRaDOS | `read_paper_asset` | List or read parser-generated figures, tables, formulas, page images, and debug/source assets for a saved paper. Images are returned inline only on request and within configured size limits. |
 | GRaDOS | `import_local_pdf_library` | Import a local PDF file or directory into the canonical paper store and retrieval index. Returns an import summary plus the first 25 item results. |
 | GRaDOS | `parse_pdf_file` | Parse a local PDF into markdown. Without a DOI it returns a truncated preview; with a DOI it saves the paper into the canonical library and returns a save receipt. |
+| GRaDOS | `ingest_codex_downloaded_pdf` | Complete a pending `codex` Chrome-extension handoff by scanning the configured watch directory for one validated PDF, then reuse `parse_pdf_file(..., copy_to_library=true, acquisition_via="codex")`. Ambiguous or invalid candidates are recorded as recoverable failures. |
 | GRaDOS | `save_paper_to_zotero` | Save one paper to the configured Zotero library through the Web API, typically for papers that actually support the final answer. |
 | GRaDOS | `save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, and compression-safe evidence checkpoints in the local SQLite state store. |
 | GRaDOS | `query_research_artifacts` | Query previously saved research artifacts by id, kind, or keyword. `detail=true` returns the full stored content. |
+| GRaDOS | `prepare_evidence_pack` | Retrieve candidate anchors, reread canonical blocks from `papers/*.md`, and persist a minimal `evidence_pack` artifact with pack hash, block hashes, and answerability status. |
+| GRaDOS | `read_evidence_pack` | Restore a persisted evidence pack by pack id or artifact id. |
+| GRaDOS | `verify_evidence_pack` | Rebuild canonical block manifests from current `papers/*.md` and report snapshot/current validity, missing papers, document changes, relocation, and hash mismatches. |
+| GRaDOS | `audit_answer_against_pack` | Audit draft claims using only evidence items inside one verified pack. It does not search the full library to fill gaps. |
+| GRaDOS | `suggest_missing_evidence` | Suggest follow-up evidence queries for unsupported or weak pack-audit claims without changing strict audit results. |
 | GRaDOS | `manage_failure_cases` | Record, inspect, and summarize failed fetch, parse, search, or citation attempts. Can also suggest conservative retry steps from local failure memory. |
 | GRaDOS | `get_citation_graph` | Return lightweight local citation relationships, including citation neighbors, common references, and reverse citing-paper lookups. |
 | GRaDOS | `get_papers_full_context` | Return structured full-context material for a small paper set, with token estimates or actual section content for CAG-style deep reading. |
@@ -72,9 +80,13 @@ After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 | --- | --- | --- |
 | `config.json` | Runtime configuration | One config file for the whole install |
 | `papers/` | Canonical Markdown papers with YAML front-matter | Deep reading, structure cards, and retrieval |
+| `papers/_parsed/` | Parser provenance sidecars keyed by safe DOI | PDF/parser provenance, source/canonical hashes, block mapping, and asset manifest pointers; not citation content |
+| `papers/_assets/` | Parser-generated assets and manifests | Figures, tables, formulas, page images, and source/debug assets fetched with `read_paper_asset`; not indexed as text |
 | `downloads/` | Raw `.pdf` files | Archival copies of fetched or imported papers |
 | `database/chroma/` | ChromaDB collections | Built-in semantic retrieval store |
+| `database/fts.sqlite3` | Rebuildable SQLite FTS5/BM25 index | Deterministic lexical fallback and hybrid retrieval candidate generation |
 | `database/remote_metadata/` | ChromaDB collection | Remote paper metadata, fetch status, and browser-resume cache |
+| `database/research.sqlite3` | Research artifacts and failure memory | Evidence packs, checkpoints, extraction receipts, and recoverable failure records |
 | `research_checkpoints/` | `checkpoint.json` and rendered `checkpoint.md` files | Recoverable indepth research workflow state |
 | `paper_summaries/` | Query-independent derived paper summaries | Navigation and context recovery, never citation evidence |
 | `browser/` | Managed Chromium, profile, extensions | Browser strategy assets for publisher PDF access |
@@ -223,7 +235,7 @@ Then choose the `GRaDOS Plugins` marketplace, install the `GRaDOS` plugin, and s
 GRaDOS still ships a repo-local skill in `skills/grados/`. The `grados client install ...` flow above is now the preferred path for local use. Plugin install remains the alternative when you specifically want the native plugin packaging.
 
 - `skills/grados/SKILL.md` contains the current `search -> structure -> deep read -> cite -> verify` workflow
-- `skills/grados/references/tools.md` documents the current 16 tools and 2 resources
+- `skills/grados/references/tools.md` documents the current MCP tools and 2 resources
 - `skills/grados/agents/openai.yaml` describes the OpenAI / Codex-facing dependency on the `grados` MCP server
 
 Codex and Claude Code use the same skill directory shape, `<skills-root>/grados/SKILL.md`, with the same supporting files under that directory. Only the skills root differs:
@@ -252,8 +264,9 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 ### Timeout / Retry Knobs
 
 - `search`: `connect_timeout`, `read_timeout`
-- `extract`: `fetch_connect_timeout`, `fetch_read_timeout`
-- `extract.headless_browser`: legacy-named config section for the `browser` strategy (`deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`)
+- `extract`: `fetch_connect_timeout`, `fetch_read_timeout`, `pdf_read_timeout`
+- `extract.headless_browser`: legacy-named config section for the `browser` strategy (`deadline_seconds`, `networkidle_timeout`, `pdf_backfill_timeout`, `poll_min_seconds`, `poll_max_seconds`)
+- `extract.codex_handoff`: watch-dir ingest controls used only after a `codex` Chrome-extension handoff (`download_watch_dir`, `download_max_age_seconds`, `download_settle_seconds`, `download_settle_max_wait_seconds`, `download_scan_recursive`)
 - `retry_policy`: `max_attempts`, `max_wait`, `respect_retry_after`
 
 ### Size Guards
@@ -275,6 +288,7 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 | `grados client remove claude|codex|all` | Remove GRaDOS MCP wiring and bundled skills from one or more clients |
 | `grados auth set/status/migrate/clear` | Manage provider API keys in the OS keychain |
 | `grados import-pdfs --from /path/to/papers --recursive` | Import an existing local PDF library into the canonical paper store |
+| `grados eval-retrieval --fixture cases.jsonl` | Evaluate saved-paper retrieval against local golden cases using dense, FTS/BM25, exact lookup, and RRF unless `--dense-only` is set |
 | `grados status` | Show config, dependency, runtime-asset, and API-key health |
 | `grados paths` | Show the resolved GRaDOS filesystem layout |
 | `grados update-db` | Incrementally refresh the ChromaDB index from `papers/` when the active indexing config is unchanged |

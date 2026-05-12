@@ -377,7 +377,12 @@ def test_fetch_paper_returns_chrome_extension_action_at_configured_position(monk
     assert result.resume["browser"] == "Google Chrome"
     assert result.resume["start_url"] == "https://doi.org/10.1234/demo"
     assert result.resume["start_url_source"] == "doi"
-    assert result.resume["action"] == "download_pdf_with_chrome_extension_then_call_parse_pdf_file"
+    assert result.resume["issued_at"]
+    assert result.resume["download_watch_dir"].endswith("/Downloads")
+    assert result.resume["download_max_age_seconds"] == "900"
+    assert result.resume["action"] == "download_pdf_with_chrome_extension_then_call_ingest_codex_downloaded_pdf"
+    assert result.resume["next_action"] == "download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf"
+    assert result.resume["fallback_action"] == "call_parse_pdf_file_with_known_pdf_path"
     assert result.resume["documentation_url"] == "https://developers.openai.com/codex/app/chrome-extension"
     assert result.warnings[0] == "api miss"
     assert any(trace["via"] == "codex" for trace in result.trace)

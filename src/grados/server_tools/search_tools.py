@@ -36,15 +36,28 @@ def _saved_paper_anchor_payload(query: str, paper: object) -> dict[str, object]:
     safe_doi = str(getattr(paper, "safe_doi", "") or "")
     paragraph_count = int(getattr(paper, "paragraph_count", 0) or 0)
     paragraph_start = int(getattr(paper, "paragraph_start", 0) or 0)
+    mode = str(getattr(paper, "mode", "") or "")
+    retriever = str(getattr(paper, "retriever", "") or "")
+    rank = int(getattr(paper, "rank", 0) or 0)
+    trace = getattr(paper, "trace", {}) or {}
     return {
         "query_used": query,
+        "query": str(getattr(paper, "query", "") or query),
         "canonical_uri": f"grados://papers/{safe_doi}" if safe_doi else "",
         "section_name": str(getattr(paper, "section_name", "") or ""),
         "paragraph_start": paragraph_start if paragraph_count > 0 else None,
         "paragraph_count": paragraph_count if paragraph_count > 0 else None,
+        "block_id": str(getattr(paper, "block_id", "") or ""),
+        "block_type": str(getattr(paper, "block_type", "") or ""),
+        "heading_path": str(getattr(paper, "heading_path", "") or ""),
+        "mode": mode,
+        "retriever": retriever,
+        "rank": rank,
         "score": round(float(getattr(paper, "score", 0.0) or 0.0), 6),
+        "retrieval_score": round(float(getattr(paper, "retrieval_score", 0.0) or 0.0), 6),
         "dense_score": round(float(getattr(paper, "dense_score", 0.0) or 0.0), 6),
         "lexical_score": round(float(getattr(paper, "lexical_score", 0.0) or 0.0), 6),
+        "trace": trace if isinstance(trace, dict) else {},
     }
 
 
@@ -486,9 +499,9 @@ async def search_saved_papers(
     ] = True,
 ) -> str:
     """Search previously saved papers by keyword or semantic similarity."""
-    from grados.storage.embedding import IndexCompatibilityError
     from grados.storage.papers import list_saved_papers, read_paper
-    from grados.storage.vector import get_index_stats, search_papers
+    from grados.storage.search_pipeline import search_saved_library
+    from grados.storage.vector import get_index_stats
 
     if year_from is not None and year_to is not None and year_from > year_to:
         return "Invalid year range: year_from must be less than or equal to year_to."
@@ -500,33 +513,21 @@ async def search_saved_papers(
 
     stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
 
-    try:
-        results = search_papers(
-            paths.database_chroma,
-            query,
-            limit,
-            papers_dir=paths.papers,
-            doi=doi or "",
-            authors=authors or "",
-            year_from=year_from,
-            year_to=year_to,
-            journal=journal or "",
-            source=source or "",
-            use_reranking=use_reranking,
-            indexing_config=config.indexing,
-        )
-    except IndexCompatibilityError as exc:
-        return (
-            "Semantic index requires a full rebuild before search can continue.\n\n"
-            f"- Reason: {exc}\n"
-            "- Action: run `grados reindex` from the CLI, then retry `search_saved_papers`."
-        )
-    except RuntimeError as exc:
-        return (
-            "Semantic retrieval runtime is not ready.\n\n"
-            f"- Reason: {exc}\n"
-            "- Action: install the embedding runtime and run `grados setup`."
-        )
+    pipeline_result = search_saved_library(
+        chroma_dir=paths.database_chroma,
+        papers_dir=paths.papers,
+        query=query,
+        limit=limit,
+        doi=doi or "",
+        authors=authors or "",
+        year_from=year_from,
+        year_to=year_to,
+        journal=journal or "",
+        source=source or "",
+        use_reranking=use_reranking,
+        indexing_config=config.indexing,
+    )
+    results = pipeline_result.results
 
     filter_parts = []
     if doi:
@@ -543,14 +544,30 @@ async def search_saved_papers(
 
     if not results:
         hint = " Run `grados update-db` to build retrieval chunks." if stats.total_chunks == 0 else ""
-        return f"No papers matching '{query}' found among {len(papers)} saved papers.{hint}"
+        warning_text = ""
+        if pipeline_result.warnings:
+            warning_text = "\n\nWarnings:\n" + "\n".join(f"- {warning}" for warning in pipeline_result.warnings)
+        return f"No papers matching '{query}' found among {len(papers)} saved papers.{hint}{warning_text}"
 
-    mode = "hybrid reranked" if use_reranking else "dense"
+    mode_labels = {
+        "hybrid_rrf": "hybrid reranked / hybrid_rrf",
+        "dense_only": "dense_only",
+        "dense": "dense",
+        "fts": "fts fallback",
+        "fts_bm25": "fts_bm25",
+        "exact": "exact",
+    }
+    mode = mode_labels.get(pipeline_result.mode, pipeline_result.mode)
     lines = [f"## Saved Paper Search: {query}{filters_suffix}\n"]
     lines.append(
         f"Found **{len(results)}** matches "
-        f"({mode}, {stats.unique_papers} papers / {stats.total_chunks} chunks indexed):\n"
+        f"({mode}; Chroma: {stats.unique_papers} papers / {stats.total_chunks} chunks; "
+        f"FTS: {pipeline_result.fts_paper_count} papers / {pipeline_result.fts_block_count} blocks):\n"
     )
+    for warning in pipeline_result.warnings:
+        lines.append(f"> {warning}")
+    if pipeline_result.warnings:
+        lines.append("")
     for i, paper in enumerate(results, 1):
         canonical_excerpt = ""
         paragraph_start = paper.paragraph_start
@@ -565,7 +582,13 @@ async def search_saved_papers(
             if canonical_window:
                 canonical_excerpt = " ".join(canonical_window.text.split())
 
-        lines.append(f"{i}. **{paper.title or '(untitled)'}**  (score: {paper.score:.2f})")
+        result_mode = getattr(paper, "mode", "") or pipeline_result.mode
+        result_retriever = getattr(paper, "retriever", "") or ""
+        result_rank = int(getattr(paper, "rank", 0) or i)
+        lines.append(
+            f"{i}. **{paper.title or '(untitled)'}**  "
+            f"(score: {paper.score:.4f}; mode: {result_mode}; retriever: {result_retriever}; rank: {result_rank})"
+        )
         lines.append(f"   - DOI: {paper.doi}")
         lines.append(f"   - URI: grados://papers/{paper.safe_doi}")
         if paper.authors:
@@ -610,8 +633,8 @@ def register_search_tools(mcp: FastMCP) -> None:
 
     mcp.tool(
         description=(
-            "Search the local saved-paper library with semantic retrieval, metadata filters, "
-            "and optional lexical reranking. "
+            "Search the local saved-paper library with semantic retrieval, SQLite FTS/BM25 fallback, "
+            "metadata filters, and optional hybrid RRF reranking. "
             "Returned snippets and evidence anchors are screening/reranking material, not citation evidence; "
             "use `read_saved_paper` before citing."
         )

@@ -14,16 +14,22 @@
 | Tool | Purpose |
 | --- | --- |
 | `grados:search_academic_papers` | Waterfall search across academic databases. Returns deduplicated paper metadata with DOIs, abstracts, continuation state, and local saved/full-text/summary state. Optional `indepth=true` materializes returned candidates with the same `limit`. |
-| `grados:search_saved_papers` | Compact paper-level search over the saved-paper store. Uses metadata prefiltering, ChromaDB chunk retrieval, and optional lightweight lexical reranking over canonical documents. Treat snippets and evidence anchors as screening/reranking material, not citation evidence. |
-| `grados:get_saved_paper_structure` | Deterministic low-token paper card for one saved paper. Returns canonical URI, preview excerpt, section headings, section outline, counts, and asset summary. Use this before deep reading. |
+| `grados:search_saved_papers` | Compact paper-level search over the saved-paper store. Uses metadata prefiltering, ChromaDB dense retrieval, SQLite FTS/BM25 fallback, exact lookup, and hybrid RRF when reranking is enabled. Treat snippets, scores, and evidence anchors as screening/reranking material, not citation evidence. |
+| `grados:get_saved_paper_structure` | Deterministic low-token paper card for one saved paper. Returns canonical URI, preview excerpt, section headings, section outline, counts, asset summary, and parser provenance summary when available. Use this before deep reading. |
 | `grados:extract_paper_full_text` | Fetch full text by DOI via the configured `api`, `browser`, optional `codex`, and `scihub` order, then parse via `Docling -> MinerU -> Marker -> PyMuPDF`. Optional Unpaywall resolution can supply OA `url_for_pdf` / `url_for_landing_page` start URLs for `codex` and `browser`; MinerU is an authenticated cloud fallback that requires `MINERU_API_KEY`; successful fetches write canonical Markdown to `papers/` and refresh the ChromaDB retrieval index; `codex` returns a host-action receipt. |
 | `grados:import_local_pdf_library` | Import one local PDF file or a directory of PDFs into the canonical paper store. Supports recursive scanning, glob filtering, and optional raw-PDF archiving into `downloads/`. |
 | `grados:parse_pdf_file` | Parse a local PDF file using the same Python parsing waterfall. If DOI is provided, it writes the canonical `.md` file to `papers/` and returns a compact save receipt. |
+| `grados:ingest_codex_downloaded_pdf` | Complete a pending Codex Chrome extension handoff. It scans `extract.codex_handoff.download_watch_dir`, applies conservative PDF/age/settle/symlink/hash checks, and then reuses `parse_pdf_file(..., doi=..., copy_to_library=true, acquisition_via="codex")`. |
 | `grados:read_saved_paper` | Canonical deep-reading tool for previously saved papers. Accepts `doi`, a GRaDOS-returned opaque `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window plus lightweight asset refs for synthesis and citation verification. |
 | `grados:read_paper_asset` | List or read parser asset bundles for saved papers. Use it after `get_saved_paper_structure` or `read_saved_paper` when a figure, table, formula, page image, or source/debug asset is needed; `include_image=true` only inlines a specific image when it is under the configured limit. |
 | `grados:save_paper_to_zotero` | Save cited paper metadata to Zotero. Requires `ZOTERO_API_KEY` and Zotero library configuration. |
 | `grados:save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, and compression-safe evidence checkpoints in the local SQLite state store. |
 | `grados:query_research_artifacts` | Query previously saved research artifacts by id, kind, or keyword. Use `detail=true` to restore full JSON or Markdown content. |
+| `grados:prepare_evidence_pack` | Retrieve candidate anchors, reread canonical paragraph blocks from `papers/*.md`, and persist a minimal `evidence_pack` artifact with pack hash, block hashes, and answerability status. Use this when evidence must survive handoff or context compression. |
+| `grados:read_evidence_pack` | Restore a persisted evidence pack by pack id or artifact id. The stored text is a snapshot until `verify_evidence_pack` confirms it still matches current canonical Markdown. |
+| `grados:verify_evidence_pack` | Rebuild the canonical block registry from current `papers/*.md` and report `snapshot_valid`, `current_valid`, missing papers, document changes, relocated blocks, missing blocks, hash mismatches, and ambiguous relocations. |
+| `grados:audit_answer_against_pack` | Audit draft claims using only one evidence pack. In strict mode it does not search the full library, so unsupported or weak claims remain visible instead of being silently patched. |
+| `grados:suggest_missing_evidence` | Suggest follow-up evidence queries for weak, unsupported, overgeneralized, misattributed, uncited, or review-needed pack-audit claims. It is suggestion-only and does not change strict audit results. |
 | `grados:manage_failure_cases` | Record, query, and summarize failed fetch/parse/search/citation attempts. Can also suggest conservative retry steps. |
 | `grados:get_citation_graph` | Return lightweight local citation relationships, including neighbors, common references, and reverse citing-paper lookups. |
 | `grados:get_papers_full_context` | Return structured full-context material for a small paper set, with token estimates or actual section content for CAG-style deep reading. |
@@ -39,6 +45,8 @@ GRaDOS tools do not call the host agent model. They provide deterministic search
 
 Outputs from `search_saved_papers`, `build_evidence_grid`, `compare_papers`, and `audit_draft_support` are navigation and audit material. They may include `canonical_uri`, `paragraph_start`, and `paragraph_count` so the agent can reread the source, but they are not final citation evidence until `grados:read_saved_paper` returns the canonical paragraph window.
 
+Evidence packs are the durable citation handoff layer. `prepare_evidence_pack` stores canonical block snapshots from `papers/*.md` through `research_artifacts(kind="evidence_pack")`; `verify_evidence_pack` must return `current_valid=true` before a restored pack is treated as current evidence. Pack-scoped audit tools never search the whole saved-paper library to fill gaps.
+
 For broad tasks, a host client may use subagents to triage independent paper sets, claim sets, or subquestions. Subagents are not GRaDOS server tools; their output should be limited to candidate anchors, rejected/weak items, gaps, warnings, and exact reread selectors such as `canonical_uri`, `paragraph_start`, and `paragraph_count`. The main host agent must reread accepted anchors through `grados:read_saved_paper` before citation or final support judgment.
 
 ## Indepth Mode
@@ -49,7 +57,7 @@ See [indepth.md](indepth.md) for the checkpoint schema, paper-summary invalidati
 
 ## Compression-Safe Evidence Checkpoints
 
-Use `grados:save_research_artifact(kind="evidence_checkpoint")` when evidence has to survive context compression, handoff, or a later drafting pass. This artifact is a recovery and navigation record, not a citation source by itself.
+Prefer `grados:prepare_evidence_pack` when evidence has to survive context compression, handoff, or a later drafting pass and might be cited later. Use `grados:save_research_artifact(kind="evidence_checkpoint")` for looser recovery notes and navigation state. An `evidence_checkpoint` is not a citation source by itself.
 
 Recommended content schema:
 
@@ -90,6 +98,8 @@ Recommended metadata:
 
 Restore with `grados:query_research_artifacts(kind="evidence_checkpoint", detail=true)`. Before citing, auditing, or comparing any restored claim, call `grados:read_saved_paper` with the saved `canonical_uri` or `safe_doi`, `start_paragraph`, and `max_paragraphs=paragraph_count`. Search snippets, summaries, checkpoints, and tool previews are only navigation material; final answers and citations must be checked against canonical `papers/*.md` content.
 
+Restore an evidence pack with `grados:read_evidence_pack(pack_id=...)`, then call `grados:verify_evidence_pack(pack_id=...)`. If `current_valid=false`, treat the pack as a historical snapshot and either reread the affected canonical paper windows or prepare a fresh pack.
+
 ## Optional Codex Chrome Extension
 
 `codex` is a disabled-by-default fetch-strategy entry for Codex host agents that have the [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) connected. It is not a GRaDOS server-internal browser backend. When enabled and placed in `extract.fetch_strategy.order`, GRaDOS stops at that position and returns a host-action receipt for Chrome. When `extract.unpaywall.enabled=true`, the receipt can start from an Unpaywall `url_for_pdf` or `url_for_landing_page` instead of the DOI URL.
@@ -119,8 +129,17 @@ Typical host-agent flow:
 
 1. Call `grados:extract_paper_full_text` with the DOI.
 2. If the receipt asks for `codex`, use Chrome with the Codex extension and start from the receipt URL. This can be an Unpaywall OA URL when available, otherwise `https://doi.org/{doi}`.
-3. After Chrome downloads the PDF, identify the downloaded `.pdf` path and validate it is a PDF.
-4. Call `grados:parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.
+3. After Chrome reports the PDF download is complete, call `grados:ingest_codex_downloaded_pdf(doi=...)`. Pass `file_name_hint` or `downloaded_at` only as narrowing hints; GRaDOS still validates age, type, symlinks, stability, size, and hash.
+4. If the host already knows the exact absolute PDF path, it may skip watch-dir scanning and call `grados:parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.
+
+Relevant config:
+
+- `extract.codex_handoff.download_watch_dir`: directory scanned only by `ingest_codex_downloaded_pdf`; it does not configure Chrome.
+- `extract.codex_handoff.download_max_age_seconds`: candidate age limit after the handoff receipt is issued.
+- `extract.codex_handoff.download_settle_seconds` / `download_settle_max_wait_seconds`: size/mtime stability checks before ingest.
+- `extract.codex_handoff.download_scan_recursive`: opt-in recursive scan; the default scans only the watch-dir root.
+- `extract.pdf_read_timeout`: direct remote PDF read timeout; separate from landing-page / HTML / XML / JSON `extract.fetch_read_timeout`.
+- `extract.headless_browser.pdf_backfill_timeout`: browser context-request PDF backfill timeout; separate from browser navigation and polling deadlines.
 
 ## MCP Resources
 

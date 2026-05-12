@@ -7,6 +7,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
+- Added a canonical paragraph-block registry plus persisted `evidence_pack` artifacts and MCP tools: `prepare_evidence_pack`, `read_evidence_pack`, `verify_evidence_pack`, `audit_answer_against_pack`, and `suggest_missing_evidence`.
+- Added a rebuildable SQLite FTS5/BM25 index at `database/fts.sqlite3`, exact lookup candidates, hybrid RRF saved-paper retrieval, and `grados eval-retrieval` for local retrieval fixtures.
+- Added `ingest_codex_downloaded_pdf` plus `extract.codex_handoff.*` watch-dir settings so Codex Chrome-extension downloads can be validated and flowed back into the canonical library without trusting ambiguous local files.
+- Added parser provenance sidecars under `papers/_parsed/{safe_doi}.json` and `parsed_manifest_path` frontmatter pointers so saved papers can expose parser/source hashes and block mapping summaries without treating parser JSON as citation content.
 - Added parser asset bundles under `papers/_assets/{safe_doi}/` plus `read_paper_asset`, so saved papers can expose parser-generated figures, tables, formulas, page images, and source/debug files without inlining large payloads into `read_saved_paper`.
 - Added `extract.security` byte ceilings for remote PDF downloads, native text/XML/HTML article payloads, local PDF parsing/import, browser PDF captures, MinerU result zips, and MinerU `full.md` extraction.
 - Added MinerU as the authenticated cloud PDF parser fallback in the parsing waterfall (`Docling -> MinerU -> Marker -> PyMuPDF`), including signed-upload polling, zip `full.md` extraction, config knobs, keychain support via `MINERU_API_KEY`, and smoke-test coverage.
@@ -29,6 +33,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed `search_saved_papers` to use dense retrieval, SQLite FTS/BM25, exact lookup, and RRF when reranking is enabled; if dense retrieval is unavailable it now returns FTS fallback results with mode/retriever/rank/score/query trace.
+- Changed direct PDF download timeout handling so `current_pdf_timeout()` uses `extract.pdf_read_timeout=120s`, while landing-page/native text fetches keep `extract.fetch_read_timeout=60s`.
+- Changed browser direct-PDF backfill to use the configurable `extract.headless_browser.pdf_backfill_timeout`, separate from browser navigation and polling deadlines.
+- Changed Codex host-action receipts to include `issued_at`, `download_watch_dir`, `download_max_age_seconds`, and the next action to call `ingest_codex_downloaded_pdf`.
+- Changed canonical library persistence to write `_parsed` provenance sidecars best-effort alongside Markdown and asset manifests; sidecar failures surface as warnings without blocking canonical Markdown, PDF archiving, or index refresh.
 - Changed Elsevier XML parsing to use `defusedxml`, and changed remote/local document reads to reject oversized payloads before buffering whenever content length or streamed byte counts exceed configured limits.
 - Changed the legacy cloud-parser API-key surface to MinerU; the old cloud-parser key is no longer part of the generated config, docs, or managed secret list.
 - Changed the optional `codex` fetch-strategy handoff to the Codex Chrome extension.
@@ -88,6 +97,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Removed unused `extract.sci_hub.auto_update_mirror` and `mirror_url_file` config fields; the current `scihub` runtime uses ordered `endpoints` with `fallback_mirror` retained for legacy configs.
 
 ### Tests
+- Added regression coverage for canonical block manifests, evidence-pack schema/hash verification, current-valid failures after canonical Markdown edits, block relocation detection, and pack-scoped audits.
+- Added regression coverage for FTS indexing/search, dense-unavailable fallback, hybrid RRF trace output, and `grados eval-retrieval`.
+- Added regression coverage for Codex handoff receipts, watch-dir PDF candidate validation, ambiguity/failure records, timeout split contracts, and parsed sidecar frontmatter/structure summaries.
 - Added regression coverage for saved-paper Evidence Anchor payloads, evidence-grid and draft-audit anchor propagation, configurable audit candidate limits, comparison evidence items, and MCP schema exposure.
 - Added regression coverage for safe saved-paper selector validation, DOI slug-collision avoidance, legacy safe DOI lookup, Springer metadata-only fallback, Sci-Hub `not_found` endpoint fallthrough, and the existing config/search/reindex review fixes.
 - Added regression coverage for browser fallback warnings, local Chroma timeout guards, repeated-query deduplication and citation-graph cache invalidation in `research_tools`, typed paper-document accessors, shared `papers_dir` resolution, narrow storage helper boundaries (DOI extraction / frontmatter stripping / paragraph splitting), and the dropped raw `fallbackMirror` Sci-Hub fetch shim.

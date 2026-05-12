@@ -24,6 +24,7 @@ from grados.http_limits import (
 from grados.secrets import SecretResolutionSummary, iter_api_key_specs, resolve_api_keys
 
 __all__ = [
+    "CodexHandoffConfig",
     "GRaDOSConfig",
     "GRaDOSPaths",
     "IndexingConfig",
@@ -203,6 +204,35 @@ class UnpaywallConfig(BaseModel):
     enabled: bool = True
 
 
+class CodexHandoffConfig(BaseModel):
+    download_watch_dir: str = Field(
+        default="~/Downloads",
+        description=(
+            "Directory scanned by ingest_codex_downloaded_pdf after a Codex Chrome Extension "
+            "handoff. This does not configure Chrome's download directory."
+        ),
+    )
+    download_max_age_seconds: float = Field(
+        default=900.0,
+        ge=1.0,
+        description="Maximum candidate PDF age, in seconds, after a Codex handoff is issued.",
+    )
+    download_settle_seconds: float = Field(
+        default=2.0,
+        ge=0.0,
+        description="Seconds a candidate download must remain size/mtime-stable before ingest.",
+    )
+    download_settle_max_wait_seconds: float = Field(
+        default=30.0,
+        ge=0.0,
+        description="Maximum seconds to wait for a candidate download to settle.",
+    )
+    download_scan_recursive: bool = Field(
+        default=False,
+        description="Recursively scan the watch directory for Codex handoff PDFs when true.",
+    )
+
+
 DEFAULT_SCI_HUB_ENDPOINT = "https://sci-hub.se"
 
 
@@ -244,6 +274,11 @@ class HeadlessBrowserConfig(BaseModel):
             "timeout hands control back to the main polling loop instead of "
             "silently eating the deadline."
         ),
+    )
+    pdf_backfill_timeout: float = Field(
+        default=120.0,
+        ge=1.0,
+        description="Timeout (seconds) for browser context.request direct-PDF backfill.",
     )
     poll_min_seconds: float = Field(
         default=0.5,
@@ -358,6 +393,7 @@ class TDMConfig(BaseModel):
 class ExtractConfig(BaseModel):
     fetch_strategy: FetchStrategyConfig = Field(default_factory=FetchStrategyConfig)
     unpaywall: UnpaywallConfig = Field(default_factory=UnpaywallConfig)
+    codex_handoff: CodexHandoffConfig = Field(default_factory=CodexHandoffConfig)
     tdm: TDMConfig = Field(default_factory=TDMConfig)
     sci_hub: SciHubConfig = Field(default_factory=SciHubConfig)
     headless_browser: HeadlessBrowserConfig = Field(default_factory=HeadlessBrowserConfig)
@@ -374,10 +410,14 @@ class ExtractConfig(BaseModel):
         default=60.0,
         ge=1.0,
         description=(
-            "Response read timeout (seconds) for PDF / landing-page "
-            "downloads. Keep generous: large PDFs and publisher intermediate "
-            "redirects can stream slowly."
+            "Response read timeout (seconds) for landing-page, HTML, XML, JSON, and non-PDF "
+            "full-text fetches."
         ),
+    )
+    pdf_read_timeout: float = Field(
+        default=120.0,
+        ge=1.0,
+        description="Response read timeout (seconds) for direct remote PDF downloads.",
     )
 
 
@@ -588,8 +628,11 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "TCP connect timeout in seconds for api / unpaywall / scihub HTTP calls."
     )
     data["extract"]["_comment_fetch_read_timeout"] = (
-        "Response read timeout in seconds for PDF and landing-page downloads. "
-        "Keep generous: large PDFs and intermediate redirects can stream slowly."
+        "Response read timeout in seconds for landing-page, HTML, XML, JSON, and non-PDF full-text fetches."
+    )
+    data["extract"]["_comment_pdf_read_timeout"] = (
+        "Response read timeout in seconds for direct remote PDF downloads. "
+        "Size limits still enforce the maximum accepted PDF bytes."
     )
     data["extract"]["assets"]["_comment_mode"] = (
         "Parser asset persistence mode. `all` saves all allowed parser assets, "
@@ -635,6 +678,22 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "When true, resolve DOI to Unpaywall OA locations before codex/browser acquisition. "
         "Unpaywall is not a download strategy and does not affect api or scihub."
     )
+    data["extract"]["codex_handoff"]["_comment_download_watch_dir"] = (
+        "Directory scanned only by ingest_codex_downloaded_pdf after a Codex Chrome Extension handoff. "
+        "Default ~/Downloads follows Chrome's usual per-user download location and does not configure Chrome."
+    )
+    data["extract"]["codex_handoff"]["_comment_download_max_age_seconds"] = (
+        "Maximum candidate PDF age after the handoff receipt is issued."
+    )
+    data["extract"]["codex_handoff"]["_comment_download_settle_seconds"] = (
+        "Seconds a candidate PDF must remain size/mtime-stable before ingest."
+    )
+    data["extract"]["codex_handoff"]["_comment_download_settle_max_wait_seconds"] = (
+        "Maximum seconds to wait for a candidate PDF to settle."
+    )
+    data["extract"]["codex_handoff"]["_comment_download_scan_recursive"] = (
+        "When false, only scan the watch directory root. Recursive scanning is opt-in."
+    )
     data["extract"]["tdm"]["_comment_order"] = (
         "Publisher API/TDM providers tried by the api fetch strategy."
     )
@@ -673,6 +732,9 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     )
     data["extract"]["headless_browser"]["_comment_networkidle_timeout"] = (
         "Ceiling in seconds for wait_for_load_state('networkidle'). See ADR-008."
+    )
+    data["extract"]["headless_browser"]["_comment_pdf_backfill_timeout"] = (
+        "Timeout in seconds for browser context.request direct-PDF backfill; navigation deadlines are separate."
     )
     data["extract"]["headless_browser"]["_comment_poll_min_seconds"] = (
         "Starting sleep between browser main-loop iterations."

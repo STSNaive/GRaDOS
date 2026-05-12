@@ -116,6 +116,14 @@ def test_default_config_exposes_disabled_codex_chrome_extension_strategy() -> No
     ]
     assert config.extract.fetch_strategy.enabled["codex"] is False
     assert config.extract.unpaywall.enabled is True
+    assert config.extract.codex_handoff.download_watch_dir == "~/Downloads"
+    assert config.extract.codex_handoff.download_max_age_seconds == 900.0
+    assert config.extract.codex_handoff.download_settle_seconds == 2.0
+    assert config.extract.codex_handoff.download_settle_max_wait_seconds == 30.0
+    assert config.extract.codex_handoff.download_scan_recursive is False
+    assert config.extract.fetch_read_timeout == 60.0
+    assert config.extract.pdf_read_timeout == 120.0
+    assert config.extract.headless_browser.pdf_backfill_timeout == 120.0
     assert config.extract.security.max_remote_pdf_bytes == 200 * 1024 * 1024
     assert config.extract.security.max_remote_text_bytes == 50 * 1024 * 1024
     assert config.extract.security.max_local_pdf_bytes == 200 * 1024 * 1024

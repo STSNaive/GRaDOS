@@ -1247,8 +1247,6 @@ def _build_docling_converter(*, enable_assets: bool, image_scale: float) -> Any:
         pipeline_options.generate_page_images = True
     if hasattr(pipeline_options, "generate_picture_images"):
         pipeline_options.generate_picture_images = True
-    if hasattr(pipeline_options, "generate_table_images"):
-        pipeline_options.generate_table_images = True
     if hasattr(pipeline_options, "do_formula_enrichment"):
         pipeline_options.do_formula_enrichment = True
 

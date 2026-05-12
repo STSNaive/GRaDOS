@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from grados._retry import install_runtime_defaults
 from grados.browser.fetch_runtime import BrowserFetchState, try_backfill_from_url
 from grados.browser.generic import build_browser_page_strategies
 from grados.browser.manager import (
@@ -11,7 +12,7 @@ from grados.browser.manager import (
     random_viewport,
     resolve_browser_executable,
 )
-from grados.config import GRaDOSPaths, HeadlessBrowserConfig
+from grados.config import GRaDOSConfig, GRaDOSPaths, HeadlessBrowserConfig
 from grados.publisher.common import classify_pdf_content, detect_bot_challenge
 
 
@@ -99,6 +100,63 @@ def test_direct_pdf_backfill_rejects_oversized_content_length() -> None:
         "Browser PDF backfill from https://example.com/paper.pdf exceeds configured size limit" in warning
         for warning in warnings
     )
+
+
+def test_direct_pdf_backfill_uses_runtime_timeout_config() -> None:
+    class FakePage:
+        url = "https://example.com/paper.pdf"
+
+        def is_closed(self) -> bool:
+            return False
+
+    class FakeResponse:
+        headers = {"content-type": "application/pdf"}
+
+        async def body(self) -> bytes:
+            return b"%PDF-1.4\n%ok"
+
+    class FakeRequest:
+        def __init__(self) -> None:
+            self.timeout: int | None = None
+
+        async def get(self, url: str, timeout: int | None = None) -> FakeResponse:
+            _ = url
+            self.timeout = timeout
+            return FakeResponse()
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.request = FakeRequest()
+
+    cfg = GRaDOSConfig()
+    cfg = cfg.model_copy(
+        update={
+            "extract": cfg.extract.model_copy(
+                update={
+                    "headless_browser": cfg.extract.headless_browser.model_copy(
+                        update={"pdf_backfill_timeout": 42.0}
+                    )
+                }
+            )
+        }
+    )
+    context = FakeContext()
+    install_runtime_defaults(cfg)
+    try:
+        asyncio.run(
+            try_backfill_from_url(
+                FakePage(),
+                context,
+                set(),
+                lambda *args: True,
+                lambda: False,
+                lambda message: None,
+            )
+        )
+    finally:
+        install_runtime_defaults(None)
+
+    assert context.request.timeout == 42000
 
 
 def test_browser_page_strategy_registry_preserves_order_and_filters_unknown_names() -> None:

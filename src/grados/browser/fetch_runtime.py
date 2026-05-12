@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from grados._retry import current_browser_pdf_backfill_timeout_ms
 from grados.http_limits import (
     DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
     SizeLimitError,
@@ -292,6 +293,7 @@ async def try_backfill_from_url(
     pdf_captured: Any,
     report_warning: Callable[[str], None],
     max_capture_bytes: int = DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
+    backfill_timeout_ms: int | None = None,
 ) -> None:
     """If the page URL looks like a direct PDF link, fetch it via context.request."""
     if pdf_captured() or page.is_closed():
@@ -304,7 +306,10 @@ async def try_backfill_from_url(
 
     attempted_urls.add(url)
     try:
-        response = await context.request.get(url, timeout=20000)
+        response = await context.request.get(
+            url,
+            timeout=backfill_timeout_ms or current_browser_pdf_backfill_timeout_ms(),
+        )
         headers = response.headers
         ensure_content_length_allowed(
             headers,

@@ -424,3 +424,99 @@
 - GRaDOS 不再把 Unpaywall 描述为下载路径，避免与 Chrome extension / browser acquisition 责任重叠。
 - API/TDM 路径继续只由 publisher API 配置控制；Sci-Hub 继续只由 DOI 和 `extract.sci_hub.endpoints` 控制。
 - 旧配置中的 `oa` 项不会导致启动失败，但也不会再执行 Unpaywall direct-PDF 下载。
+
+---
+
+## ADR-016：Evidence pack 是 citation handoff 的最小可验证单元
+
+- 状态：Accepted
+- 日期：2026-05-11
+
+### 背景
+- `search_saved_papers`、evidence grid、comparison 和 draft audit 已经能返回 canonical reread anchors，但这些输出仍是导航材料。
+- 跨上下文压缩、跨 agent 交接或稍后写作时，仅保存 snippet、score 或 paragraph 坐标不足以证明当前 `papers/*.md` 仍与当时判断一致。
+
+### 决策
+- `papers/*.md` 继续是唯一 citation-grade full-text source。
+- 新增 canonical block registry：从当前 canonical Markdown 生成稳定 paragraph blocks，包含 `block_id`、`block_type`、`heading_path`、`ordinal`、`text_sha256`、`prev_hash`、`next_hash` 和 `doc_sha256`；MVP 先支持 paragraph，保留表格、图注、公式等扩展位。
+- `prepare_evidence_pack` 只能把候选 retrieval anchor materialize 成 canonical block snapshot 后再保存 pack；retrieval score、RRF rank 和 selection trace 只能进入 trace/metadata，不进入证据层。
+- Evidence pack 复用 `research_artifacts(kind="evidence_pack")`，不新增并行状态库。
+- `verify_evidence_pack` 必须重新读取当前 `papers/*.md` 并重建 block registry；不得读取 Chroma、FTS 或旧 pack 自身来判断 current validity。
+- `audit_answer_against_pack(strict=true)` 只使用 pack 内 evidence items，不全库搜索补证；缺口通过 `suggest_missing_evidence` 暴露为后续动作。
+
+### 结果与影响
+- Evidence pack 可以作为跨对话交接的 citation handoff artifact，但只有 `current_valid=true` 时才是当前证据。
+- 修改 `papers/*.md` 后，旧 pack 保留历史快照价值，但不能继续被静默当作当前引用依据。
+- Retrieval 与 audit 的职责分开：召回负责找候选，pack/verify 负责证据确定性，strict audit 负责暴露 claim 支持缺口。
+
+---
+
+## ADR-017：本地检索采用 dense + FTS/BM25 + exact lookup + RRF，但仍只生成候选
+
+- 状态：Accepted
+- 日期：2026-05-11
+
+### 背景
+- 个人本地论文库规模下，embedding/Chroma 仍适合作为语义召回层，但 embedding runtime、模型兼容性或 Chroma manifest 出错时不应让本地检索整体中断。
+- FTS/BM25、exact DOI/title/metadata lookup 和 RRF 能提升导航稳定性，但它们不是 citation evidence。
+
+### 决策
+- `database/chroma/` 继续作为可重建 dense index。
+- 新增 `database/fts.sqlite3` 作为可重建 SQLite FTS5/BM25 block index；它和 Chroma 一样只从 `papers/*.md` 重建，不保存 citation source。
+- `search_saved_papers` 默认在 reranking 开启时并行使用 dense、FTS/BM25 和 exact lookup，再用 Reciprocal Rank Fusion 合并候选。
+- dense retrieval 不可用时，工具降级到 FTS/exact 结果，并在结果和 warning 中显式标明 mode/retriever/rank/score/query trace。
+- `dense_only` 保留为兼容和调试模式；科研写作推荐路径仍是 multi-retriever candidate generation + canonical reread / evidence pack verify。
+- `grados update-db` 与 `grados reindex` 同步重建 FTS；`grados eval-retrieval` 用 JSONL fixture 评估 Recall@k、MRR、block/window hit、no-answer false positive、verify pass rate 和 latency。
+
+### 结果与影响
+- 本地检索对 embedding runtime 故障更稳，但不会改变证据纪律。
+- 所有 score/rank 只解释 candidate selection，不得被文档或工具输出描述为支持性证据。
+- 后续是否调整默认 retriever 权重或 embedding provider，应由本地 eval 数据驱动。
+
+---
+
+## ADR-018：Codex Chrome extension 回流采用显式 watch-dir ingest
+
+- 状态：Accepted
+- 日期：2026-05-11
+
+### 背景
+- `codex` fetch strategy 是 host-agent handoff，不是 GRaDOS 进程内部下载 backend。
+- Chrome extension 可以完成真实浏览器下载，但 GRaDOS Python server 无法直接接收扩展的 download-complete event。
+- 让 `parse_pdf_file` 隐式扫描 Downloads 会把显式本地文件解析和 Codex handoff 混在一起。
+
+### 决策
+- `extract_paper_full_text` 的 `codex` receipt 写入 `issued_at`、`download_watch_dir`、`download_max_age_seconds` 和 `next_action="download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf"`。
+- 新增 `ingest_codex_downloaded_pdf(doi, expected_title=None, file_name_hint=None, downloaded_at=None)` 作为唯一 watch-dir ingest 入口。
+- Watch dir 默认 `~/Downloads`，只表达 Chrome 常见用户下载目录语义；该配置不改变 Chrome 设置，也不影响 `api`、`browser`、`scihub`、`import_local_pdf_library` 或显式 `parse_pdf_file(file_path=...)`。
+- 入口只在该 DOI 有 pending `fetch_via="codex"` / host-action remote metadata 时运行；否则返回结构化失败。
+- 候选校验保持保守：默认只扫根层，拒绝隐藏/临时文件、`.crdownload`、symlink、non-regular file、非 `.pdf`、过旧文件、过大文件、非 `%PDF-` 文件、不稳定下载和读取前后 hash 变化。
+- 0 候选、多候选和 parse 失败都写入 failure memory 或 `extraction_receipt` artifact；多候选只返回 disambiguation token，不猜 DOI。
+
+### 结果与影响
+- Codex host agent 有了可恢复的“下载完成后回流”步骤，同时 GRaDOS 不假装控制 Chrome 下载目录。
+- 显式 PDF 路径仍可直接走 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`，不触发 watch-dir 扫描。
+- 失败记录继续复用现有 research state，不新增并行状态库。
+
+---
+
+## ADR-019：PDF parser provenance sidecar 是增强层，不是正文真源
+
+- 状态：Accepted
+- 日期：2026-05-11
+
+### 背景
+- Parser-native JSON、page/bbox、reading order 和 source hashes 对调试、复用和未来 PDF 定位有价值。
+- 但把 parser JSON 当成 RAG 正文或 citation source 会重新制造 `papers/*.md` 之外的第二真源。
+
+### 决策
+- `papers/*.md` 仍是 canonical reading text；`downloads/*.pdf` 是原始 PDF 归档；`database/chroma/` 和 `database/fts.sqlite3` 是可重建索引。
+- 新增 `papers/_parsed/{safe_doi}.json` 作为同一轮保存产生的 parser provenance sidecar。
+- Sidecar 最小字段包括 schema version、safe DOI、source PDF path/hash、canonical Markdown path/hash、parser、parser version、generated time、blocks 和 assets manifest pointer。
+- Markdown frontmatter 保存轻量 `parsed_manifest_path` 指针；`get_saved_paper_structure` 可展示 parser、block count、page range、source PDF hash、canonical Markdown hash 和 asset manifest 状态。
+- Sidecar 写入失败只产生 warning，不阻断 canonical Markdown 保存、PDF 归档或索引刷新。
+- `_parsed` 与 `_assets` 分层：前者记录 provenance / mapping，后者保存可读取 assets；二者都不是 citation content。
+
+### 结果与影响
+- 旧论文缺少 `_parsed` 仍可正常 read/search/reindex。
+- 未来可以在不改 canonical text contract 的前提下增加 page/bbox、figure/table/OCR 等解析复用能力。

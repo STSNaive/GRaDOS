@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
+import sys
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -33,6 +38,7 @@ from grados.workflows.library import (
 __all__ = [
     "extract_paper_full_text",
     "get_saved_paper_structure",
+    "ingest_codex_downloaded_pdf",
     "import_local_pdf_library",
     "paper_overview_resource",
     "papers_index_resource",
@@ -41,6 +47,9 @@ __all__ = [
     "read_saved_paper",
     "register_library_tools",
 ]
+
+_CODEX_HANDOFF_NEXT_ACTION = "download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf"
+_CODEX_HANDOFF_DEFAULT_WATCH_DIR = "~/Downloads"
 
 
 def _format_asset_hint_lines(asset_hints: Sequence[Mapping[str, object]]) -> list[str]:
@@ -137,6 +146,10 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
         browser = str(resume.get("browser", "") or "Google Chrome")
         start_url = str(resume.get("start_url", "") or (f"https://doi.org/{doi}" if doi else ""))
         start_url_source = str(resume.get("start_url_source", "") or "")
+        issued_at = str(resume.get("issued_at", "") or "")
+        download_watch_dir = str(resume.get("download_watch_dir", "") or "")
+        download_max_age_seconds = str(resume.get("download_max_age_seconds", "") or "")
+        next_action = str(resume.get("next_action", "") or _CODEX_HANDOFF_NEXT_ACTION)
         documentation_url = str(resume.get("documentation_url", "") or "")
         result += "\n\n### Codex Chrome Extension Download\n"
         result += f"- **Browser:** {browser}\n"
@@ -146,10 +159,19 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
             result += f"- **Start URL:** {start_url}\n"
         if start_url_source:
             result += f"- **Start URL Source:** {start_url_source}\n"
+        if issued_at:
+            result += f"- **Issued At:** {issued_at}\n"
+        if download_watch_dir:
+            result += f"- **Download Watch Dir:** {download_watch_dir}\n"
+        if download_max_age_seconds:
+            result += f"- **Download Max Age Seconds:** {download_max_age_seconds}\n"
+        if next_action:
+            result += f"- **Next Action:** {next_action}\n"
         result += (
             "- **Next:** use Chrome with the Codex extension to download the PDF, then call "
-            "`parse_pdf_file(file_path=..., doi=..., copy_to_library=true, "
-            "acquisition_via=\"codex\")` with the downloaded file path.\n"
+            "`ingest_codex_downloaded_pdf(doi=...)`. If the absolute PDF path is already known, "
+            "call `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, "
+            "acquisition_via=\"codex\")` instead.\n"
         )
         return result.rstrip()
 
@@ -343,6 +365,7 @@ async def extract_paper_full_text(
         headless_config=config.extract.headless_browser,
         paths=paths,
         browser_resume=browser_resume if resume_browser else None,
+        codex_handoff_config=config.extract.codex_handoff,
         unpaywall_enabled=bool(getattr(config.extract.unpaywall, "enabled", True)),
         max_remote_pdf_bytes=config.extract.security.max_remote_pdf_bytes,
         max_remote_text_bytes=config.extract.security.max_remote_text_bytes,
@@ -707,6 +730,534 @@ async def get_saved_paper_structure(
     payload = asdict(structure)
     payload["found"] = True
     return payload
+
+
+def _parse_handoff_timestamp(value: object) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    try:
+        normalized = raw.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.timestamp()
+    except ValueError:
+        return None
+
+
+def _format_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, UTC).isoformat()
+
+
+def _resolve_codex_watch_dir(raw_watch_dir: str) -> Path:
+    value = raw_watch_dir.strip() or _CODEX_HANDOFF_DEFAULT_WATCH_DIR
+    return Path(value).expanduser()
+
+
+def _is_default_codex_watch_dir(raw_watch_dir: str) -> bool:
+    return (raw_watch_dir.strip() or _CODEX_HANDOFF_DEFAULT_WATCH_DIR) == _CODEX_HANDOFF_DEFAULT_WATCH_DIR
+
+
+def _validate_codex_watch_dir(watch_dir: Path, raw_watch_dir: str) -> tuple[bool, str, str]:
+    if _is_default_codex_watch_dir(raw_watch_dir) and sys.platform != "darwin":
+        return (
+            False,
+            "config_required",
+            "Default Codex handoff watch dir is macOS Chrome semantics; "
+            "configure extract.codex_handoff.download_watch_dir.",
+        )
+    if not watch_dir.exists():
+        reason = "config_required" if _is_default_codex_watch_dir(raw_watch_dir) else "watch_dir_missing"
+        return False, reason, f"Codex handoff watch dir does not exist: {watch_dir}"
+    if not watch_dir.is_dir():
+        return False, "watch_dir_not_directory", f"Codex handoff watch dir is not a directory: {watch_dir}"
+    if not os.access(watch_dir, os.R_OK | os.X_OK):
+        return False, "permission_error", f"Codex handoff watch dir is not readable: {watch_dir}"
+    return True, "", ""
+
+
+def _load_pending_codex_handoff(paths: object, doi: str) -> tuple[object | None, dict[str, str], str]:
+    from grados.storage.remote_metadata import get_remote_metadata_by_doi
+
+    metadata_dirs = [_remote_metadata_dir(paths)]
+    legacy_dir = getattr(paths, "database_chroma", None)
+    if legacy_dir is not None and legacy_dir != metadata_dirs[0]:
+        metadata_dirs.append(legacy_dir)
+
+    record = None
+    for metadata_dir in metadata_dirs:
+        record = get_remote_metadata_by_doi(metadata_dir, doi)
+        if record is not None:
+            break
+    if record is None:
+        return None, {}, "no_pending_handoff"
+
+    fetch_via = str(getattr(record, "fetch_via", "") or "")
+    fetch_status = str(getattr(record, "fetch_status", "") or "")
+    fetch_state = str(getattr(record, "fetch_state", "") or "")
+    fetch_manual = bool(getattr(record, "fetch_manual", False))
+    if fetch_via != "codex" or not fetch_manual or "host_action_required" not in {fetch_status, fetch_state}:
+        return record, {}, "no_pending_handoff"
+
+    raw_resume = str(getattr(record, "fetch_resume", "") or "")
+    if not raw_resume:
+        return record, {}, "missing_fetch_resume"
+    try:
+        loaded = json.loads(raw_resume)
+    except json.JSONDecodeError:
+        return record, {}, "invalid_fetch_resume"
+    if not isinstance(loaded, dict):
+        return record, {}, "invalid_fetch_resume"
+    resume = {str(key): str(value) for key, value in loaded.items() if str(value)}
+    return record, resume, ""
+
+
+def _record_codex_ingest_receipt(
+    paths: object,
+    *,
+    doi: str,
+    status: str,
+    failure_reason: str,
+    message: str,
+    context: dict[str, object],
+) -> dict[str, object]:
+    from grados.research_state import manage_failure_cases, save_research_artifact
+
+    if hasattr(paths, "ensure_directories"):
+        paths.ensure_directories()
+
+    failure_type = "parse" if failure_reason == "parse_failed" else "fetch"
+    failure_case = manage_failure_cases(
+        getattr(paths, "database_state"),
+        mode="record",
+        failure_type=failure_type,
+        doi=doi,
+        source="codex",
+        error_message=message or failure_reason,
+        context={"status": status, "failure_reason": failure_reason, **context},
+    )
+    artifact = save_research_artifact(
+        getattr(paths, "database_state"),
+        kind="extraction_receipt",
+        title=f"Codex PDF handoff {status}: {doi}",
+        source_doi=doi,
+        content={"status": status, "failure_reason": failure_reason, "message": message, **context},
+        metadata={"source": "codex", "failure_reason": failure_reason},
+    )
+    return {"failure_case": failure_case, "research_artifact": artifact}
+
+
+def _codex_ingest_failure(
+    paths: object,
+    *,
+    doi: str,
+    failure_reason: str,
+    message: str,
+    watch_dir: Path | None = None,
+    candidates: list[dict[str, object]] | None = None,
+    rejected_candidates: list[dict[str, object]] | None = None,
+    next_action: str = _CODEX_HANDOFF_NEXT_ACTION,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    context: dict[str, object] = {
+        "watch_dir": str(watch_dir) if watch_dir is not None else "",
+        "candidates": candidates or [],
+        "rejected_candidates": rejected_candidates or [],
+        "next_action": next_action,
+    }
+    if extra:
+        context.update(extra)
+    recorded = _record_codex_ingest_receipt(
+        paths,
+        doi=doi,
+        status="failed",
+        failure_reason=failure_reason,
+        message=message,
+        context=context,
+    )
+    return {
+        "status": "failed",
+        "doi": doi,
+        "failure_reason": failure_reason,
+        "message": message,
+        **context,
+        **recorded,
+    }
+
+
+def _candidate_payload(path: Path, file_stat: os.stat_result) -> dict[str, object]:
+    return {
+        "path": str(path),
+        "name": path.name,
+        "size_bytes": file_stat.st_size,
+        "mtime": _format_timestamp(file_stat.st_mtime),
+    }
+
+
+def _identity(file_stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        int(file_stat.st_dev),
+        int(file_stat.st_ino),
+        int(file_stat.st_mode),
+        int(file_stat.st_size),
+        int(file_stat.st_mtime_ns),
+    )
+
+
+def _iter_codex_watch_dir(watch_dir: Path, *, recursive: bool) -> tuple[list[Path], str]:
+    try:
+        iterator = watch_dir.rglob("*") if recursive else watch_dir.iterdir()
+        return list(iterator), ""
+    except OSError as exc:
+        return [], f"{exc.__class__.__name__}: {exc}"
+
+
+def _wait_for_stable_candidate(
+    path: Path,
+    *,
+    settle_seconds: float,
+    settle_max_wait_seconds: float,
+) -> tuple[os.stat_result | None, str]:
+    try:
+        previous = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        return None, f"permission_error:{exc.__class__.__name__}: {exc}"
+    if settle_seconds <= 0:
+        return previous, ""
+
+    deadline = time.monotonic() + settle_max_wait_seconds
+    while True:
+        if time.time() - previous.st_mtime >= settle_seconds:
+            return previous, ""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, "unstable_download"
+        time.sleep(min(settle_seconds, remaining))
+        try:
+            current = path.stat(follow_symlinks=False)
+        except OSError as exc:
+            return None, f"permission_error:{exc.__class__.__name__}: {exc}"
+        if _identity(current) != _identity(previous):
+            previous = current
+
+
+def _read_candidate_pdf_hash(path: Path, *, max_bytes: int) -> tuple[str, bytes, os.stat_result | None, str]:
+    try:
+        before = path.stat(follow_symlinks=False)
+        if path.is_symlink():
+            return "", b"", before, "symlink_rejected"
+        if not stat.S_ISREG(before.st_mode):
+            return "", b"", before, "non_regular"
+        try:
+            ensure_byte_limit(before.st_size, max_bytes=max_bytes, label=f"Codex handoff PDF {path}")
+        except SizeLimitError as exc:
+            return "", b"", before, f"too_large:{exc}"
+        with path.open("rb") as handle:
+            data = handle.read(max_bytes + 1)
+        after = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        return "", b"", None, f"permission_error:{exc.__class__.__name__}: {exc}"
+    try:
+        ensure_byte_limit(len(data), max_bytes=max_bytes, label=f"Codex handoff PDF {path}")
+    except SizeLimitError as exc:
+        return "", b"", after, f"too_large:{exc}"
+    if _identity(before) != _identity(after):
+        return "", b"", after, "hash_changed"
+    if not stat.S_ISREG(after.st_mode):
+        return "", b"", after, "non_regular"
+    if data[:5] != b"%PDF-":
+        return "", b"", after, "not_pdf"
+    return hashlib.sha256(data).hexdigest(), data, after, ""
+
+
+def _scan_codex_handoff_candidates(
+    *,
+    watch_dir: Path,
+    raw_watch_dir: str,
+    recursive: bool,
+    file_name_hint: str,
+    issued_at_ts: float | None,
+    downloaded_at_ts: float | None,
+    max_age_seconds: float,
+    settle_seconds: float,
+    settle_max_wait_seconds: float,
+    max_pdf_bytes: int,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
+    ok, reason, message = _validate_codex_watch_dir(watch_dir, raw_watch_dir)
+    if not ok:
+        return [], [], f"{reason}:{message}"
+
+    paths, iter_error = _iter_codex_watch_dir(watch_dir, recursive=recursive)
+    if iter_error:
+        return [], [], f"permission_error:{iter_error}"
+
+    now = time.time()
+    recent_cutoff = now - max_age_seconds
+    basename_hint = Path(file_name_hint).name if file_name_hint else ""
+    candidates: list[dict[str, object]] = []
+    rejected: list[dict[str, object]] = []
+
+    for path in paths:
+        reason = ""
+        detail = ""
+        try:
+            file_stat = path.stat(follow_symlinks=False)
+        except OSError as exc:
+            rejected.append({"path": str(path), "name": path.name, "reason": "permission_error", "detail": str(exc)})
+            continue
+
+        if path.name.startswith("."):
+            reason = "temporary_file"
+        elif path.name.endswith(".crdownload"):
+            reason = "temporary_file"
+        elif path.is_symlink():
+            reason = "symlink_rejected"
+        elif not stat.S_ISREG(file_stat.st_mode):
+            reason = "non_regular"
+        elif path.suffix.lower() != ".pdf":
+            reason = "not_pdf"
+        elif basename_hint and path.name != basename_hint:
+            reason = "file_name_hint_mismatch"
+        elif file_stat.st_mtime < recent_cutoff:
+            reason = "too_old"
+        elif issued_at_ts is not None and file_stat.st_mtime < issued_at_ts:
+            reason = "too_old"
+        elif downloaded_at_ts is not None and abs(file_stat.st_mtime - downloaded_at_ts) > max(max_age_seconds, 60.0):
+            reason = "downloaded_at_mismatch"
+
+        if reason:
+            rejected.append({**_candidate_payload(path, file_stat), "reason": reason, "detail": detail})
+            continue
+
+        try:
+            ensure_byte_limit(
+                file_stat.st_size,
+                max_bytes=max_pdf_bytes,
+                label=f"Codex handoff PDF {path}",
+            )
+        except SizeLimitError as exc:
+            rejected.append({**_candidate_payload(path, file_stat), "reason": "too_large", "detail": str(exc)})
+            continue
+
+        stable_stat, stable_error = _wait_for_stable_candidate(
+            path,
+            settle_seconds=settle_seconds,
+            settle_max_wait_seconds=settle_max_wait_seconds,
+        )
+        if stable_error or stable_stat is None:
+            stable_reason, _, stable_detail = stable_error.partition(":")
+            rejected.append({
+                **_candidate_payload(path, file_stat),
+                "reason": stable_reason or "unstable_download",
+                "detail": stable_detail,
+            })
+            continue
+
+        source_hash, _, after_read_stat, hash_error = _read_candidate_pdf_hash(path, max_bytes=max_pdf_bytes)
+        if hash_error or after_read_stat is None:
+            hash_reason, _, hash_detail = hash_error.partition(":")
+            rejected.append({
+                **_candidate_payload(path, stable_stat),
+                "reason": hash_reason or "hash_changed",
+                "detail": hash_detail,
+            })
+            continue
+
+        candidates.append({
+            **_candidate_payload(path, after_read_stat),
+            "source_pdf_hash": source_hash,
+        })
+
+    return candidates, rejected, ""
+
+
+def _dominant_codex_failure_reason(rejected_candidates: Sequence[Mapping[str, object]]) -> str:
+    priority = [
+        "hash_changed",
+        "unstable_download",
+        "permission_error",
+        "symlink_rejected",
+        "non_regular",
+        "too_large",
+        "not_pdf",
+        "too_old",
+        "temporary_file",
+    ]
+    reasons = {str(candidate.get("reason") or "") for candidate in rejected_candidates}
+    for reason in priority:
+        if reason in reasons:
+            return reason
+    return "no_candidate"
+
+
+async def ingest_codex_downloaded_pdf(
+    doi: Annotated[str, Field(min_length=1, description="DOI for the pending Codex Chrome Extension handoff.")],
+    expected_title: Annotated[
+        str | None,
+        Field(description="Optional title used for QA validation only."),
+    ] = None,
+    file_name_hint: Annotated[
+        str | None,
+        Field(description="Optional downloaded filename hint. It narrows candidates but does not bypass validation."),
+    ] = None,
+    downloaded_at: Annotated[
+        str | None,
+        Field(description="Optional ISO timestamp or epoch seconds from the host-agent download event."),
+    ] = None,
+) -> dict[str, object]:
+    """Ingest the single PDF produced by a pending Codex Chrome Extension handoff."""
+    paths, config = get_paths_and_config()
+    if hasattr(paths, "ensure_directories"):
+        paths.ensure_directories()
+
+    _, resume, pending_error = _load_pending_codex_handoff(paths, doi)
+    if pending_error:
+        return _codex_ingest_failure(
+            paths,
+            doi=doi,
+            failure_reason=pending_error,
+            message="No pending Codex Chrome Extension handoff was found for this DOI.",
+            extra={"next_action": "run_extract_paper_full_text_with_codex_enabled_first"},
+        )
+
+    codex_config = config.extract.codex_handoff
+    raw_watch_dir = codex_config.download_watch_dir
+    watch_dir = _resolve_codex_watch_dir(raw_watch_dir)
+    issued_at_ts = _parse_handoff_timestamp(resume.get("issued_at"))
+    downloaded_at_ts = _parse_handoff_timestamp(downloaded_at)
+    max_age_seconds = float(codex_config.download_max_age_seconds)
+    settle_seconds = float(codex_config.download_settle_seconds)
+    settle_max_wait_seconds = float(codex_config.download_settle_max_wait_seconds)
+
+    candidates, rejected, scan_error = _scan_codex_handoff_candidates(
+        watch_dir=watch_dir,
+        raw_watch_dir=raw_watch_dir,
+        recursive=bool(codex_config.download_scan_recursive),
+        file_name_hint=file_name_hint or "",
+        issued_at_ts=issued_at_ts,
+        downloaded_at_ts=downloaded_at_ts,
+        max_age_seconds=max_age_seconds,
+        settle_seconds=settle_seconds,
+        settle_max_wait_seconds=settle_max_wait_seconds,
+        max_pdf_bytes=int(config.extract.security.max_local_pdf_bytes),
+    )
+    if scan_error:
+        reason, _, message = scan_error.partition(":")
+        return _codex_ingest_failure(
+            paths,
+            doi=doi,
+            failure_reason=reason or "watch_dir_error",
+            message=message or scan_error,
+            watch_dir=watch_dir,
+            rejected_candidates=rejected,
+        )
+
+    if not candidates:
+        failure_reason = _dominant_codex_failure_reason(rejected)
+        return _codex_ingest_failure(
+            paths,
+            doi=doi,
+            failure_reason=failure_reason,
+            message="No acceptable Codex handoff PDF candidate was found.",
+            watch_dir=watch_dir,
+            rejected_candidates=rejected,
+        )
+
+    if len(candidates) > 1:
+        token_input = json.dumps(
+            {"doi": doi, "candidates": [candidate["path"] for candidate in candidates]},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        disambiguation_token = hashlib.sha1(token_input.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+        recorded = _record_codex_ingest_receipt(
+            paths,
+            doi=doi,
+            status="needs_disambiguation",
+            failure_reason="multiple_candidates",
+            message="Multiple acceptable Codex handoff PDF candidates were found; no DOI guess was made.",
+            context={
+                "watch_dir": str(watch_dir),
+                "candidates": candidates,
+                "rejected_candidates": rejected,
+                "disambiguation_token": disambiguation_token,
+                "next_action": "call_ingest_codex_downloaded_pdf_with_file_name_hint",
+            },
+        )
+        return {
+            "status": "needs_disambiguation",
+            "doi": doi,
+            "failure_reason": "multiple_candidates",
+            "message": "Multiple acceptable Codex handoff PDF candidates were found; no DOI guess was made.",
+            "watch_dir": str(watch_dir),
+            "candidates": candidates,
+            "rejected_candidates": rejected,
+            "disambiguation_token": disambiguation_token,
+            "next_action": "call_ingest_codex_downloaded_pdf_with_file_name_hint",
+            **recorded,
+        }
+
+    candidate = candidates[0]
+    source_path = Path(str(candidate["path"]))
+    source_hash = str(candidate["source_pdf_hash"])
+    verify_hash, _, _, verify_error = _read_candidate_pdf_hash(
+        source_path,
+        max_bytes=int(config.extract.security.max_local_pdf_bytes),
+    )
+    if verify_error or verify_hash != source_hash:
+        return _codex_ingest_failure(
+            paths,
+            doi=doi,
+            failure_reason="hash_changed",
+            message="Codex handoff PDF changed before parse/save.",
+            watch_dir=watch_dir,
+            candidates=[candidate],
+            rejected_candidates=rejected,
+            extra={"source_path": str(source_path), "source_pdf_hash": source_hash},
+        )
+
+    parse_receipt = await parse_pdf_file(
+        file_path=str(source_path),
+        expected_title=expected_title,
+        doi=doi,
+        copy_to_library=True,
+        acquisition_via="codex",
+    )
+    if not parse_receipt.startswith("## PDF Parsed & Saved"):
+        return _codex_ingest_failure(
+            paths,
+            doi=doi,
+            failure_reason="parse_failed",
+            message="Codex handoff PDF candidate was found but parsing or canonical save failed.",
+            watch_dir=watch_dir,
+            candidates=[candidate],
+            rejected_candidates=rejected,
+            extra={
+                "source_path": str(source_path),
+                "source_pdf_hash": source_hash,
+                "parse_receipt": parse_receipt,
+            },
+        )
+
+    archived_pdf_path = paths.downloads / f"{safe_doi_filename(doi)}.pdf"
+    return {
+        "status": "success",
+        "doi": doi,
+        "source_path": str(source_path),
+        "archived_pdf_path": str(archived_pdf_path),
+        "source_pdf_hash": source_hash,
+        "watch_dir": str(watch_dir),
+        "candidate": candidate,
+        "rejected_candidates": rejected,
+        "parse_receipt": parse_receipt,
+        "fetch_status": "fulltext" if "Fetch Status:** fulltext" in parse_receipt else "partial_success",
+        "next_action": "read_saved_paper_or_get_saved_paper_structure",
+    }
 
 
 async def read_paper_asset(
@@ -1214,6 +1765,14 @@ def register_library_tools(mcp: FastMCP) -> None:
             "Returns a summary plus the first 25 item results."
         )
     )(import_local_pdf_library)
+
+    mcp.tool(
+        description=(
+            "After extract_paper_full_text returns a Codex Chrome Extension handoff, conservatively scan the "
+            "configured watch directory for one completed PDF, validate it, then save it through the same "
+            "codex parse/canonical-storage path. Use parse_pdf_file directly when the absolute PDF path is known."
+        )
+    )(ingest_codex_downloaded_pdf)
 
     mcp.tool(
         description=(

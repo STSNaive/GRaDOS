@@ -29,7 +29,9 @@ from grados._retry import (
     _parse_ratelimit_reset_seconds,
     _parse_retry_after_seconds,
     current_browser_networkidle_timeout_ms,
+    current_browser_pdf_backfill_timeout_ms,
     current_browser_poll_bounds,
+    current_fetch_timeout,
     current_pdf_timeout,
     current_search_timeout,
     http_retry,
@@ -279,8 +281,14 @@ def test_runtime_policy_reflects_config_edits() -> None:
                 update={
                     "fetch_connect_timeout": 8.0,
                     "fetch_read_timeout": 90.0,
+                    "pdf_read_timeout": 180.0,
                     "headless_browser": cfg.extract.headless_browser.model_copy(
-                        update={"networkidle_timeout": 7.5, "poll_min_seconds": 0.25, "poll_max_seconds": 1.0}
+                        update={
+                            "networkidle_timeout": 7.5,
+                            "pdf_backfill_timeout": 45.0,
+                            "poll_min_seconds": 0.25,
+                            "poll_max_seconds": 1.0,
+                        }
                     ),
                 }
             ),
@@ -290,9 +298,31 @@ def test_runtime_policy_reflects_config_edits() -> None:
     try:
         assert current_search_timeout().connect == 5.0
         assert current_search_timeout().read == 20.0
-        assert current_pdf_timeout().read == 90.0
+        assert current_fetch_timeout().read == 90.0
+        assert current_pdf_timeout().read == 180.0
         assert current_browser_networkidle_timeout_ms() == 7500
+        assert current_browser_pdf_backfill_timeout_ms() == 45000
         assert current_browser_poll_bounds() == (0.25, 1.0)
+    finally:
+        install_runtime_defaults(None)
+
+
+def test_pdf_timeout_is_split_from_fetch_read_timeout() -> None:
+    cfg = GRaDOSConfig()
+    cfg = cfg.model_copy(
+        update={
+            "extract": cfg.extract.model_copy(
+                update={
+                    "fetch_read_timeout": 70.0,
+                    "pdf_read_timeout": 140.0,
+                }
+            )
+        }
+    )
+    install_runtime_defaults(cfg)
+    try:
+        assert current_fetch_timeout().read == 70.0
+        assert current_pdf_timeout().read == 140.0
     finally:
         install_runtime_defaults(None)
 

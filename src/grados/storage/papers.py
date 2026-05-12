@@ -247,6 +247,7 @@ class PaperStructureResult:
     section_headings: list[str]
     section_outline: list[PaperSectionOutlineEntry]
     assets_summary: PaperAssetsSummary
+    parsed_summary: PaperParsedSummary
 
 
 @dataclass(frozen=True)
@@ -262,6 +263,7 @@ class PaperRecord:
     journal: str
     section_headings: list[str]
     assets_manifest_path: str
+    parsed_manifest_path: str
     word_count: int
     char_count: int
     content_markdown: str
@@ -302,6 +304,20 @@ class PaperAssetsSummary:
     asset_refs: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class PaperParsedSummary:
+    has_parsed_manifest: bool
+    manifest_path: str = ""
+    schema_version: int = 1
+    parser: str = ""
+    parser_version: str = ""
+    block_count: int = 0
+    page_range: str = ""
+    has_source_pdf_hash: bool = False
+    has_canonical_markdown_hash: bool = False
+    assets_manifest_path: str = ""
+
+
 def load_paper_record(
     papers_dir: Path,
     doi: str | None = None,
@@ -338,6 +354,7 @@ def load_paper_record(
         journal=metadata.get("journal", ""),
         section_headings=headings,
         assets_manifest_path=metadata.get("assets_manifest_path", ""),
+        parsed_manifest_path=metadata.get("parsed_manifest_path", ""),
         word_count=len(content.split()),
         char_count=len(content),
         content_markdown=content,
@@ -441,6 +458,7 @@ def get_paper_structure(
         section_headings=headings[:20],
         section_outline=_build_section_outline(paragraphs),
         assets_summary=_load_assets_summary(papers_dir, record),
+        parsed_summary=_load_parsed_summary(papers_dir, record),
     )
 
 
@@ -623,6 +641,33 @@ def _load_assets_summary(papers_dir: Path, record: PaperRecord) -> PaperAssetsSu
     )
 
 
+def _load_parsed_summary(papers_dir: Path, record: PaperRecord) -> PaperParsedSummary:
+    manifest_path = record.parsed_manifest_path or ""
+    if not manifest_path:
+        return PaperParsedSummary(has_parsed_manifest=False)
+
+    from grados.storage.parsed_sidecar import parsed_manifest_summary
+
+    summary = parsed_manifest_summary(papers_dir, manifest_path)
+    return PaperParsedSummary(
+        has_parsed_manifest=summary.has_parsed_manifest,
+        manifest_path=summary.manifest_path,
+        schema_version=summary.schema_version,
+        parser=summary.parser,
+        parser_version=summary.parser_version,
+        block_count=summary.block_count,
+        page_range=summary.page_range,
+        has_source_pdf_hash=summary.has_source_pdf_hash,
+        has_canonical_markdown_hash=summary.has_canonical_markdown_hash,
+        assets_manifest_path=summary.assets_manifest_path,
+    )
+
+
+def resolve_safe_doi_for_write(papers_dir: Path, doi: str) -> str:
+    """Return the collision-safe paper id that `save_paper_markdown` will use."""
+    return _safe_doi_for_write(papers_dir, doi)
+
+
 def list_saved_papers(papers_dir: Path, chroma_dir: Path | None = None) -> list[PaperListEntry]:
     """List all saved papers with basic metadata."""
     _ = chroma_dir
@@ -653,6 +698,8 @@ def _prepend_front_matter(markdown: str, record: PaperRecord) -> str:
     })
     if record.assets_manifest_path:
         extra["assets_manifest_path"] = record.assets_manifest_path
+    if record.parsed_manifest_path:
+        extra["parsed_manifest_path"] = record.parsed_manifest_path
 
     front = build_front_matter(
         doi=record.doi,

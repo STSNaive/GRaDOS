@@ -28,26 +28,34 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 2. 按配置好的优先级检索远程学术数据库
 3. 可选用 Unpaywall 解析 OA 位置，再按配置好的 `api`、`browser`、可选 `codex` 与 `scihub` 路径抓取全文
 4. 按 `Docling -> MinerU -> Marker -> PyMuPDF` 瀑布解析 PDF
-5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把论文索引写入 `database/chroma/`，把远程元数据写入 `database/remote_metadata/`
+5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把 parser provenance sidecar 保存到 `papers/_parsed/`，把 parser assets 保存到 `papers/_assets/`，把语义索引写入 `database/chroma/`，把词法 FTS fallback 写入 `database/fts.sqlite3`，把远程元数据写入 `database/remote_metadata/`
 6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
 
 外层 agent 可以用自己的 host model 规划查询、筛选候选、重排 anchor、判断支持关系并综合写作。GRaDOS 工具不会直接调用该模型：snippet、score、evidence grid、comparison 和 audit 结果都只是导航材料，只有用 `read_saved_paper` 回读 canonical 段落窗口后，才能作为引用证据。
+
+需要跨对话或交接保持引用依据时，用 `prepare_evidence_pack` 从 `papers/*.md` materialize canonical blocks。只有 `verify_evidence_pack` 返回 `current_valid=true` 的 pack 才能作为当前引用证据；strict pack audit 不会临时全库搜索来悄悄补证。
 
 ### MCP 工具 🔧
 
 | 服务 | 工具 | 说明 |
 | --- | --- | --- |
 | GRaDOS | `search_academic_papers` | 检索远程学术数据库中的论文元数据，支持 DOI 去重、continuation token 续查，并暴露本地保存/全文/summary 状态。可选 `indepth=true` 会用同一个 `limit` materialize 返回候选；默认配置关闭。 |
-| GRaDOS | `search_saved_papers` | 检索本地已保存论文库，支持语义检索、metadata 过滤与可选词法 reranking。返回的 snippet 和 Evidence Anchor JSON block 只是筛选/重排线索，不是最终引用证据。 |
+| GRaDOS | `search_saved_papers` | 检索本地已保存论文库，支持语义检索、SQLite FTS/BM25 fallback、exact lookup、metadata 过滤与 hybrid RRF。返回的 snippet 和 Evidence Anchor JSON block 只是筛选/重排线索，不是最终引用证据。 |
 | GRaDOS | `extract_paper_full_text` | 按 DOI 抓取、解析并保存单篇论文的 canonical 全文。返回的是包含 URI、文件路径、章节和 warning 的紧凑保存回执，而不是全文正文。 |
 | GRaDOS | `read_saved_paper` | 从单篇已保存论文中读取段落窗口，用于 canonical 深读与引用核验。可通过 DOI、safe DOI 或 `grados://papers/...` URI 定位论文。 |
-| GRaDOS | `get_saved_paper_structure` | 返回单篇论文的低 token 结构卡片，包含预览、章节标题与资产摘要。适合深读前筛选，不应替代最终引用依据。 |
+| GRaDOS | `get_saved_paper_structure` | 返回单篇论文的低 token 结构卡片，包含预览、章节标题、资产摘要，以及可用时的 parser provenance summary。适合深读前筛选，不应替代最终引用依据。 |
 | GRaDOS | `read_paper_asset` | 列出或读取已保存论文的 parser assets，包括图片、表格、公式、页面图和 debug/source 文件。图片只在显式请求且低于尺寸上限时内联返回。 |
 | GRaDOS | `import_local_pdf_library` | 把本地 PDF 文件或目录导入 canonical 论文库与检索索引。返回导入摘要以及前 25 条条目结果。 |
 | GRaDOS | `parse_pdf_file` | 把本地 PDF 解析为 markdown。未提供 DOI 时返回截断预览；提供 DOI 时会保存进 canonical 论文库并返回保存回执。 |
+| GRaDOS | `ingest_codex_downloaded_pdf` | 完成挂起的 `codex` Chrome extension handoff：扫描配置的 watch dir，找到唯一通过校验的 PDF，然后复用 `parse_pdf_file(..., copy_to_library=true, acquisition_via="codex")` 入库；歧义或失败会记录为可恢复失败。 |
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 把单篇论文保存到当前配置的 Zotero 库，通常用于最终答案里实际引用到的论文。 |
 | GRaDOS | `save_research_artifact` | 把 search snapshot、extraction receipt、evidence grid、compression-safe evidence checkpoint 等可复用中间产物持久化到本地 SQLite 状态库。 |
 | GRaDOS | `query_research_artifacts` | 按 id、kind 或关键词查询已保存的 research artifact；`detail=true` 会返回完整内容。 |
+| GRaDOS | `prepare_evidence_pack` | 召回候选 anchor，回读 `papers/*.md` 中的 canonical blocks，并持久化最小 `evidence_pack` artifact，包含 pack hash、block hash 和 answerability 状态。 |
+| GRaDOS | `read_evidence_pack` | 通过 pack id 或 artifact id 恢复已保存的 evidence pack。 |
+| GRaDOS | `verify_evidence_pack` | 从当前 `papers/*.md` 重建 canonical block manifest，并报告 snapshot/current validity、missing paper、document change、relocation 和 hash mismatch。 |
+| GRaDOS | `audit_answer_against_pack` | 只使用单个 pack 内的 evidence items 审计草稿 claims，不会全库搜索来填补缺口。 |
+| GRaDOS | `suggest_missing_evidence` | 针对 pack audit 中 unsupported 或 weak 的 claim 给出后续补证查询建议，不改变 strict audit 结论。 |
 | GRaDOS | `manage_failure_cases` | 记录、查询并总结 fetch、parse、search 或 citation 失败案例，也能给出保守的重试建议。 |
 | GRaDOS | `get_citation_graph` | 返回本地论文库中的轻量引用关系，包括引用邻居、共同参考文献和反向 citing-paper 查询。 |
 | GRaDOS | `get_papers_full_context` | 为少量论文返回结构化全文上下文，可先拿 token 估计，也可直接进入 CAG 风格的深读模式。 |
@@ -72,9 +80,13 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | --- | --- | --- |
 | `config.json` | 运行时配置 | 整个安装共用的单一配置文件 |
 | `papers/` | 带 YAML front-matter 的 canonical Markdown 论文 | 深读、结构卡片与检索 |
+| `papers/_parsed/` | 以 safe DOI 命名的 parser provenance sidecar | PDF/parser provenance、source/canonical hash、block mapping 和 asset manifest 指针；不是引用正文 |
+| `papers/_assets/` | Parser 生成的资产和 manifest | 图片、表格、公式、页面图和 source/debug assets，通过 `read_paper_asset` 读取；不作为正文索引 |
 | `downloads/` | 原始 `.pdf` 文件 | 抓取或导入后的归档副本 |
 | `database/chroma/` | ChromaDB collections | 内置语义检索存储 |
+| `database/fts.sqlite3` | 可重建 SQLite FTS5/BM25 索引 | 确定性词法 fallback 与 hybrid retrieval 候选生成 |
 | `database/remote_metadata/` | ChromaDB collection | 远程论文 metadata、fetch 状态与浏览器恢复缓存 |
+| `database/research.sqlite3` | Research artifacts 与 failure memory | Evidence packs、checkpoints、extraction receipts 和可恢复失败记录 |
 | `research_checkpoints/` | `checkpoint.json` 与渲染后的 `checkpoint.md` | 可恢复的 indepth 研究工作流状态 |
 | `paper_summaries/` | query-independent 的派生论文 summary | 导航与上下文恢复，不能作为引用依据 |
 | `browser/` | 托管 Chromium、profile、extensions | publisher PDF 访问所需的 `browser` 策略资产 |
@@ -223,7 +235,7 @@ codex
 GRaDOS 仓库仍然自带配套 skill，位置在 `skills/grados/`。现在更推荐优先使用上面的 `grados client install ...` 本地安装路径；plugin 安装适合你明确想走原生 plugin 包装时使用。
 
 - `skills/grados/SKILL.md` 对应当前 `search -> structure -> deep read -> cite -> verify` 工作流
-- `skills/grados/references/tools.md` 记录当前 16 个工具和 2 个资源
+- `skills/grados/references/tools.md` 记录当前 MCP 工具和 2 个资源
 - `skills/grados/agents/openai.yaml` 声明了面向 OpenAI / Codex 的 `grados` MCP 依赖
 
 Codex 和 Claude Code 使用的是同一种 skill 目录形状，也就是 `<skills-root>/grados/SKILL.md`，并共享同一套目录下的辅助文件。区别只在 skills 根目录：
@@ -252,8 +264,9 @@ cp -R skills/grados "<skills-root>/"
 ### 超时与重试
 
 - `search`: `connect_timeout`, `read_timeout`
-- `extract`: `fetch_connect_timeout`, `fetch_read_timeout`
-- `extract.headless_browser`: `browser` 策略的 legacy 命名配置段（`deadline_seconds`, `networkidle_timeout`, `poll_min_seconds`, `poll_max_seconds`）
+- `extract`: `fetch_connect_timeout`, `fetch_read_timeout`, `pdf_read_timeout`
+- `extract.headless_browser`: `browser` 策略的 legacy 命名配置段（`deadline_seconds`, `networkidle_timeout`, `pdf_backfill_timeout`, `poll_min_seconds`, `poll_max_seconds`）
+- `extract.codex_handoff`: 只服务 `codex` Chrome extension handoff 之后的 watch-dir ingest（`download_watch_dir`, `download_max_age_seconds`, `download_settle_seconds`, `download_settle_max_wait_seconds`, `download_scan_recursive`）
 - `retry_policy`: `max_attempts`, `max_wait`, `respect_retry_after`
 
 ### 尺寸保护
@@ -275,6 +288,7 @@ cp -R skills/grados "<skills-root>/"
 | `grados client remove claude|codex|all` | 从一个或多个客户端移除 GRaDOS 的 MCP 注册和内置 skills |
 | `grados auth set/status/migrate/clear` | 在系统 keychain 中管理各 provider 的 API Key |
 | `grados import-pdfs --from /path/to/papers --recursive` | 把已有 PDF 文件夹导入 canonical 论文库 |
+| `grados eval-retrieval --fixture cases.jsonl` | 用本地 golden cases 评测 saved-paper retrieval；默认跑 dense、FTS/BM25、exact lookup 和 RRF，可用 `--dense-only` 调试旧模式 |
 | `grados status` | 查看配置、依赖、运行时资产和 API Key 状态 |
 | `grados paths` | 查看当前解析到的 GRaDOS 文件布局 |
 | `grados update-db` | 在当前 indexing 配置不变时，增量刷新 `papers/` 对应的 ChromaDB 索引 |

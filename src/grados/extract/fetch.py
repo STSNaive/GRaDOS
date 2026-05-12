@@ -8,6 +8,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol, cast
 from urllib.parse import urljoin, urlsplit
 
@@ -15,7 +16,13 @@ import httpx
 from bs4 import BeautifulSoup
 
 from grados._retry import current_fetch_timeout, current_pdf_timeout, http_retry
-from grados.config import DEFAULT_SCI_HUB_ENDPOINT, FetchStrategyConfig, GRaDOSPaths, HeadlessBrowserConfig
+from grados.config import (
+    DEFAULT_SCI_HUB_ENDPOINT,
+    CodexHandoffConfig,
+    FetchStrategyConfig,
+    GRaDOSPaths,
+    HeadlessBrowserConfig,
+)
 from grados.http_limits import (
     DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
     DEFAULT_MAX_REMOTE_PDF_BYTES,
@@ -65,6 +72,7 @@ class FetchStrategyContext:
     headless_config: HeadlessBrowserConfig | None
     paths: GRaDOSPaths | None
     browser_resume: dict[str, str] | None
+    codex_handoff_config: CodexHandoffConfig | None = None
     unpaywall: UnpaywallResolution | None = None
     max_remote_pdf_bytes: int = DEFAULT_MAX_REMOTE_PDF_BYTES
     max_remote_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES
@@ -191,6 +199,10 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
 
 
 async def _run_codex_fetch_strategy(context: FetchStrategyContext) -> FetchResult:
+    codex_handoff = context.codex_handoff_config or CodexHandoffConfig()
+    issued_at = datetime.now(UTC).isoformat()
+    download_watch_dir = str(Path(codex_handoff.download_watch_dir).expanduser())
+    download_max_age_seconds = str(int(codex_handoff.download_max_age_seconds))
     start_url = _unpaywall_selected_url(context.unpaywall) or f"https://doi.org/{context.doi}"
     start_url_source = (
         context.unpaywall.selected_url_source
@@ -210,14 +222,20 @@ async def _run_codex_fetch_strategy(context: FetchStrategyContext) -> FetchResul
             "browser": "Google Chrome",
             "start_url": start_url,
             "start_url_source": start_url_source,
-            "action": "download_pdf_with_chrome_extension_then_call_parse_pdf_file",
+            "issued_at": issued_at,
+            "download_watch_dir": download_watch_dir,
+            "download_max_age_seconds": download_max_age_seconds,
+            "action": "download_pdf_with_chrome_extension_then_call_ingest_codex_downloaded_pdf",
+            "next_action": "download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf",
+            "fallback_action": "call_parse_pdf_file_with_known_pdf_path",
             "extension": "Codex Chrome extension",
             "documentation_url": CODEX_CHROME_EXTENSION_DOCS_URL,
         },
         warnings=[
             (
                 "Codex Chrome extension is a host-agent step. Use Chrome with the Codex extension "
-                "to download the PDF, then call parse_pdf_file with the downloaded file path and "
+                "to download the PDF, then call ingest_codex_downloaded_pdf. If the agent already "
+                "knows the absolute PDF path, call parse_pdf_file with the downloaded file path and "
                 "the same DOI."
             )
         ],
@@ -494,6 +512,7 @@ async def fetch_paper(
     headless_config: HeadlessBrowserConfig | None = None,
     paths: GRaDOSPaths | None = None,
     browser_resume: dict[str, str] | None = None,
+    codex_handoff_config: CodexHandoffConfig | None = None,
     unpaywall_enabled: bool = True,
     max_remote_pdf_bytes: int = DEFAULT_MAX_REMOTE_PDF_BYTES,
     max_remote_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
@@ -521,6 +540,7 @@ async def fetch_paper(
             headless_config=headless_config,
             paths=paths,
             browser_resume=browser_resume,
+            codex_handoff_config=codex_handoff_config,
             max_remote_pdf_bytes=max_remote_pdf_bytes,
             max_remote_text_bytes=max_remote_text_bytes,
             max_browser_capture_bytes=max_browser_capture_bytes,

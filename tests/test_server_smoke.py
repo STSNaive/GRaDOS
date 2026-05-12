@@ -38,6 +38,7 @@ def test_server_registers_expected_tools() -> None:
     tool_names = sorted(tool.name for tool in tools)
 
     assert tool_names == [
+        "audit_answer_against_pack",
         "audit_draft_support",
         "build_evidence_grid",
         "compare_papers",
@@ -46,15 +47,20 @@ def test_server_registers_expected_tools() -> None:
         "get_papers_full_context",
         "get_saved_paper_structure",
         "import_local_pdf_library",
+        "ingest_codex_downloaded_pdf",
         "manage_failure_cases",
         "parse_pdf_file",
+        "prepare_evidence_pack",
         "query_research_artifacts",
+        "read_evidence_pack",
         "read_paper_asset",
         "read_saved_paper",
         "save_paper_to_zotero",
         "save_research_artifact",
         "search_academic_papers",
         "search_saved_papers",
+        "suggest_missing_evidence",
+        "verify_evidence_pack",
     ]
 
 
@@ -942,7 +948,11 @@ def test_extract_paper_full_text_returns_codex_action(
                 "doi": "10.1234/demo",
                 "browser": "Google Chrome",
                 "start_url": "https://doi.org/10.1234/demo",
-                "action": "download_pdf_with_chrome_extension_then_call_parse_pdf_file",
+                "issued_at": "2026-05-11T00:00:00+00:00",
+                "download_watch_dir": str(tmp_path / "Downloads"),
+                "download_max_age_seconds": "900",
+                "action": "download_pdf_with_chrome_extension_then_call_ingest_codex_downloaded_pdf",
+                "next_action": "download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf",
                 "documentation_url": "https://developers.openai.com/codex/app/chrome-extension",
             },
             warnings=["Codex Chrome extension host action required"],
@@ -960,6 +970,7 @@ def test_extract_paper_full_text_returns_codex_action(
     assert "Codex Chrome Extension Download" in result
     assert "Google Chrome" in result
     assert "https://developers.openai.com/codex/app/chrome-extension" in result
+    assert "ingest_codex_downloaded_pdf(doi=...)" in result
     assert "parse_pdf_file(file_path=..., doi=..., copy_to_library=true" in result
     assert "Manual Browser Resume" not in result
     assert len(calls) == 1
@@ -970,6 +981,10 @@ def test_extract_paper_full_text_returns_codex_action(
     assert isinstance(calls[0]["fetch_resume"], dict)
     assert calls[0]["fetch_resume"]["kind"] == "codex"
     assert calls[0]["fetch_resume"]["browser"] == "Google Chrome"
+    assert (
+        calls[0]["fetch_resume"]["next_action"]
+        == "download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf"
+    )
     assert calls[0]["has_fulltext"] is False
 
 

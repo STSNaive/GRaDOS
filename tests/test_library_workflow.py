@@ -6,6 +6,7 @@ from pathlib import Path
 from grados.config import GRaDOSPaths, IndexingConfig
 from grados.extract.parse import ParsePipelineResult
 from grados.publisher.common import safe_doi_filename
+from grados.storage.frontmatter import read_frontmatter_metadata
 from grados.workflows.library import (
     LibraryDocumentArtifact,
     build_library_document_artifact,
@@ -96,6 +97,11 @@ def test_review_and_persist_library_document_applies_shared_contracts(
     assert persisted.index_warning_added is True
     assert Path(persisted.summary.file_path).is_file()
     assert persisted.asset_manifest_path == f"_assets/{safe_doi_filename('10.1234/demo')}.json"
+    saved_metadata = read_frontmatter_metadata(Path(persisted.summary.file_path).read_text(encoding="utf-8"))
+    parsed_manifest_path = saved_metadata["parsed_manifest_path"]
+    parsed_manifest = paths.papers / parsed_manifest_path
+    assert parsed_manifest.is_file()
+    assert parsed_manifest_path == f"_parsed/{safe_doi_filename('10.1234/demo')}.json"
     assert persisted.warnings == [
         "fetch warning",
         "parser emitted partial text",

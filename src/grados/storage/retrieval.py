@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from grados.storage.chroma_client import filter_query_result, query_collection
@@ -29,6 +29,15 @@ class PaperSearchResult:
     paragraph_start: int = 0
     paragraph_count: int = 0
     snippet: str = ""
+    block_id: str = ""
+    block_type: str = ""
+    heading_path: str = ""
+    mode: str = "dense"
+    retriever: str = "dense"
+    rank: int = 0
+    retrieval_score: float = 0.0
+    query: str = ""
+    trace: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -118,6 +127,15 @@ def build_search_result(
     paragraph_start: int = 0,
     paragraph_count: int = 0,
     snippet: str = "",
+    block_id: str = "",
+    block_type: str = "",
+    heading_path: str = "",
+    mode: str = "dense",
+    retriever: str = "dense",
+    rank: int = 0,
+    retrieval_score: float = 0.0,
+    query: str = "",
+    trace: dict[str, Any] | None = None,
 ) -> PaperSearchResult:
     return PaperSearchResult(
         doi=str(record.get("doi", "")),
@@ -137,6 +155,15 @@ def build_search_result(
         paragraph_start=paragraph_start,
         paragraph_count=paragraph_count,
         snippet=snippet,
+        block_id=block_id,
+        block_type=block_type,
+        heading_path=heading_path,
+        mode=mode,
+        retriever=retriever,
+        rank=rank,
+        retrieval_score=retrieval_score or score,
+        query=query,
+        trace=trace or {},
     )
 
 

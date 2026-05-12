@@ -6,8 +6,11 @@ import asyncio
 import json
 import shutil
 import sys
+import time
+from collections.abc import Callable, Sequence
 from importlib.metadata import version as pkg_version
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
@@ -788,6 +791,7 @@ def paths() -> None:
 def update_db() -> None:
     """Batch-index papers/ into ChromaDB for semantic search."""
     from grados.storage.embedding import inspect_embedding_runtime
+    from grados.storage.fts import ensure_fts_index
     from grados.storage.vector import get_index_stats, index_all_papers
 
     paths = GRaDOSPaths()
@@ -836,6 +840,8 @@ def update_db() -> None:
 
     stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
     console.print(f"  数据库总计: {stats.unique_papers} 篇 / {stats.total_chunks} 块")
+    fts_stats = ensure_fts_index(papers_dir=paths.papers, chroma_dir=paths.database_chroma, force=True)
+    console.print(f"  FTS/BM25: {fts_stats.paper_count} 篇 / {fts_stats.block_count} 块")
     console.print()
 
 
@@ -843,6 +849,7 @@ def update_db() -> None:
 def reindex() -> None:
     """Rebuild the entire semantic index from scratch for the active embedding config."""
     from grados.storage.embedding import inspect_embedding_runtime
+    from grados.storage.fts import ensure_fts_index
     from grados.storage.remote_metadata import migrate_remote_metadata_store
     from grados.storage.vector import get_index_stats, index_all_papers
 
@@ -904,7 +911,281 @@ def reindex() -> None:
     stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
     console.print(f"  已重建 [bold]{papers_indexed}[/bold] 篇论文，共 [bold]{total_chunks}[/bold] 个文本块")
     console.print(f"  当前索引: {stats.unique_papers} 篇 / {stats.total_chunks} 块")
+    fts_stats = ensure_fts_index(papers_dir=paths.papers, chroma_dir=paths.database_chroma, force=True)
+    console.print(f"  FTS/BM25: {fts_stats.paper_count} 篇 / {fts_stats.block_count} 块")
     console.print()
+
+
+@main.command("eval-retrieval")
+@click.option(
+    "--fixture",
+    "fixture_path",
+    required=True,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="JSONL retrieval eval fixture.",
+)
+@click.option("--k", default=5, show_default=True, type=click.IntRange(1, 50), help="Metric cutoff.")
+@click.option("--limit", default=10, show_default=True, type=click.IntRange(1, 50), help="Search limit per case.")
+@click.option("--dense-only", is_flag=True, help="Use dense_only mode instead of hybrid/RRF.")
+@click.option("--json-output", is_flag=True, help="Print machine-readable JSON.")
+def eval_retrieval(fixture_path: Path, k: int, limit: int, dense_only: bool, json_output: bool) -> None:
+    """Evaluate saved-paper retrieval against a JSONL fixture."""
+    from grados.storage.papers import read_paper
+    from grados.storage.search_pipeline import search_saved_library
+
+    paths = GRaDOSPaths()
+    config = load_config(paths)
+    install_runtime_defaults(config)
+    cases = _load_retrieval_fixture(fixture_path)
+    if not cases:
+        raise click.ClickException(f"No retrieval cases found in {fixture_path}")
+
+    per_case: list[dict[str, object]] = []
+    recall_hits = 0
+    reciprocal_rank_total = 0.0
+    answerable_cases = 0
+    block_hit_cases = 0
+    block_eval_cases = 0
+    no_answer_cases = 0
+    no_answer_false_positives = 0
+    verify_checks = 0
+    verify_passes = 0
+    started = time.perf_counter()
+
+    for case in cases:
+        question = str(case.get("question", "")).strip()
+        if not question:
+            continue
+        case_started = time.perf_counter()
+        pipeline_result = search_saved_library(
+            chroma_dir=paths.database_chroma,
+            papers_dir=paths.papers,
+            query=question,
+            limit=limit,
+            use_reranking=not dense_only,
+            indexing_config=config.indexing,
+        )
+        results = pipeline_result.results[:k]
+        elapsed_ms = (time.perf_counter() - case_started) * 1000
+        answerable = _case_answerable(case)
+        first_paper_rank = _first_paper_hit_rank(results, case.get("gold_papers", []))
+        block_hit = _case_block_hit(results, case)
+        has_block_gold = bool(case.get("gold_blocks") or case.get("acceptable_windows"))
+        verified = _verify_result_windows(results, paths.papers, read_paper)
+
+        if answerable:
+            answerable_cases += 1
+            if first_paper_rank is not None:
+                recall_hits += 1
+                reciprocal_rank_total += 1.0 / first_paper_rank
+            if has_block_gold:
+                block_eval_cases += 1
+                if block_hit:
+                    block_hit_cases += 1
+        else:
+            no_answer_cases += 1
+            if results:
+                no_answer_false_positives += 1
+
+        if results:
+            verify_checks += 1
+            if verified:
+                verify_passes += 1
+
+        per_case.append(
+            {
+                "question": question,
+                "answerable": answerable,
+                "mode": pipeline_result.mode,
+                "retrievers": pipeline_result.retrievers,
+                "recall_hit": first_paper_rank is not None,
+                "first_paper_rank": first_paper_rank,
+                "block_hit": block_hit if has_block_gold else None,
+                "verify_window_readable": verified if results else None,
+                "latency_ms": round(elapsed_ms, 2),
+                "top_results": [
+                    {
+                        "rank": result.rank or index,
+                        "doi": result.doi,
+                        "safe_doi": result.safe_doi,
+                        "block_id": result.block_id,
+                        "paragraph_start": result.paragraph_start,
+                        "paragraph_count": result.paragraph_count,
+                        "score": round(float(result.score or 0.0), 8),
+                        "mode": result.mode,
+                        "retriever": result.retriever,
+                    }
+                    for index, result in enumerate(results, 1)
+                ],
+                "warnings": pipeline_result.warnings,
+            }
+        )
+
+    total_elapsed_ms = (time.perf_counter() - started) * 1000
+    latency_values = [_float_metric(case.get("latency_ms", 0.0)) for case in per_case]
+    summary = {
+        "cases": len(per_case),
+        "answerable_cases": answerable_cases,
+        "recall_at_k": _safe_ratio(recall_hits, answerable_cases),
+        "mrr_at_k": _safe_ratio(reciprocal_rank_total, answerable_cases),
+        "block_hit_rate": _safe_ratio(block_hit_cases, block_eval_cases),
+        "no_answer_cases": no_answer_cases,
+        "no_answer_false_positive_rate": _safe_ratio(no_answer_false_positives, no_answer_cases),
+        "verify_window_readable_rate": _safe_ratio(verify_passes, verify_checks),
+        "latency_ms_avg": _safe_ratio(sum(latency_values), len(per_case)),
+        "latency_ms_total": round(total_elapsed_ms, 2),
+        "mode": "dense_only" if dense_only else "hybrid_rrf",
+        "k": k,
+    }
+    payload = {"summary": summary, "cases": per_case}
+
+    if json_output:
+        console.print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    console.print()
+    console.print("[bold]GRaDOS Retrieval Eval[/bold]")
+    console.print(f"fixture: [cyan]{fixture_path}[/cyan]")
+    console.print(f"k: [cyan]{k}[/cyan]  |  mode: [cyan]{summary['mode']}[/cyan]")
+    table = Table(show_header=True)
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    for key in (
+        "cases",
+        "answerable_cases",
+        "recall_at_k",
+        "mrr_at_k",
+        "block_hit_rate",
+        "no_answer_false_positive_rate",
+        "verify_window_readable_rate",
+        "latency_ms_avg",
+    ):
+        value = summary[key]
+        table.add_row(key, f"{value:.4f}" if isinstance(value, float) else str(value))
+    console.print(table)
+    console.print()
+
+
+def _load_retrieval_fixture(path: Path) -> list[dict[str, object]]:
+    cases: list[dict[str, object]] = []
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            loaded = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise click.ClickException(f"Invalid JSONL at {path}:{line_number}: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise click.ClickException(f"Invalid JSONL at {path}:{line_number}: expected object")
+        cases.append(loaded)
+    return cases
+
+
+def _case_answerable(case: dict[str, object]) -> bool:
+    value = case.get("answerability", True)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"false", "no", "no-answer", "unanswerable", "insufficient"}
+
+
+def _first_paper_hit_rank(results: Sequence[object], gold_papers: object) -> int | None:
+    gold = _gold_strings(gold_papers)
+    if not gold:
+        return None
+    for index, result in enumerate(results, 1):
+        identifiers = {
+            str(getattr(result, "doi", "") or "").lower(),
+            str(getattr(result, "safe_doi", "") or "").lower(),
+            f"grados://papers/{str(getattr(result, 'safe_doi', '') or '').lower()}",
+        }
+        if identifiers & gold:
+            return index
+    return None
+
+
+def _case_block_hit(results: Sequence[object], case: dict[str, object]) -> bool:
+    gold_blocks = _gold_strings(case.get("gold_blocks", []))
+    windows = case.get("acceptable_windows", [])
+    for result in results:
+        block_id = str(getattr(result, "block_id", "") or "").lower()
+        if block_id and block_id in gold_blocks:
+            return True
+        if _window_matches(result, windows):
+            return True
+    return False
+
+
+def _window_matches(result: object, windows: object) -> bool:
+    if not isinstance(windows, list):
+        return False
+    safe_doi = str(getattr(result, "safe_doi", "") or "").lower()
+    start = int(getattr(result, "paragraph_start", 0) or 0)
+    count = int(getattr(result, "paragraph_count", 0) or 0)
+    end = start + max(0, count)
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        window_safe = str(window.get("safe_doi") or window.get("paper_id") or "").lower()
+        if window_safe and window_safe != safe_doi:
+            continue
+        window_start = int(window.get("paragraph_start", 0) or 0)
+        window_count = int(window.get("paragraph_count", 1) or 1)
+        window_end = window_start + max(0, window_count)
+        if start < window_end and window_start < end:
+            return True
+    return False
+
+
+def _verify_result_windows(
+    results: Sequence[object],
+    papers_dir: Path,
+    read_paper_func: Callable[..., Any],
+) -> bool:
+    for result in results:
+        safe_doi = str(getattr(result, "safe_doi", "") or "")
+        paragraph_count = int(getattr(result, "paragraph_count", 0) or 0)
+        if not safe_doi or paragraph_count <= 0:
+            continue
+        window = read_paper_func(
+            papers_dir=papers_dir,
+            safe_doi=safe_doi,
+            start_paragraph=int(getattr(result, "paragraph_start", 0) or 0),
+            max_paragraphs=paragraph_count,
+        )
+        return bool(window and window.text.strip())
+    return False
+
+
+def _gold_strings(values: object) -> set[str]:
+    if isinstance(values, str):
+        return {values.lower()}
+    if not isinstance(values, list):
+        return set()
+    output: set[str] = set()
+    for value in values:
+        if isinstance(value, str):
+            output.add(value.lower())
+        elif isinstance(value, dict):
+            for key in ("doi", "safe_doi", "paper_id", "canonical_uri", "block_id"):
+                if value.get(key):
+                    output.add(str(value[key]).lower())
+    return output
+
+
+def _safe_ratio(numerator: float, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(float(numerator) / denominator, 6)
+
+
+def _float_metric(value: object) -> float:
+    if isinstance(value, int | float):
+        return float(value)
+    try:
+        return float(str(value))
+    except ValueError:
+        return 0.0
 
 
 if __name__ == "__main__":

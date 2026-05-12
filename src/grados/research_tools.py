@@ -30,6 +30,15 @@ from grados.research import (
     get_citation_graph,
     get_papers_full_context,
 )
+from grados.research.evidence_pack import (
+    prepare_evidence_pack,
+    read_evidence_pack,
+    verify_evidence_pack,
+)
+from grados.research.pack_audit import (
+    audit_answer_against_pack,
+    suggest_missing_evidence,
+)
 
 __all__ = [
     "AuditCitationMarker",
@@ -54,8 +63,13 @@ __all__ = [
     "PaperComparisonResult",
     "PaperComparisonRow",
     "audit_draft_support",
+    "audit_answer_against_pack",
     "build_evidence_grid",
     "compare_papers",
     "get_citation_graph",
     "get_papers_full_context",
+    "prepare_evidence_pack",
+    "read_evidence_pack",
+    "suggest_missing_evidence",
+    "verify_evidence_pack",
 ]

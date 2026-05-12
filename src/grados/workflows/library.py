@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from grados.config import GRaDOSPaths
@@ -185,6 +186,33 @@ def persist_reviewed_library_document(
         if manifest_path:
             asset_manifest_path = manifest_path
             frontmatter["assets_manifest_path"] = manifest_path
+
+    safe_doi = ""
+    try:
+        from grados.storage.papers import resolve_safe_doi_for_write
+        from grados.storage.parsed_sidecar import save_parsed_manifest, sha256_file
+
+        safe_doi = resolve_safe_doi_for_write(paths.papers, doi)
+        source_pdf_path = copied_pdf_path or str(frontmatter.get("original_pdf_path", ""))
+        source_pdf_hash = str(frontmatter.get("source_pdf_hash", ""))
+        if not source_pdf_hash and source_pdf_path:
+            source_pdf_hash = sha256_file(Path(source_pdf_path))
+        sidecar = save_parsed_manifest(
+            paths.papers,
+            doi=doi,
+            safe_doi=safe_doi,
+            markdown=markdown_to_save,
+            parser=review.artifact.parser_used,
+            source_pdf=source_pdf_path,
+            source_pdf_hash=source_pdf_hash,
+            canonical_markdown=f"{safe_doi}.md",
+            assets_manifest_path=asset_manifest_path,
+        )
+        warnings.extend(sidecar.warnings)
+        if sidecar.manifest_path:
+            frontmatter["parsed_manifest_path"] = sidecar.manifest_path
+    except Exception as exc:
+        warnings.append(f"Parsed sidecar write failed: {exc.__class__.__name__}: {exc}")
 
     summary = save_paper_markdown(
         doi=doi,

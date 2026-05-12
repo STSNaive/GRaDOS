@@ -12,8 +12,9 @@ Design notes:
   Non-retryable errors propagate immediately.
 * Getters (`current_search_timeout`, `current_fetch_timeout`,
   `current_pdf_timeout`, `current_browser_networkidle_timeout`,
-  `current_browser_deadline`, `current_browser_poll_bounds`) return *live*
-  values, so call sites avoid capturing defaults at import time.
+  `current_browser_pdf_backfill_timeout_ms`, `current_browser_deadline`,
+  `current_browser_poll_bounds`) return *live* values, so call sites avoid
+  capturing defaults at import time.
 """
 
 from __future__ import annotations
@@ -76,13 +77,14 @@ class TimeoutPolicy:
     fetch_connect: float = 15.0
     fetch_read: float = 60.0
     pdf_connect: float = 15.0
-    pdf_read: float = 60.0
+    pdf_read: float = 120.0
 
 
 @dataclass(frozen=True)
 class BrowserTimeoutPolicy:
     deadline_seconds: float = 120.0
     networkidle_timeout_seconds: float = 15.0
+    pdf_backfill_timeout_seconds: float = 120.0
     poll_min_seconds: float = 0.5
     poll_max_seconds: float = 2.0
 
@@ -122,7 +124,7 @@ def install_runtime_defaults(config: GRaDOSConfig | None = None) -> RuntimePolic
         fetch_connect=float(config.extract.fetch_connect_timeout),
         fetch_read=float(config.extract.fetch_read_timeout),
         pdf_connect=float(config.extract.fetch_connect_timeout),
-        pdf_read=float(config.extract.fetch_read_timeout),
+        pdf_read=float(config.extract.pdf_read_timeout),
     )
     browser_cfg = config.extract.headless_browser
     poll_min = float(browser_cfg.poll_min_seconds)
@@ -137,6 +139,7 @@ def install_runtime_defaults(config: GRaDOSConfig | None = None) -> RuntimePolic
     browser = BrowserTimeoutPolicy(
         deadline_seconds=float(browser_cfg.deadline_seconds),
         networkidle_timeout_seconds=float(browser_cfg.networkidle_timeout),
+        pdf_backfill_timeout_seconds=float(browser_cfg.pdf_backfill_timeout),
         poll_min_seconds=poll_min,
         poll_max_seconds=poll_max,
     )
@@ -183,6 +186,10 @@ def current_pdf_timeout() -> httpx.Timeout:
 
 def current_browser_networkidle_timeout_ms() -> int:
     return int(_CURRENT.browser.networkidle_timeout_seconds * 1000)
+
+
+def current_browser_pdf_backfill_timeout_ms() -> int:
+    return int(_CURRENT.browser.pdf_backfill_timeout_seconds * 1000)
 
 
 def current_browser_deadline_seconds() -> float:
