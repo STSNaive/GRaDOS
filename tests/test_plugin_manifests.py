@@ -49,6 +49,7 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     mirrored_files = [
         "SKILL.md",
         "agents/openai.yaml",
+        "references/external_synthesis.md",
         "references/indepth.md",
         "references/tools.md",
     ]
@@ -59,9 +60,26 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
         )
 
     tools_reference = (canonical_skill_root / "references" / "tools.md").read_text(encoding="utf-8")
+    skill_text = (canonical_skill_root / "SKILL.md").read_text(encoding="utf-8")
+    external_synthesis_reference = (
+        canonical_skill_root / "references" / "external_synthesis.md"
+    ).read_text(encoding="utf-8")
     assert "`codex` is a disabled-by-default fetch-strategy entry" in tools_reference
-    assert "Optional ChatGPT Pro External Synthesis" in tools_reference
-    assert "single shared Chrome resource" in tools_reference
+    assert "ChatGPT Pro" not in skill_text
+    assert "references/external_synthesis.md" in skill_text
+    assert "grados external-synthesis is-enabled --quiet" in skill_text
+    assert "uvx grados external-synthesis is-enabled --quiet" in skill_text
+    assert "grados external-synthesis status --json" not in skill_text
+    assert "grados external-synthesis status --json" not in external_synthesis_reference
+    assert "same `GRADOS_HOME` as the active server" in skill_text
+    assert "exits with code 0" in external_synthesis_reference
+    assert "ChatGPT Pro" not in tools_reference
+    assert "latest/highest-capability Pro model" in external_synthesis_reference
+    assert "highest available thinking-time option" in external_synthesis_reference
+    assert "GRaDOS produces the verified evidence payload" in external_synthesis_reference
+    assert "sending the prompt, and reading the reply" in external_synthesis_reference
+    assert 'kind="external_synthesis_review"' in external_synthesis_reference
+    assert "single shared Chrome resource" in external_synthesis_reference
     assert "Docling -> MinerU -> Marker -> PyMuPDF" in tools_reference
     assert "TDM -> OA -> Sci-Hub -> Headless" not in tools_reference
     assert "PyMuPDF -> Marker -> Docling" not in tools_reference

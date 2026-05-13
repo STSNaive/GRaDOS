@@ -7,7 +7,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Added
-- Added default-off `research.external_synthesis.enabled/model` config plus host-agent protocol docs for using ChatGPT Pro as an external reviewer/synthesizer without making GRaDOS call ChatGPT or share unverified evidence.
+- Added default-off `research.external_synthesis.enabled` config, `grados external-synthesis is-enabled --quiet`, `grados external-synthesis status --json`, and host-agent protocol docs for using the latest visible ChatGPT Pro model at the highest available thinking strength without making GRaDOS call ChatGPT or share unverified evidence.
 - Added a canonical paragraph-block registry plus persisted `evidence_pack` artifacts and MCP tools: `prepare_evidence_pack`, `read_evidence_pack`, `verify_evidence_pack`, `audit_answer_against_pack`, and `suggest_missing_evidence`.
 - Added a rebuildable SQLite FTS5/BM25 index at `database/fts.sqlite3`, exact lookup candidates, hybrid RRF saved-paper retrieval, and `grados eval-retrieval` for local retrieval fixtures.
 - Added `ingest_codex_downloaded_pdf` plus `extract.codex_handoff.*` watch-dir settings so Codex Chrome-extension downloads can be validated and flowed back into the canonical library without trusting ambiguous local files.

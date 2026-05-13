@@ -500,19 +500,6 @@ class ExternalSynthesisConfig(BaseModel):
             "ChatGPT or open Chrome."
         ),
     )
-    model: str = Field(
-        default="",
-        description=(
-            "Target ChatGPT UI model label, not an API model id. The host agent must confirm this "
-            "label in the ChatGPT model picker before sending evidence packs."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _require_model_when_enabled(self) -> ExternalSynthesisConfig:
-        if self.enabled and not self.model.strip():
-            raise ValueError("research.external_synthesis.model is required when enabled=true")
-        return self
 
 
 class ResearchConfig(BaseModel):
@@ -646,10 +633,8 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "GRaDOS still only prepares and verifies canonical evidence."
     )
     data["research"]["external_synthesis"]["_comment_enabled"] = (
-        "Default off. When false, GRaDOS does not open Chrome, call ChatGPT, or alter evidence reading."
-    )
-    data["research"]["external_synthesis"]["_comment_model"] = (
-        "ChatGPT UI model label to confirm via the host model picker when enabled, not an API model id."
+        "Default off. When true, the host may use Chrome/ChatGPT Pro only after GRaDOS "
+        "has prepared verified evidence; model and thinking level are fixed by protocol."
     )
 
     # Timeout / retry surface (ADR-008)

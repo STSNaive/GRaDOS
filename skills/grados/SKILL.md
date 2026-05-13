@@ -21,6 +21,8 @@ All search queries MUST be in **English**. All answers to the user MUST be in **
 
 For tool details, schemas, resources, browser assistance, and optional workflows, see [references/tools.md](references/tools.md).
 
+Before using external synthesis, run the GRaDOS CLI gate with the same `GRADOS_HOME` as the active server: `grados external-synthesis is-enabled --quiet` (or `uvx grados external-synthesis is-enabled --quiet` when using the plugin launcher). Use external synthesis only when the command exits with code 0; if the command is unavailable, fails, or exits nonzero, ignore [references/external_synthesis.md](references/external_synthesis.md) and do not use external synthesis.
+
 ## Outcome Contract
 
 A successful GRaDOS answer:
@@ -49,24 +51,6 @@ GRaDOS keeps screening lightweight while preserving canonical full text for cita
 The host agent model performs query planning, candidate screening, agent-side reranking, support judgment, terminology normalization, and synthesis. GRaDOS tools provide deterministic search, storage, indexing, retrieval anchors, low-token structure cards, and canonical saved-paper reads. Do not assume GRaDOS server tools can call the host model.
 
 Use host-side subagents only when isolated parallel triage reduces context load: many candidate papers, independent subquestions, large draft audits, or comparison across paper groups. Subagents must return only candidate anchors, rejected/weak items, gaps, warnings, and exact reread selectors such as `canonical_uri`, `paragraph_start`, and `paragraph_count`. They must not write final prose or become evidence sources. The main agent owns final synthesis and must reread every cited anchor with `grados:read_saved_paper`.
-
-## Optional ChatGPT Pro External Synthesis
-
-`research.external_synthesis.enabled` is default-off. When it is false, do not open Chrome, call ChatGPT, or alter the normal GRaDOS evidence path.
-
-When it is true, treat ChatGPT Pro as a host-side reviewer/synthesizer only. GRaDOS still owns search, extraction, canonical anchors, evidence packs, `read_saved_paper`, and verification. ChatGPT output is never citation evidence and must not introduce new papers, DOIs, facts, or references.
-
-Before using ChatGPT Pro, confirm `research.external_synthesis.model` as a visible ChatGPT UI model label through the model picker or equivalent UI state. Do not treat an account-tier badge such as Pro as model confirmation.
-
-Use one workflow-scoped ChatGPT conversation. On first use, open or locate that conversation and send one protocol prompt in English. Add later evidence packs, outlines, and claim reviews to the same conversation. Record a recoverable conversation URL or identifier. If the page, tab, or extension backend is lost, try to recover that same conversation; if recovery fails, stop and report instead of opening a second conversation.
-
-If `codex` Chrome-extension downloads and ChatGPT Pro synthesis are both enabled, coordinate them as one shared Chrome resource. Only one Chrome task may be active at a time. Prefer the phase order `chrome_acquisition` first (publisher/DOI/PDF download, ingest, parse, canonical read), then `chrome_synthesis` (ChatGPT Pro evidence-pack review). If interleaving is unavoidable, keep publisher/PDF tabs separate from the ChatGPT tab and always resume the same ChatGPT conversation.
-
-Send ChatGPT Pro only compact evidence packs prepared from verified GRaDOS material. Each item should include `anchor_id`, DOI or `safe_doi`, `canonical_uri`, `paragraph_start`, `paragraph_count`, a short excerpt, candidate claim, and limitations. Do not upload the full local library, unrelated full text, publisher pages, PDF pages, login state, or unverified web content.
-
-Request structured ChatGPT output with `claims`, `anchor_ids`, `confidence`, `caveat`, and `missing_evidence` / `gaps`. After receiving it, verify every returned claim with GRaDOS by rereading `read_saved_paper` windows or verifying the current evidence pack. Final citations may only use verified canonical paragraph windows.
-
-Stop and report when Chrome extension is unavailable, Chrome is already occupied and cannot be coordinated, the target model cannot be confirmed, the conversation cannot be recovered, ChatGPT adds outside evidence, the evidence pack is too large, or `verify_evidence_pack` reports `current_valid=false`.
 
 ## Compression-Safe Anchors
 

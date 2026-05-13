@@ -264,7 +264,7 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 ### Research Workflow Knobs
 
 - `research.indepth`: disabled by default; controls whether remote search immediately materializes returned candidates for checkpointed full-text review.
-- `research.external_synthesis`: disabled by default; a host-side ChatGPT Pro reviewer/synthesizer protocol with only `enabled` and `model`. GRaDOS does not call ChatGPT, open Chrome, or change evidence reading when this is off.
+- `research.external_synthesis`: disabled by default; a host-side ChatGPT Pro reviewer/synthesizer protocol with only `enabled`. Gate automation with `grados external-synthesis is-enabled --quiet`; inspect details with `grados external-synthesis status --json`. When enabled, the host uses the latest visible Pro model and highest available thinking strength; GRaDOS does not call ChatGPT, open Chrome, or change evidence reading when this is off.
 
 ### Timeout / Retry Knobs
 
@@ -292,6 +292,8 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 | `grados client doctor` | Run a lightweight health check for supported clients |
 | `grados client remove claude|codex|all` | Remove GRaDOS MCP wiring and bundled skills from one or more clients |
 | `grados auth set/status/migrate/clear` | Manage provider API keys in the OS keychain |
+| `grados external-synthesis is-enabled --quiet` | Predicate gate for the optional external synthesis protocol; exit 0 means enabled, exit 1 means disabled |
+| `grados external-synthesis status --json` | Show the same external synthesis gate plus config path details as structured diagnostics |
 | `grados import-pdfs --from /path/to/papers --recursive` | Import an existing local PDF library into the canonical paper store |
 | `grados eval-retrieval --fixture cases.jsonl` | Evaluate saved-paper retrieval against local golden cases using dense, FTS/BM25, exact lookup, and RRF unless `--dense-only` is set |
 | `grados status` | Show config, dependency, runtime-asset, and API-key health |
@@ -399,7 +401,7 @@ The browser strategy is a first-class path for institutional publisher access. I
 
 `codex` is disabled by default. When enabled and placed in `extract.fetch_strategy.order`, it acts as a Codex Chrome extension host-agent handoff at that exact point in the order: `extract_paper_full_text` returns a Chrome download receipt, then the host agent downloads the PDF in Chrome with the [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) and calls `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`. If Unpaywall finds an OA URL, the receipt starts from that URL instead of `https://doi.org/{doi}`.
 
-If `research.external_synthesis.enabled=true`, the same host agent may use ChatGPT Pro only after GRaDOS has prepared and verified an evidence pack. The configured `model` is a ChatGPT UI label, not an API model id, and must be confirmed in the ChatGPT model picker before sending evidence. When `codex` downloads and ChatGPT Pro synthesis are both enabled, the host must treat Chrome as one shared resource: finish `chrome_acquisition` first when possible, keep publisher/PDF tabs separate from the ChatGPT conversation tab, resume the same ChatGPT conversation URL for later synthesis turns, and stop with a report if Chrome extension state, tabs, or the conversation cannot be recovered.
+If `research.external_synthesis.enabled=true`, the same host agent may use ChatGPT Pro only after GRaDOS has prepared and verified an evidence pack. The host must select the latest/highest-capability Pro model visible in the ChatGPT UI and the highest available thinking-time option; these choices are fixed by protocol, not configurable GRaDOS keys. In localized ChatGPT UIs, the host should choose options by semantic meaning rather than requiring exact English strings. When `codex` downloads and ChatGPT Pro synthesis are both enabled, the host must treat Chrome as one shared resource: finish `chrome_acquisition` first when possible, keep publisher/PDF tabs separate from the ChatGPT conversation tab, resume the same ChatGPT conversation URL for later synthesis turns, and stop with a report if Chrome extension state, tabs, or the conversation cannot be recovered.
 
 PDF parsing priority:
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -48,6 +49,44 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
     assert "已加载" in status_result.output
     assert "harrier-oss-v1-270m" in status_result.output
     assert "4096" in status_result.output
+
+    external_result = runner.invoke(main, ["external-synthesis", "status", "--json"], env=env)
+    assert external_result.exit_code == 0
+    external_payload = json.loads(external_result.output)
+    assert external_payload["enabled"] is False
+    assert external_payload["status"] == "disabled"
+    assert external_payload["config_file"] == str(home / "config.json")
+    assert external_payload["config_exists"] is True
+
+    external_predicate_result = runner.invoke(main, ["external-synthesis", "is-enabled"], env=env)
+    assert external_predicate_result.exit_code == 1
+    assert external_predicate_result.output == "false\n"
+
+    external_predicate_quiet_result = runner.invoke(
+        main, ["external-synthesis", "is-enabled", "--quiet"], env=env
+    )
+    assert external_predicate_quiet_result.exit_code == 1
+    assert external_predicate_quiet_result.output == ""
+
+    config_data = json.loads((home / "config.json").read_text(encoding="utf-8"))
+    config_data["research"]["external_synthesis"]["enabled"] = True
+    (home / "config.json").write_text(json.dumps(config_data), encoding="utf-8")
+
+    external_enabled_result = runner.invoke(main, ["external-synthesis", "status", "--json"], env=env)
+    assert external_enabled_result.exit_code == 0
+    external_enabled_payload = json.loads(external_enabled_result.output)
+    assert external_enabled_payload["enabled"] is True
+    assert external_enabled_payload["status"] == "enabled"
+
+    external_enabled_predicate_result = runner.invoke(main, ["external-synthesis", "is-enabled"], env=env)
+    assert external_enabled_predicate_result.exit_code == 0
+    assert external_enabled_predicate_result.output == "true\n"
+
+    external_enabled_predicate_quiet_result = runner.invoke(
+        main, ["external-synthesis", "is-enabled", "--quiet"], env=env
+    )
+    assert external_enabled_predicate_quiet_result.exit_code == 0
+    assert external_enabled_predicate_quiet_result.output == ""
 
 
 def test_update_db_command_reports_index_summary(tmp_path: Path, monkeypatch) -> None:

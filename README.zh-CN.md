@@ -264,7 +264,7 @@ cp -R skills/grados "<skills-root>/"
 ### 研究工作流开关
 
 - `research.indepth`：默认关闭；控制远程检索是否立即 materialize 返回候选，用于 checkpoint 化的全文评审。
-- `research.external_synthesis`：默认关闭；只包含 `enabled` 和 `model`，表示 host-side ChatGPT Pro reviewer/synthesizer 协议。关闭时 GRaDOS 不调用 ChatGPT、不打开 Chrome，也不改变证据读取流程。
+- `research.external_synthesis`：默认关闭；只包含 `enabled`，表示 host-side ChatGPT Pro reviewer/synthesizer 协议。自动化 gate 用 `grados external-synthesis is-enabled --quiet`；诊断细节用 `grados external-synthesis status --json`。启用时 host 固定使用当前可见的最新/最强 Pro 模型和最高可用思考强度；关闭时 GRaDOS 不调用 ChatGPT、不打开 Chrome，也不改变证据读取流程。
 
 ### 超时与重试
 
@@ -292,6 +292,8 @@ cp -R skills/grados "<skills-root>/"
 | `grados client doctor` | 对受支持客户端做轻量健康检查 |
 | `grados client remove claude|codex|all` | 从一个或多个客户端移除 GRaDOS 的 MCP 注册和内置 skills |
 | `grados auth set/status/migrate/clear` | 在系统 keychain 中管理各 provider 的 API Key |
+| `grados external-synthesis is-enabled --quiet` | 可选外部综合协议的 predicate gate；exit 0 表示启用，exit 1 表示关闭 |
+| `grados external-synthesis status --json` | 以结构化诊断形式显示同一个外部综合 gate 和 config 路径细节 |
 | `grados import-pdfs --from /path/to/papers --recursive` | 把已有 PDF 文件夹导入 canonical 论文库 |
 | `grados eval-retrieval --fixture cases.jsonl` | 用本地 golden cases 评测 saved-paper retrieval；默认跑 dense、FTS/BM25、exact lookup 和 RRF，可用 `--dense-only` 调试旧模式 |
 | `grados status` | 查看配置、依赖、运行时资产和 API Key 状态 |
@@ -399,7 +401,7 @@ Unpaywall 是可选的 DOI 到 OA location resolver，不是下载路径。`extr
 
 `codex` 默认关闭。启用并放入 `extract.fetch_strategy.order` 后，它会在该顺序位置作为 Codex Chrome extension host-agent handoff：`extract_paper_full_text` 返回 Chrome 下载 receipt，外层 agent 通过 Chrome 中的 [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) 下载 PDF，再调用 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")` 回到 GRaDOS 入库。若 Unpaywall 找到 OA URL，receipt 会优先从该 URL 开始，而不是 `https://doi.org/{doi}`。
 
-若 `research.external_synthesis.enabled=true`，同一个 host agent 只能在 GRaDOS 准备并验证 evidence pack 后使用 ChatGPT Pro。配置里的 `model` 是 ChatGPT UI 模型标签，不是 API model id，发送证据前必须在 ChatGPT model picker 或等价 UI 状态中确认。若 `codex` 下载和 ChatGPT Pro 综合同时启用，host 必须把 Chrome 当作一个共享 resource：尽量先完成 `chrome_acquisition`，再进入 `chrome_synthesis`；publisher/PDF tab 与 ChatGPT 对话 tab 要分离；后续综合轮次恢复同一个 ChatGPT conversation URL；如果 Chrome extension 状态、tab 或对话无法恢复，就停止并报告。
+若 `research.external_synthesis.enabled=true`，同一个 host agent 只能在 GRaDOS 准备并验证 evidence pack 后使用 ChatGPT Pro。host 必须在 ChatGPT UI 中选择当前可见的最新/最强 Pro 模型和最高可用 thinking-time 选项；这些选择由协议固定，不再通过 GRaDOS config 配置。遇到中文或其他本地化界面时，host 应选择语义等价的选项，而不是要求英文字符串逐字匹配。若 `codex` 下载和 ChatGPT Pro 综合同时启用，host 必须把 Chrome 当作一个共享 resource：尽量先完成 `chrome_acquisition`，再进入 `chrome_synthesis`；publisher/PDF tab 与 ChatGPT 对话 tab 要分离；后续综合轮次恢复同一个 ChatGPT conversation URL；如果 Chrome extension 状态、tab 或对话无法恢复，就停止并报告。
 
 PDF 解析优先级：
 

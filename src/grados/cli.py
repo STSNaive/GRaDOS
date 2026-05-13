@@ -620,6 +620,54 @@ def search(query: tuple[str, ...], limit: int, continuation_token: str | None, i
 # ── grados status ────────────────────────────────────────────────────────────
 
 
+@main.group("external-synthesis")
+def external_synthesis_group() -> None:
+    """Inspect the optional external synthesis protocol state."""
+
+
+def _external_synthesis_status_payload() -> dict[str, object]:
+    paths = GRaDOSPaths()
+    config = load_config(paths)
+    enabled = bool(config.research.external_synthesis.enabled)
+    return {
+        "enabled": enabled,
+        "status": "enabled" if enabled else "disabled",
+        "config_file": str(paths.config_file),
+        "config_exists": paths.config_file.is_file(),
+        "protocol": "external_synthesis",
+    }
+
+
+@external_synthesis_group.command("is-enabled")
+@click.option("-q", "--quiet", is_flag=True, help="Suppress output and use exit status only.")
+def external_synthesis_is_enabled(quiet: bool) -> None:
+    """Return whether the external synthesis protocol is enabled."""
+    payload = _external_synthesis_status_payload()
+    enabled = bool(payload["enabled"])
+    if not quiet:
+        click.echo("true" if enabled else "false")
+    if not enabled:
+        raise click.exceptions.Exit(1)
+
+
+@external_synthesis_group.command("status")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def external_synthesis_status(as_json: bool) -> None:
+    """Show whether the external synthesis protocol is enabled."""
+    payload = _external_synthesis_status_payload()
+
+    if as_json:
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    enabled = bool(payload["enabled"])
+    status_text = "[green]enabled[/green]" if enabled else "[dim]disabled[/dim]"
+    console.print(f"External synthesis: {status_text}")
+    console.print(f"Config file: {payload['config_file']}")
+    if not payload["config_exists"]:
+        console.print("[dim]No config file found; using default disabled state.[/dim]")
+
+
 @main.command()
 def status() -> None:
     """Show GRaDOS health check: config, dependencies, assets, and index compatibility."""
