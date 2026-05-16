@@ -80,6 +80,6 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     assert "sending the prompt, and reading the reply" in external_synthesis_reference
     assert 'kind="external_synthesis_review"' in external_synthesis_reference
     assert "single shared Chrome resource" in external_synthesis_reference
-    assert "Docling -> MinerU -> Marker -> PyMuPDF" in tools_reference
+    assert "Docling -> MinerU -> PyMuPDF" in tools_reference
     assert "TDM -> OA -> Sci-Hub -> Headless" not in tools_reference
     assert "PyMuPDF -> Marker -> Docling" not in tools_reference

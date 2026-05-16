@@ -85,7 +85,6 @@ def test_config_normalization_preserves_literal_enabled_map_keys() -> None:
                     "Docling": True,
                     "MinerU": True,
                     "PyMuPDF": True,
-                    "Marker": False,
                 }
             },
         },

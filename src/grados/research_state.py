@@ -816,6 +816,7 @@ def manage_failure_cases(
     if mode == "record":
         failure_id = f"failure_{uuid.uuid4().hex[:12]}"
         created_at = _utc_now()
+        redacted_context = _redact_secret_dict(context)
         with _connect(db_path) as conn:
             conn.execute(
                 """
@@ -832,7 +833,7 @@ def manage_failure_cases(
                     query_text.strip(),
                     source.strip(),
                     error_message.strip(),
-                    json.dumps(context or {}, ensure_ascii=False, sort_keys=True),
+                    json.dumps(redacted_context, ensure_ascii=False, sort_keys=True),
                     created_at,
                 ),
             )
@@ -884,7 +885,7 @@ def manage_failure_cases(
             "query": str(row["query_text"]),
             "source": str(row["source"]),
             "error_message": str(row["error_message"]),
-            "context": _decode_metadata(str(row["context_json"])),
+            "context": _redact_secret_dict(_decode_metadata(str(row["context_json"]))),
             "created_at": str(row["created_at"]),
         }
         for row in rows

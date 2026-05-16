@@ -44,8 +44,8 @@ dependencies = [
 
 [project.optional-dependencies]
 docling = []
-marker = ["marker-pdf == 1.10.2"]
-full = ["grados[marker]"]
+marker = []
+full = []
 
 [project.scripts]
 grados = "grados.cli:main"

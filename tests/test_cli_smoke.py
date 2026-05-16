@@ -243,8 +243,9 @@ def test_optional_install_metadata_matches_runtime_backends() -> None:
     assert set(extras) == {"marker", "docling", "full"}
     assert "docling" in dependencies
     assert extras["docling"] == []
-    assert extras["full"] == ["grados[marker]"]
-    assert {extra for _, _, extra in _EXTRAS} == {"marker"}
+    assert extras["marker"] == []
+    assert extras["full"] == []
+    assert _EXTRAS == []
 
 
 def test_client_install_and_remove_commands_manage_claude_and_codex(tmp_path: Path, monkeypatch) -> None:

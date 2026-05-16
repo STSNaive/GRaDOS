@@ -86,7 +86,7 @@ def test_parse_strategy_registry_preserves_order_and_filters_unknown_names() -> 
 def test_default_parse_strategy_order_includes_mineru_after_docling() -> None:
     strategies = build_pdf_parser_strategies()
 
-    assert [strategy.name for strategy in strategies] == ["Docling", "MinerU", "Marker", "PyMuPDF"]
+    assert [strategy.name for strategy in strategies] == ["Docling", "MinerU", "PyMuPDF"]
 
 
 def test_document_normalizer_registry_resolves_known_and_fallback_formats() -> None:

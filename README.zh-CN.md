@@ -27,7 +27,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 1. 先用 `search_saved_papers`、`get_saved_paper_structure` 或 `grados://papers/{safe_doi}` 检查本地论文库
 2. 按配置好的优先级检索远程学术数据库
 3. 可选用 Unpaywall 解析 OA 位置，再按配置好的 `api`、`browser`、可选 `codex` 与 `scihub` 路径抓取全文
-4. 按 `Docling -> MinerU -> Marker -> PyMuPDF` 瀑布解析 PDF
+4. 默认按 `Docling -> MinerU -> PyMuPDF` 瀑布解析 PDF
 5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把 parser provenance sidecar 保存到 `papers/_parsed/`，把 parser assets 保存到 `papers/_assets/`，把语义索引写入 `database/chroma/`，把词法 FTS fallback 写入 `database/fts.sqlite3`，把远程元数据写入 `database/remote_metadata/`
 6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
 
@@ -124,10 +124,6 @@ grados client install all
 # 默认安装（已包含 Docling）
 uv tool install grados
 
-# 安装额外的重型解析器
-uv tool install "grados[marker]"
-uv tool install "grados[full]"
-
 # 零安装运行
 uvx grados version
 
@@ -138,9 +134,9 @@ pip install grados
 当前包的 extras：
 
 - `grados`：核心 MCP 服务、CLI、ChromaDB 存储、Docling-first 解析器、可选 MinerU 云端 fallback、PyMuPDF fallback、浏览器自动化，以及内置 Zotero 保存能力
-- `grados[marker]`：在核心上加入 Marker PDF 解析器
 - `grados[docling]`：为了兼容旧安装说明而保留的空 alias
-- `grados[full]`：在核心上额外加入 Marker 解析器
+- `grados[marker]`：仅兼容旧安装命令的空 alias；当前 `marker-pdf` 版本会钉住存在漏洞的解析依赖，因此不再随包安装
+- `grados[full]`：仅兼容旧安装命令的空 alias
 
 ### 方式 C：从源码运行
 
@@ -411,11 +407,10 @@ PDF 解析优先级：
 {
   "extract": {
     "parsing": {
-      "order": ["Docling", "MinerU", "Marker", "PyMuPDF"],
+      "order": ["Docling", "MinerU", "PyMuPDF"],
       "enabled": {
         "Docling": true,
         "MinerU": true,
-        "Marker": false,
         "PyMuPDF": true
       }
     }

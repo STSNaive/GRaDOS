@@ -176,6 +176,20 @@ def test_read_paper_resolves_legacy_safe_doi_from_doi(tmp_path: Path) -> None:
     assert "Body paragraph" in result.text
 
 
+def test_read_paper_rejects_legacy_safe_doi_collision_for_doi_lookup(tmp_path: Path) -> None:
+    papers_dir = tmp_path / "papers"
+    papers_dir.mkdir()
+    (papers_dir / "10_1000_a_b.md").write_text(
+        '---\ndoi: "10.1000/a-b"\ntitle: "First"\n---\n\n# First\n\nFirst body paragraph.',
+        encoding="utf-8",
+    )
+
+    assert read_paper(papers_dir=papers_dir, doi="10.1000/a_b") is None
+    explicit = read_paper(papers_dir=papers_dir, safe_doi="10_1000_a_b")
+    assert explicit is not None
+    assert explicit.doi == "10.1000/a-b"
+
+
 def test_collision_safe_saves_do_not_overwrite(tmp_path: Path) -> None:
     papers_dir = tmp_path / "papers"
     first = save_paper_markdown(

@@ -470,8 +470,9 @@ def get_remote_metadata_by_doi(
     collection = get_remote_metadata_collection(client)
     existing = _existing_records_by_id(collection, paper_ids)
     for paper_id in paper_ids:
-        if paper_id in existing:
-            return existing[paper_id]
+        record = existing.get(paper_id)
+        if record is not None and normalize_doi(record.doi) == normalized_doi:
+            return record
     return None
 
 

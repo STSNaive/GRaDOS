@@ -532,6 +532,8 @@ def _resolve_paper_file(
     for candidate in _candidate_safe_dois(doi, safe_doi, uri):
         file_path = _paper_file_for_safe_doi(papers_dir, candidate)
         if file_path is not None and file_path.is_file():
+            if doi and not safe_doi and not uri and not _paper_file_matches_doi(file_path, doi):
+                continue
             return candidate, file_path
     return None
 

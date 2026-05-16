@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grados.publisher.common import PublisherMetadata, safe_doi_filename
+from grados.publisher.common import PublisherMetadata, legacy_safe_doi_filename, safe_doi_filename
 from grados.search.academic import PaperMetadata
 from grados.storage.remote_metadata import (
     get_remote_metadata_by_doi,
@@ -204,6 +204,35 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     assert refreshed.fetch_resume == ""
     assert '"state": "challenge"' in refreshed.fetch_trace
     assert '"state": "ok"' in refreshed.fetch_trace
+
+
+def test_remote_metadata_doi_lookup_rejects_legacy_id_collision(tmp_path: Path, monkeypatch) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+
+    collection = FakeRemoteMetadataCollection()
+    legacy_id = legacy_safe_doi_filename("10.1000/a_b")
+    collection.rows[legacy_id] = {
+        "document": "First\n\nAbstract",
+        "metadata": {
+            "doi": "10.1000/a-b",
+            "safe_doi": legacy_id,
+            "paper_id": legacy_id,
+            "title": "First",
+            "authors": "[]",
+            "year": "2026",
+            "source": "Crossref",
+            "has_abstract": True,
+            "has_fulltext": False,
+            "fetch_status": "metadata_only",
+        },
+        "embedding": [1.0],
+    }
+
+    monkeypatch.setattr(remote_metadata, "get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(remote_metadata, "get_remote_metadata_collection", lambda client: collection)
+
+    assert get_remote_metadata_by_doi(tmp_path / "chroma", "10.1000/a_b") is None
+    assert get_remote_metadata_by_doi(tmp_path / "chroma", "10.1000/a-b") is not None
 
 
 def test_remote_metadata_preserves_codex_chrome_extension_host_action(tmp_path: Path, monkeypatch) -> None:

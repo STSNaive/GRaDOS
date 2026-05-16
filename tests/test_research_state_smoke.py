@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from grados.research_state import (
@@ -166,3 +167,37 @@ def test_failure_memory_records_queries_and_suggests_retry(tmp_path: Path) -> No
     assert queried["count"] == 1
     assert queried["items"][0]["context"]["stage"] == "extract"
     assert any("browser-assisted extraction" in item for item in suggestion["suggestions"])
+
+
+def test_failure_memory_redacts_context_before_persisting(tmp_path: Path) -> None:
+    db_path = tmp_path / "research.sqlite3"
+
+    manage_failure_cases(
+        db_path,
+        mode="record",
+        failure_type="fetch",
+        doi="10.1234/demo",
+        query_text="composite damping",
+        source="Elsevier TDM",
+        error_message="403 paywall",
+        context={
+            "stage": "extract",
+            "auth": {"bearer": "must-not-persist"},
+            "authorizationHeader": "Bearer must-not-persist",
+            "sessionId": "session-id",
+            "authors": ["Smith", "Lee"],
+        },
+    )
+
+    queried = manage_failure_cases(db_path, mode="query", failure_type="fetch")
+    context = queried["items"][0]["context"]
+
+    assert context["stage"] == "extract"
+    assert context["auth"] == "<redacted>"
+    assert context["authorizationHeader"] == "<redacted>"
+    assert context["sessionId"] == "<redacted>"
+    assert context["authors"] == ["Smith", "Lee"]
+    with sqlite3.connect(db_path) as conn:
+        raw_context = str(conn.execute("SELECT context_json FROM failure_cases").fetchone()[0])
+    assert "must-not-persist" not in raw_context
+    assert "session-id" not in raw_context

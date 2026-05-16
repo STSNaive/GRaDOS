@@ -103,13 +103,11 @@
             "order": [
                 "Docling",
                 "MinerU",
-                "Marker",
                 "PyMuPDF"
             ],
             "enabled": {
                 "Docling": true,
                 "MinerU": true,
-                "Marker": false,
                 "PyMuPDF": true
             },
             "marker_timeout": 120000,

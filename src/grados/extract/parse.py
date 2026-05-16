@@ -220,7 +220,7 @@ DOCUMENT_NORMALIZER_STRATEGIES: tuple[DocumentNormalizerStrategy, ...] = (
 
 
 def build_pdf_parser_strategies(order: list[str] | None = None) -> list[PdfParserStrategy]:
-    resolved_order = order or ["Docling", "MinerU", "Marker", "PyMuPDF"]
+    resolved_order = order or ["Docling", "MinerU", "PyMuPDF"]
     return [PDF_PARSER_REGISTRY[name] for name in resolved_order if name in PDF_PARSER_REGISTRY]
 
 
@@ -309,7 +309,7 @@ async def parse_pdf_with_diagnostics(
 ) -> ParsePipelineResult:
     """Parse a PDF buffer and preserve parser warnings/debug for caller-facing receipts."""
     strategies = build_pdf_parser_strategies(parse_order)
-    enabled = parse_enabled or {"Docling": True, "MinerU": True, "Marker": False, "PyMuPDF": True}
+    enabled = parse_enabled or {"Docling": True, "MinerU": True, "PyMuPDF": True}
     warnings: list[str] = []
     debug: list[str] = []
     context = PdfParserContext(

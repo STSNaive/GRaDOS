@@ -27,7 +27,7 @@ GRaDOS is designed to sit inside an agent research workflow:
 1. Check the local paper library first with `search_saved_papers`, `get_saved_paper_structure`, or `grados://papers/{safe_doi}`
 2. Search remote academic sources in configured priority order
 3. Resolve optional Unpaywall OA locations, then fetch full text through the configured `api`, `browser`, optional `codex`, and `scihub` routes
-4. Parse PDFs through `Docling -> MinerU -> Marker -> PyMuPDF`
+4. Parse PDFs through `Docling -> MinerU -> PyMuPDF` by default
 5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, parser provenance sidecars to `papers/_parsed/`, parser assets to `papers/_assets/`, semantic search to `database/chroma/`, lexical FTS fallback to `database/fts.sqlite3`, and remote metadata to `database/remote_metadata/`
 6. Re-open saved papers with low-token structure cards and deep-reading windows before citing them
 
@@ -124,10 +124,6 @@ Use `grados auth set <provider>` to store API keys in the OS keychain. Plaintext
 # Default install (includes Docling)
 uv tool install grados
 
-# Optional heavier parser extras
-uv tool install "grados[marker]"
-uv tool install "grados[full]"
-
 # Zero-install run
 uvx grados version
 
@@ -138,9 +134,9 @@ pip install grados
 Extras in the current package:
 
 - `grados`: core MCP server, CLI, ChromaDB storage, Docling-first parser, optional MinerU cloud fallback, PyMuPDF fallback, browser automation, and built-in Zotero save support
-- `grados[marker]`: core plus the Marker PDF parser
 - `grados[docling]`: compatibility alias for the built-in Docling runtime
-- `grados[full]`: core plus the Marker parser
+- `grados[marker]`: compatibility alias only; Marker is no longer bundled because the current `marker-pdf` release pins vulnerable parser dependencies
+- `grados[full]`: compatibility alias only
 
 ### Option C: from source
 
@@ -411,11 +407,10 @@ PDF parsing priority:
 {
   "extract": {
     "parsing": {
-      "order": ["Docling", "MinerU", "Marker", "PyMuPDF"],
+      "order": ["Docling", "MinerU", "PyMuPDF"],
       "enabled": {
         "Docling": true,
         "MinerU": true,
-        "Marker": false,
         "PyMuPDF": true
       }
     }

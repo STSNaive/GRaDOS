@@ -49,7 +49,6 @@ def _check_extra(module_name: str) -> bool:
 
 _EXTRAS: list[tuple[str, str, str]] = [
     # (display name, module to probe, extra name)
-    ("marker-pdf", "marker", "marker"),
 ]
 
 
