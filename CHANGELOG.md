@@ -6,6 +6,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Security
+- Updated the locked Python dependency graph for vulnerable networking, XML, auth, multipart, and parser-adjacent packages, including `authlib`, `cryptography`, `lxml`, `python-multipart`, `urllib3`, and Docling parser dependencies.
+
 ### Added
 - Added default-off `research.external_synthesis.enabled` config, `grados external-synthesis is-enabled --quiet`, `grados external-synthesis status --json`, and host-agent protocol docs for using the latest visible ChatGPT Pro model at the highest available thinking strength without making GRaDOS call ChatGPT or share unverified evidence.
 - Added a canonical paragraph-block registry plus persisted `evidence_pack` artifacts and MCP tools: `prepare_evidence_pack`, `read_evidence_pack`, `verify_evidence_pack`, `audit_answer_against_pack`, and `suggest_missing_evidence`.
