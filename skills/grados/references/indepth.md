@@ -21,6 +21,8 @@ The folder contains:
 - `checkpoint.json`: machine-readable workflow state.
 - `checkpoint.md`: rendered human-readable recovery note.
 
+Each indepth run also creates or updates a `research_run_manifest` artifact in `database/research.sqlite3`. The manifest records the run id, search/candidate/extract/summary/checkpoint events, linked artifact index, and a redacted config/provenance snapshot. It is a directory page only, not citation evidence.
+
 `research_checkpoints/` and `paper_summaries/` are ignored by git when `GRADOS_HOME` points at a project checkout. They may contain local research state, acquisition status, and derived notes.
 
 ## `research_checkpoint` Schema
@@ -32,6 +34,7 @@ Required shape:
 ```json
 {
   "schema_version": 1,
+  "research_run_id": "run_xxxxx",
   "conversation_id": "research_xxxxx",
   "user_question": "original user question",
   "search_queries": ["english query"],

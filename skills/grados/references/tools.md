@@ -23,19 +23,19 @@
 | `grados:read_saved_paper` | Canonical deep-reading tool for previously saved papers. Accepts `doi`, a GRaDOS-returned opaque `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window plus lightweight asset refs for synthesis and citation verification. |
 | `grados:read_paper_asset` | List or read parser asset bundles for saved papers. Use it after `get_saved_paper_structure` or `read_saved_paper` when a figure, table, formula, page image, or source/debug asset is needed; `include_image=true` only inlines a specific image when it is under the configured limit. |
 | `grados:save_paper_to_zotero` | Save cited paper metadata to Zotero. Requires `ZOTERO_API_KEY` and Zotero library configuration. |
-| `grados:save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, and compression-safe evidence checkpoints in the local SQLite state store. |
+| `grados:save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, compression-safe evidence checkpoints, and run-linked artifacts in the local SQLite state store. Include `metadata.research_run_id` to attach an artifact to a run manifest. |
 | `grados:query_research_artifacts` | Query previously saved research artifacts by id, kind, or keyword. Use `detail=true` to restore full JSON or Markdown content. |
 | `grados:prepare_evidence_pack` | Retrieve candidate anchors, reread canonical paragraph blocks from `papers/*.md`, and persist a minimal `evidence_pack` artifact with pack hash, block hashes, and answerability status. Use this when evidence must survive handoff or context compression. |
 | `grados:read_evidence_pack` | Restore a persisted evidence pack by pack id or artifact id. The stored text is a snapshot until `verify_evidence_pack` confirms it still matches current canonical Markdown. |
 | `grados:verify_evidence_pack` | Rebuild the canonical block registry from current `papers/*.md` and report `snapshot_valid`, `current_valid`, missing papers, document changes, relocated blocks, missing blocks, hash mismatches, and ambiguous relocations. |
-| `grados:audit_answer_against_pack` | Audit draft claims using only one evidence pack. In strict mode it does not search the full library, so unsupported or weak claims remain visible instead of being silently patched. |
-| `grados:suggest_missing_evidence` | Suggest follow-up evidence queries for weak, unsupported, overgeneralized, misattributed, uncited, or review-needed pack-audit claims. It is suggestion-only and does not change strict audit results. |
+| `grados:audit_answer_against_pack` | Audit draft claims using only one evidence pack. In strict mode it does not search the full library, so non-verified claims remain visible instead of being silently patched. |
+| `grados:suggest_missing_evidence` | Suggest follow-up evidence or revision work for non-verified pack-audit claims. It is suggestion-only and does not change strict audit results. |
 | `grados:manage_failure_cases` | Record, query, and summarize failed fetch/parse/search/citation attempts. Can also suggest conservative retry steps. |
 | `grados:get_citation_graph` | Return lightweight local citation relationships, including neighbors, common references, and reverse citing-paper lookups. |
 | `grados:get_papers_full_context` | Return structured full-context material for a small paper set, with token estimates or actual section content for CAG-style deep reading. |
 | `grados:build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. Rows are agent-side reranking material until reread through `grados:read_saved_paper`. |
 | `grados:compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. Returned excerpts and anchors guide rereading; they are not citation-ready proof. |
-| `grados:audit_draft_support` | Audit draft claims against the local paper library and return first-pass `supported`, `weak`, `unsupported`, or `misattributed` statuses plus candidate evidence snippets and anchors. `candidate_limit` controls how many candidates are retrieved per claim for host-agent reranking. The host agent model must reread canonical paragraph windows before final support judgment. |
+| `grados:audit_draft_support` | Audit draft claims against the local paper library and return first-pass `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts plus candidate evidence snippets, issue types, revision actions, and anchors. `candidate_limit` controls how many candidates are retrieved per claim for host-agent reranking. The host agent model must reread canonical paragraph windows before final support judgment. |
 
 There is no separate local RAG server in the Python release. Saved-paper canonical storage and semantic retrieval are built directly into GRaDOS through ChromaDB.
 
@@ -47,7 +47,11 @@ Outputs from `search_saved_papers`, `build_evidence_grid`, `compare_papers`, and
 
 Evidence packs are the durable citation handoff layer. `prepare_evidence_pack` stores canonical block snapshots from `papers/*.md` through `research_artifacts(kind="evidence_pack")`; `verify_evidence_pack` must return `current_valid=true` before a restored pack is treated as current evidence. Pack-scoped audit tools never search the whole saved-paper library to fill gaps.
 
-For broad tasks, a host client may use subagents to triage independent paper sets, claim sets, or subquestions. Subagents are not GRaDOS server tools; their output should be limited to candidate anchors, rejected/weak items, gaps, warnings, and exact reread selectors such as `canonical_uri`, `paragraph_start`, and `paragraph_count`. The main host agent must reread accepted anchors through `grados:read_saved_paper` before citation or final support judgment.
+Research run manifests are directory pages, not evidence sources. A manifest may link search queries, candidates, extraction receipts, parser receipts, `paper_summary`, `research_checkpoint`, `evidence_checkpoint`, `evidence_pack`, audit result IDs, canonical anchors, and failure records. It may also keep an append-only event ledger and a redacted config/provenance snapshot; append correction events rather than editing prior ledger entries, and never store secrets. Final claims and citations must still be grounded by rereading canonical `papers/*.md` files or current-valid evidence packs.
+
+Audit tools emit only these verdicts: `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, and `unverifiable_access`. Do not emit, parse, or preserve compatibility aliases for the removed statuses `supported`, `weak`, `unsupported`, `misattributed`, `overgeneralized`, `uncited_factual_claim`, or `needs_human_review`. Use `minor_distortion` for small wording, scope, precision, or locator fixes; use `major_distortion` for material misstatement, overclaim, or citation mismatch; use `unverifiable_access` when a source or pack trail exists but GRaDOS cannot read enough canonical full text or paragraph context.
+
+For broad tasks, a host client may use subagents to triage independent paper sets, claim sets, or subquestions. Subagents are not GRaDOS server tools; their output should be limited to candidate anchors, rejected/non-verified items, gaps, warnings, and exact reread selectors such as `canonical_uri`, `paragraph_start`, and `paragraph_count`. The main host agent must reread accepted anchors through `grados:read_saved_paper` before citation or final support judgment.
 
 ## Indepth Mode
 
@@ -80,7 +84,7 @@ Recommended content schema:
   ],
   "open_questions": ["Evidence gaps still unresolved."],
   "next_actions": ["Concrete follow-up reading, extraction, or audit steps."],
-  "warnings": ["Known limitations, weak support, or imprecise coordinates."]
+  "warnings": ["Known limitations, non-verified support, or imprecise coordinates."]
 }
 ```
 

@@ -60,6 +60,7 @@ class ResearchCheckpoint(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     schema_version: int = CHECKPOINT_SCHEMA_VERSION
+    research_run_id: str = ""
     conversation_id: str
     user_question: str
     search_queries: list[str] = Field(default_factory=list)
@@ -130,6 +131,7 @@ def make_research_checkpoint(
     *,
     user_question: str,
     search_queries: list[str],
+    research_run_id: str = "",
     papers: list[ResearchCheckpointPaper] | None = None,
     current_findings: list[str] | None = None,
     evidence_anchors: list[EvidenceAnchor] | None = None,
@@ -147,6 +149,7 @@ def make_research_checkpoint(
         usedforsecurity=False,
     ).hexdigest()[:12]
     return ResearchCheckpoint(
+        research_run_id=research_run_id or f"run_{digest}",
         conversation_id=f"research_{digest}",
         user_question=user_question,
         search_queries=search_queries,
@@ -165,6 +168,7 @@ def render_checkpoint_markdown(checkpoint: ResearchCheckpoint) -> str:
     lines = [
         "# GRaDOS Research Checkpoint",
         "",
+        f"- Research Run ID: `{checkpoint.research_run_id}`",
         f"- Conversation ID: `{checkpoint.conversation_id}`",
         f"- Started at: `{checkpoint.started_at}`",
         f"- Updated at: `{checkpoint.updated_at}`",

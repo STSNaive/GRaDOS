@@ -35,6 +35,8 @@ Host agents may use their own reasoning model to plan queries, screen candidates
 
 For handoff-safe citation work, `prepare_evidence_pack` materializes canonical blocks from `papers/*.md` into a persisted pack. A pack becomes current citation evidence only when `verify_evidence_pack` reports `current_valid=true`; strict pack audits never search the whole library to silently patch missing evidence.
 
+For run-level recovery, a `research_run_manifest` is a lightweight directory page for one research run. It can link search queries, candidates, extraction/parser receipts, `paper_summary`, `research_checkpoint`, `evidence_checkpoint`, `evidence_pack`, audit result IDs, canonical anchors, and failure records. It may keep an append-only event ledger plus a redacted config/provenance snapshot; append correction events instead of rewriting past events, and never store secrets. The run manifest is navigation/provenance only and must never replace canonical rereading of `papers/*.md` or current-valid evidence packs for final citation support.
+
 ### MCP Tools 🔧
 
 | Server | Tool | Description |
@@ -49,19 +51,19 @@ For handoff-safe citation work, `prepare_evidence_pack` materializes canonical b
 | GRaDOS | `parse_pdf_file` | Parse a local PDF into markdown. Without a DOI it returns a truncated preview; with a DOI it saves the paper into the canonical library and returns a save receipt. |
 | GRaDOS | `ingest_codex_downloaded_pdf` | Complete a pending `codex` Chrome-extension handoff by scanning the configured watch directory for one validated PDF, then reuse `parse_pdf_file(..., copy_to_library=true, acquisition_via="codex")`. Ambiguous or invalid candidates are recorded as recoverable failures. |
 | GRaDOS | `save_paper_to_zotero` | Save one paper to the configured Zotero library through the Web API, typically for papers that actually support the final answer. |
-| GRaDOS | `save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, and compression-safe evidence checkpoints in the local SQLite state store. |
+| GRaDOS | `save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, compression-safe evidence checkpoints, and run-linked artifacts in the local SQLite state store. Include `metadata.research_run_id` to attach an artifact to a run manifest. |
 | GRaDOS | `query_research_artifacts` | Query previously saved research artifacts by id, kind, or keyword. `detail=true` returns the full stored content. |
 | GRaDOS | `prepare_evidence_pack` | Retrieve candidate anchors, reread canonical blocks from `papers/*.md`, and persist a minimal `evidence_pack` artifact with pack hash, block hashes, and answerability status. |
 | GRaDOS | `read_evidence_pack` | Restore a persisted evidence pack by pack id or artifact id. |
 | GRaDOS | `verify_evidence_pack` | Rebuild canonical block manifests from current `papers/*.md` and report snapshot/current validity, missing papers, document changes, relocation, and hash mismatches. |
-| GRaDOS | `audit_answer_against_pack` | Audit draft claims using only evidence items inside one verified pack. It does not search the full library to fill gaps. |
-| GRaDOS | `suggest_missing_evidence` | Suggest follow-up evidence queries for unsupported or weak pack-audit claims without changing strict audit results. |
+| GRaDOS | `audit_answer_against_pack` | Audit draft claims using only evidence items inside one verified pack. It returns `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts and does not search the full library to fill gaps. |
+| GRaDOS | `suggest_missing_evidence` | Suggest follow-up evidence or revision work for non-verified pack-audit claims without changing strict audit results. |
 | GRaDOS | `manage_failure_cases` | Record, inspect, and summarize failed fetch, parse, search, or citation attempts. Can also suggest conservative retry steps from local failure memory. |
 | GRaDOS | `get_citation_graph` | Return lightweight local citation relationships, including citation neighbors, common references, and reverse citing-paper lookups. |
 | GRaDOS | `get_papers_full_context` | Return structured full-context material for a small paper set, with token estimates or actual section content for CAG-style deep reading. |
 | GRaDOS | `build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. Rows carry reread anchors for agent-side reranking before citation verification. |
 | GRaDOS | `compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. Returned excerpts carry per-axis reread anchors. |
-| GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return first-pass `supported`, `weak`, `unsupported`, or `misattributed` statuses with candidate evidence snippets and anchors. `candidate_limit` controls candidates per claim. `misattributed` is currently reliable for resolvable Latin-script or Chinese author-year citations; numeric citations stay support-only until bibliography mapping exists. |
+| GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return first-pass `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts with candidate evidence snippets, issue types, revision actions, and anchors. `candidate_limit` controls candidates per claim. |
 
 ### MCP Resources 📚
 
@@ -86,7 +88,7 @@ After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 | `database/chroma/` | ChromaDB collections | Built-in semantic retrieval store |
 | `database/fts.sqlite3` | Rebuildable SQLite FTS5/BM25 index | Deterministic lexical fallback and hybrid retrieval candidate generation |
 | `database/remote_metadata/` | ChromaDB collection | Remote paper metadata, fetch status, and browser-resume cache |
-| `database/research.sqlite3` | Research artifacts and failure memory | Evidence packs, checkpoints, extraction receipts, and recoverable failure records |
+| `database/research.sqlite3` | Research artifacts and failure memory | Evidence packs, run manifests, checkpoints, extraction receipts, and recoverable failure records |
 | `research_checkpoints/` | `checkpoint.json` and rendered `checkpoint.md` files | Recoverable indepth research workflow state |
 | `paper_summaries/` | Query-independent derived paper summaries | Navigation and context recovery, never citation evidence |
 | `browser/` | Managed Chromium, profile, extensions | Browser strategy assets for publisher PDF access |

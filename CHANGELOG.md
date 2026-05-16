@@ -10,6 +10,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Updated the locked Python dependency graph for vulnerable networking, XML, auth, multipart, and parser-adjacent packages, including `authlib`, `cryptography`, `lxml`, `python-multipart`, `urllib3`, and Docling parser dependencies.
 
 ### Added
+- Added `research_run_manifest` artifacts with `research_run_id`, run-level artifact indexes, append-only event ledgers, redacted config/provenance snapshots, and automatic linking for `save_research_artifact(..., metadata={"research_run_id": ...})`.
 - Added default-off `research.external_synthesis.enabled` config, `grados external-synthesis is-enabled --quiet`, `grados external-synthesis status --json`, and host-agent protocol docs for using the latest visible ChatGPT Pro model at the highest available thinking strength without making GRaDOS call ChatGPT or share unverified evidence.
 - Added a canonical paragraph-block registry plus persisted `evidence_pack` artifacts and MCP tools: `prepare_evidence_pack`, `read_evidence_pack`, `verify_evidence_pack`, `audit_answer_against_pack`, and `suggest_missing_evidence`.
 - Added a rebuildable SQLite FTS5/BM25 index at `database/fts.sqlite3`, exact lookup candidates, hybrid RRF saved-paper retrieval, and `grados eval-retrieval` for local retrieval fixtures.
@@ -37,6 +38,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed draft and pack audit outputs from `status` / `status_counts` to `verdict` / `verdict_counts`, using the paper-revision verdict set `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, and `unverifiable_access` with issue types and revision actions instead of the removed `supported`, `weak`, `unsupported`, and `misattributed` status language.
 - Changed `search_saved_papers` to use dense retrieval, SQLite FTS/BM25, exact lookup, and RRF when reranking is enabled; if dense retrieval is unavailable it now returns FTS fallback results with mode/retriever/rank/score/query trace.
 - Changed direct PDF download timeout handling so `current_pdf_timeout()` uses `extract.pdf_read_timeout=120s`, while landing-page/native text fetches keep `extract.fetch_read_timeout=60s`.
 - Changed browser direct-PDF backfill to use the configurable `extract.headless_browser.pdf_backfill_timeout`, separate from browser navigation and polling deadlines.

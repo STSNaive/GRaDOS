@@ -68,7 +68,7 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
         draft_text="Composite damping improves vibration attenuation by 18% [Smith et al., 2025].",
         strictness="strict",
     )
-    misattributed = audit_draft_support(
+    citation_mismatch = audit_draft_support(
         tmp_path / "chroma",
         draft_text="Baseline mismatch is resolved in the experiment [Smith et al., 2025].",
         strictness="strict",
@@ -79,6 +79,12 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
         citation_style="numeric",
         strictness="strict",
     )
+    numeric_supported = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text="Composite damping improves vibration attenuation by 18% [12].",
+        citation_style="numeric",
+        strictness="strict",
+    )
 
     assert grid.grids[0].rows[0].support_strength == "high"
     assert grid.grids[0].rows[0].canonical_uri == "grados://papers/10_1234_demo"
@@ -86,12 +92,53 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
     assert grid.grids[0].rows[0].paragraph_count == 2
     assert grid.grids[0].rows[0].dense_score == 1.1
     assert grid.grids[0].rows[0].lexical_score == 0.25
-    assert supported.claims[0].status == "supported"
+    assert supported.claims[0].verdict == "verified"
+    assert supported.verdict_counts == {"verified": 1}
     assert supported.claims[0].evidence[0].canonical_uri == "grados://papers/10_1234_demo"
     assert supported.claims[0].evidence[0].paragraph_start == 4
     assert supported.claims[0].evidence[0].paragraph_count == 2
-    assert misattributed.claims[0].status == "misattributed"
-    assert numeric.claims[0].status == "weak"
+    assert citation_mismatch.claims[0].verdict == "major_distortion"
+    assert citation_mismatch.claims[0].issue_type == "citation_mismatch"
+    assert numeric.claims[0].verdict == "minor_distortion"
+    assert numeric.claims[0].issue_type == "low_confidence_support"
+    assert numeric_supported.claims[0].verdict == "verified"
+    assert numeric_supported.claims[0].issue_type == ""
+
+
+def test_audit_draft_support_requires_canonical_paragraph_window(monkeypatch, tmp_path: Path) -> None:
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, limit, kwargs)
+        return [
+            PaperSearchResult(
+                doi="10.1234/no-window",
+                safe_doi="10_1234_no_window",
+                title="Indexed Without Window",
+                authors=["Smith"],
+                year="2025",
+                journal="Composite Structures",
+                section_name="Results",
+                paragraph_start=0,
+                paragraph_count=0,
+                snippet="Composite damping improved vibration attenuation by 18%.",
+                score=1.35,
+            )
+        ]
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    result = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text="Composite damping improves vibration attenuation by 18% [Smith et al., 2025].",
+        strictness="strict",
+    )
+
+    claim = result.claims[0]
+    assert claim.verdict == "unverifiable_access"
+    assert claim.issue_type == "missing_canonical_anchor"
+    assert claim.requires_canonical_reread is True
+    assert claim.evidence[0].canonical_uri == "grados://papers/10_1234_no_window"
+    assert claim.evidence[0].paragraph_start is None
+    assert claim.evidence[0].paragraph_count is None
 
 
 def test_audit_draft_support_handles_chinese_claims_and_author_year_citations(
@@ -149,7 +196,7 @@ def test_audit_draft_support_handles_chinese_claims_and_author_year_citations(
     )
 
     assert result.claims_checked == 2
-    assert [claim.status for claim in result.claims] == ["supported", "supported"]
+    assert [claim.verdict for claim in result.claims] == ["verified", "verified"]
     assert [claim.query_text for claim in result.claims] == [
         "复合阻尼将振动衰减提高了18%。",
         "另一项实验表明它在低资源场景下仍然稳定。",
@@ -197,7 +244,7 @@ def test_audit_draft_support_deduplicates_repeated_queries(monkeypatch, tmp_path
     )
 
     assert result.claims_checked == 20
-    assert all(claim.status == "supported" for claim in result.claims)
+    assert all(claim.verdict == "verified" for claim in result.claims)
     assert calls == ["Composite damping improves vibration attenuation by 18% ."]
 
 
@@ -218,4 +265,5 @@ def test_audit_draft_support_uses_configurable_candidate_limit(monkeypatch, tmp_
     )
 
     assert result.claims_checked == 1
+    assert result.claims[0].verdict == "unverifiable"
     assert captured_limits == [9]

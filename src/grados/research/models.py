@@ -216,22 +216,30 @@ class AuditedClaim:
     claim_id: str
     text: str
     query_text: str
-    status: str
+    verdict: str
     citation_marker_present: bool
     citations: list[AuditCitationMarker]
     evidence: list[AuditEvidenceItem]
+    severity: str = ""
+    issue_type: str = ""
+    revision_action: str = ""
+    mismatch_detail: str = ""
+    confidence: float = 0.0
+    requires_canonical_reread: bool = True
 
 
 @dataclass(frozen=True)
 class ClaimMapEntry:
     claim_id: str
-    status: str
+    verdict: str
     evidence_dois: list[str]
+    issue_type: str = ""
+    revision_action: str = ""
 
 
 @dataclass(frozen=True)
 class DraftAuditResult:
     claims_checked: int
-    status_counts: dict[str, int]
+    verdict_counts: dict[str, int]
     claims: list[AuditedClaim]
     claim_map: list[ClaimMapEntry] = field(default_factory=list)

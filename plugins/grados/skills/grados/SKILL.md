@@ -29,7 +29,7 @@ A successful GRaDOS answer:
 
 1. Answers the user's actual research question in Chinese.
 2. Grounds factual claims in papers that were searched, saved, or already present locally, then reread through `grados:read_saved_paper`.
-3. Separates strong support, weak support, contradictions, and missing evidence instead of smoothing uncertainty into prose.
+3. Separates `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, and `unverifiable_access` claims instead of smoothing uncertainty into prose.
 4. Records reusable evidence anchors when the work may survive context compression, handoff, comparison, or later draft revision.
 
 Stop searching or extracting when the answer has enough citation-grade coverage, usually after local-library hits or **3-5 deeply read papers** cover the core question. Continue only when a specific subquestion, contradiction, missing method/result detail, or user request requires more evidence. Do not search for decorative background, generic framing, or facts that will not be cited.
@@ -50,7 +50,7 @@ GRaDOS keeps screening lightweight while preserving canonical full text for cita
 
 The host agent model performs query planning, candidate screening, agent-side reranking, support judgment, terminology normalization, and synthesis. GRaDOS tools provide deterministic search, storage, indexing, retrieval anchors, low-token structure cards, and canonical saved-paper reads. Do not assume GRaDOS server tools can call the host model.
 
-Use host-side subagents only when isolated parallel triage reduces context load: many candidate papers, independent subquestions, large draft audits, or comparison across paper groups. Subagents must return only candidate anchors, rejected/weak items, gaps, warnings, and exact reread selectors such as `canonical_uri`, `paragraph_start`, and `paragraph_count`. They must not write final prose or become evidence sources. The main agent owns final synthesis and must reread every cited anchor with `grados:read_saved_paper`.
+Use host-side subagents only when isolated parallel triage reduces context load: many candidate papers, independent subquestions, large draft audits, or comparison across paper groups. Subagents must return only candidate anchors, rejected/non-verified items, gaps, warnings, and exact reread selectors such as `canonical_uri`, `paragraph_start`, and `paragraph_count`. They must not write final prose or become evidence sources. The main agent owns final synthesis and must reread every cited anchor with `grados:read_saved_paper`.
 
 ## Compression-Safe Anchors
 
@@ -60,6 +60,8 @@ Use this protocol whenever a claim, evidence grid, comparison, or draft audit ma
 2. Create or confirm anchors from canonical saved-paper reads, not from snippets, summaries, receipts, or helper tables.
 3. Persist reusable anchor sets with `grados:save_research_artifact(kind="evidence_checkpoint")`.
 4. Recover checkpoints with `grados:query_research_artifacts(kind="evidence_checkpoint", detail=true)`, then reread saved anchors before drafting, citing, auditing, or comparing.
+
+For each long or handoff-prone research run, maintain a lightweight `research_run_manifest` as a directory page for that run, not as an evidence source. The manifest may link existing artifacts such as search queries, candidates, extraction receipts, parser receipts, `paper_summary`, `research_checkpoint`, `evidence_checkpoint`, `evidence_pack`, audit result IDs, canonical anchors, and failure records. It may also keep an append-only event ledger and a redacted config/provenance snapshot; append correction events rather than editing prior ledger entries, and never store secrets. Final claims and citations must be grounded by rereading canonical `papers/*.md` files or current-valid evidence packs, not by citing the manifest itself.
 
 ## Research Workflow
 
@@ -108,7 +110,7 @@ Before presenting the final answer:
 1. Re-examine every claim against the saved-paper content, never against memory of earlier tool outputs.
 2. If earlier context was compressed or truncated, re-call `grados:get_saved_paper_structure` and `grados:read_saved_paper`.
 3. Use `grados:audit_draft_support` for first-pass support auditing, then judge support only after rereading the underlying canonical paragraph windows.
-4. Delete unsupported claims. When revising a draft, label weak spots as `supported`, `weak`, `unsupported`, or `misattributed` instead of smoothing them over.
+4. Delete or rewrite non-verified claims. When revising a draft, use only the audit verdicts `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, and `unverifiable_access`; do not emit or preserve the removed `supported`, `weak`, `unsupported`, or `misattributed` labels.
 5. If the retrieved papers do not cover the user's specific aspect, state that clearly in Chinese and specify what the papers do cover.
 6. Do **not** fill gaps with pre-trained knowledge.
 
@@ -130,4 +132,4 @@ For literature reviews, mechanism explanations, state-of-the-art summaries, and 
 - "Paper Title" (DOI: xxx) — 摘要表明该论文可能包含相关信息，但全文提取失败。
 ```
 
-For narrow questions, use a shorter answer, but keep the same evidence rules: cite only reread papers, list cited references, and disclose missing full text or weak support when it affects the conclusion.
+For narrow questions, use a shorter answer, but keep the same evidence rules: cite only reread papers, list cited references, and disclose missing full text or non-verified support when it affects the conclusion.

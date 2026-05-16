@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from pathlib import Path
+from typing import TypedDict
 
 from grados.research.models import (
     AuditCitationMarker,
@@ -16,6 +17,22 @@ from grados.research.models import (
 from grados.storage.paths import resolve_papers_dir
 from grados.storage.retrieval import PaperSearchResult
 from grados.storage.vector import search_papers
+
+VERDICT_VERIFIED = "verified"
+VERDICT_MINOR_DISTORTION = "minor_distortion"
+VERDICT_MAJOR_DISTORTION = "major_distortion"
+VERDICT_UNVERIFIABLE = "unverifiable"
+VERDICT_UNVERIFIABLE_ACCESS = "unverifiable_access"
+
+
+class DraftVerdictPayload(TypedDict):
+    verdict: str
+    severity: str
+    issue_type: str
+    revision_action: str
+    mismatch_detail: str
+    confidence: float
+    requires_canonical_reread: bool
 
 
 def _split_claims(draft_text: str) -> list[str]:
@@ -95,6 +112,106 @@ def _citation_style_supports_attribution(citation_style: str) -> bool:
     return citation_style == "author_year"
 
 
+def _has_canonical_anchor(result: PaperSearchResult) -> bool:
+    safe_doi = str(getattr(result, "safe_doi", "") or "")
+    paragraph_count = int(getattr(result, "paragraph_count", 0) or 0)
+    return bool(safe_doi) and paragraph_count > 0
+
+
+def _draft_verdict(
+    *,
+    evidence: list[PaperSearchResult],
+    markers: list[AuditCitationMarker],
+    citation_style: str,
+    strictness: str,
+) -> DraftVerdictPayload:
+    top_score = evidence[0].score if evidence else 0.0
+    confidence = round(float(top_score), 6)
+    if not evidence or top_score < 0.55:
+        return {
+            "verdict": VERDICT_UNVERIFIABLE,
+            "severity": "blocking",
+            "issue_type": "no_supporting_passage",
+            "revision_action": "search_and_prepare_evidence_pack",
+            "mismatch_detail": "No local evidence candidate reached the first-pass support threshold.",
+            "confidence": confidence,
+            "requires_canonical_reread": True,
+        }
+
+    top_has_anchor = _has_canonical_anchor(evidence[0])
+    if top_score >= 1.1 and not top_has_anchor:
+        return {
+            "verdict": VERDICT_UNVERIFIABLE_ACCESS,
+            "severity": "access",
+            "issue_type": "missing_canonical_anchor",
+            "revision_action": "reacquire_full_text_or_switch_parser",
+            "mismatch_detail": "A high-scoring candidate exists, but no canonical paragraph window is available.",
+            "confidence": confidence,
+            "requires_canonical_reread": True,
+        }
+
+    if markers and evidence and _citation_style_supports_attribution(citation_style):
+        marker_matched = any(
+            _citation_matches_result(marker, result)
+            for marker in markers
+            for result in evidence
+        )
+        if not marker_matched:
+            if strictness == "strict":
+                return {
+                    "verdict": VERDICT_MAJOR_DISTORTION,
+                    "severity": "major",
+                    "issue_type": "citation_mismatch",
+                    "revision_action": "rewrite_or_replace_citation",
+                    "mismatch_detail": (
+                        "The claim retrieved evidence, but not from the resolvable cited author-year source."
+                    ),
+                    "confidence": confidence,
+                    "requires_canonical_reread": True,
+                }
+            return {
+                "verdict": VERDICT_MINOR_DISTORTION,
+                "severity": "minor",
+                "issue_type": "citation_mismatch",
+                "revision_action": "revise_wording_or_add_locator",
+                "mismatch_detail": "Balanced mode keeps the citation mismatch as a revision note.",
+                "confidence": confidence,
+                "requires_canonical_reread": True,
+            }
+
+    if strictness == "strict" and not markers:
+        return {
+            "verdict": VERDICT_MINOR_DISTORTION,
+            "severity": "minor",
+            "issue_type": "missing_citation",
+            "revision_action": "add_citation_or_locator",
+            "mismatch_detail": "The claim has relevant local evidence but no citation marker in strict audit mode.",
+            "confidence": confidence,
+            "requires_canonical_reread": True,
+        }
+
+    if top_score >= 1.1:
+        return {
+            "verdict": VERDICT_VERIFIED,
+            "severity": "none",
+            "issue_type": "",
+            "revision_action": "keep",
+            "mismatch_detail": "",
+            "confidence": confidence,
+            "requires_canonical_reread": False,
+        }
+
+    return {
+        "verdict": VERDICT_MINOR_DISTORTION,
+        "severity": "minor",
+        "issue_type": "low_confidence_support",
+        "revision_action": "revise_wording_or_add_locator",
+        "mismatch_detail": "Relevant evidence exists, but first-pass support is below the verified threshold.",
+        "confidence": confidence,
+        "requires_canonical_reread": True,
+    }
+
+
 def audit_draft_support(
     chroma_dir: Path,
     *,
@@ -109,7 +226,7 @@ def audit_draft_support(
     claims = _split_claims(draft_text)
     candidate_limit = max(1, candidate_limit)
     audited_claims: list[AuditedClaim] = []
-    status_counts: Counter[str] = Counter()
+    verdict_counts: Counter[str] = Counter()
     evidence_cache: dict[str, list[PaperSearchResult]] = {}
 
     for index, claim in enumerate(claims, 1):
@@ -129,27 +246,18 @@ def audit_draft_support(
                 )
                 evidence_cache[cache_key] = cached
             evidence = cached
-        top_score = evidence[0].score if evidence else 0.0
-        status = "unsupported"
-        if top_score >= 1.1:
-            status = "supported"
-        elif top_score >= 0.55:
-            status = "weak"
-
-        if markers and evidence and _citation_style_supports_attribution(citation_style):
-            marker_matched = any(
-                _citation_matches_result(marker, result)
-                for marker in markers
-                for result in evidence
-            )
-            if not marker_matched:
-                status = "misattributed" if strictness == "strict" else "weak"
+        verdict_payload = _draft_verdict(
+            evidence=evidence,
+            markers=markers,
+            citation_style=citation_style,
+            strictness=strictness,
+        )
 
         entry = AuditedClaim(
             claim_id=f"claim_{index}",
             text=claim,
             query_text=search_query,
-            status=status,
+            verdict=str(verdict_payload["verdict"]),
             citation_marker_present=bool(markers),
             citations=markers,
             evidence=[
@@ -169,23 +277,31 @@ def audit_draft_support(
                 )
                 for item in evidence
             ],
+            severity=str(verdict_payload["severity"]),
+            issue_type=str(verdict_payload["issue_type"]),
+            revision_action=str(verdict_payload["revision_action"]),
+            mismatch_detail=str(verdict_payload["mismatch_detail"]),
+            confidence=float(verdict_payload["confidence"]),
+            requires_canonical_reread=bool(verdict_payload["requires_canonical_reread"]),
         )
         audited_claims.append(entry)
-        status_counts[status] += 1
+        verdict_counts[entry.verdict] += 1
 
     claim_map: list[ClaimMapEntry] = []
     if return_claim_map:
         claim_map = [
             ClaimMapEntry(
                 claim_id=item.claim_id,
-                status=item.status,
+                verdict=item.verdict,
                 evidence_dois=[evidence.doi for evidence in item.evidence],
+                issue_type=item.issue_type,
+                revision_action=item.revision_action,
             )
             for item in audited_claims
         ]
     return DraftAuditResult(
         claims_checked=len(audited_claims),
-        status_counts=dict(status_counts),
+        verdict_counts=dict(verdict_counts),
         claims=audited_claims,
         claim_map=claim_map,
     )

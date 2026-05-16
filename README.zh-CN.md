@@ -35,6 +35,8 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 需要跨对话或交接保持引用依据时，用 `prepare_evidence_pack` 从 `papers/*.md` materialize canonical blocks。只有 `verify_evidence_pack` 返回 `current_valid=true` 的 pack 才能作为当前引用证据；strict pack audit 不会临时全库搜索来悄悄补证。
 
+需要恢复整次研究过程时，`research_run_manifest` 是一次 research run 的轻量目录页，而不是证据来源。它可以串联 search query、候选、extraction/parser receipt、`paper_summary`、`research_checkpoint`、`evidence_checkpoint`、`evidence_pack`、audit result id、canonical anchor 和失败记录；也可以保存 append-only event ledger 与 redacted config/provenance snapshot。修正流程用追加 correction event 的方式表达，不改写旧事件；任何 secret 都不得写入 manifest。最终引用仍必须回读 canonical `papers/*.md` 或 current-valid evidence pack。
+
 ### MCP 工具 🔧
 
 | 服务 | 工具 | 说明 |
@@ -49,19 +51,19 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `parse_pdf_file` | 把本地 PDF 解析为 markdown。未提供 DOI 时返回截断预览；提供 DOI 时会保存进 canonical 论文库并返回保存回执。 |
 | GRaDOS | `ingest_codex_downloaded_pdf` | 完成挂起的 `codex` Chrome extension handoff：扫描配置的 watch dir，找到唯一通过校验的 PDF，然后复用 `parse_pdf_file(..., copy_to_library=true, acquisition_via="codex")` 入库；歧义或失败会记录为可恢复失败。 |
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 把单篇论文保存到当前配置的 Zotero 库，通常用于最终答案里实际引用到的论文。 |
-| GRaDOS | `save_research_artifact` | 把 search snapshot、extraction receipt、evidence grid、compression-safe evidence checkpoint 等可复用中间产物持久化到本地 SQLite 状态库。 |
+| GRaDOS | `save_research_artifact` | 把 search snapshot、extraction receipt、evidence grid、compression-safe evidence checkpoint 和 run-linked artifact 等可复用中间产物持久化到本地 SQLite 状态库；传入 `metadata.research_run_id` 可把 artifact 挂到 run manifest。 |
 | GRaDOS | `query_research_artifacts` | 按 id、kind 或关键词查询已保存的 research artifact；`detail=true` 会返回完整内容。 |
 | GRaDOS | `prepare_evidence_pack` | 召回候选 anchor，回读 `papers/*.md` 中的 canonical blocks，并持久化最小 `evidence_pack` artifact，包含 pack hash、block hash 和 answerability 状态。 |
 | GRaDOS | `read_evidence_pack` | 通过 pack id 或 artifact id 恢复已保存的 evidence pack。 |
 | GRaDOS | `verify_evidence_pack` | 从当前 `papers/*.md` 重建 canonical block manifest，并报告 snapshot/current validity、missing paper、document change、relocation 和 hash mismatch。 |
-| GRaDOS | `audit_answer_against_pack` | 只使用单个 pack 内的 evidence items 审计草稿 claims，不会全库搜索来填补缺口。 |
-| GRaDOS | `suggest_missing_evidence` | 针对 pack audit 中 unsupported 或 weak 的 claim 给出后续补证查询建议，不改变 strict audit 结论。 |
+| GRaDOS | `audit_answer_against_pack` | 只使用单个 pack 内的 evidence items 审计草稿 claims，返回 `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，不会全库搜索来填补缺口。 |
+| GRaDOS | `suggest_missing_evidence` | 针对 pack audit 中非 `verified` 的 claim 给出后续补证或修改建议，不改变 strict audit 结论。 |
 | GRaDOS | `manage_failure_cases` | 记录、查询并总结 fetch、parse、search 或 citation 失败案例，也能给出保守的重试建议。 |
 | GRaDOS | `get_citation_graph` | 返回本地论文库中的轻量引用关系，包括引用邻居、共同参考文献和反向 citing-paper 查询。 |
 | GRaDOS | `get_papers_full_context` | 为少量论文返回结构化全文上下文，可先拿 token 估计，也可直接进入 CAG 风格的深读模式。 |
 | GRaDOS | `build_evidence_grid` | 围绕主题或子问题，从本地论文库构建写作前的证据网格；行内带可回读 anchor，供 agent-side reranking 后再核验引用。 |
 | GRaDOS | `compare_papers` | 跨多篇已保存论文抽取并行对比材料，聚焦 methods、results 或 full text；返回 excerpt 会带每个对比轴的回读 anchor。 |
-| GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 first-pass `supported`、`weak`、`unsupported` 或 `misattributed` 状态以及候选 evidence snippet/anchor；`candidate_limit` 控制每条 claim 的候选数。当前可解析的拉丁字母或中文 author-year 引文都能较可靠判定 `misattributed`；numeric citation 在建立 bibliography 映射前仍只做 support 检查。 |
+| GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 first-pass `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，以及候选 evidence snippet、issue type、revision action 和 anchor；`candidate_limit` 控制每条 claim 的候选数。 |
 
 ### MCP 资源 📚
 
@@ -86,7 +88,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | `database/chroma/` | ChromaDB collections | 内置语义检索存储 |
 | `database/fts.sqlite3` | 可重建 SQLite FTS5/BM25 索引 | 确定性词法 fallback 与 hybrid retrieval 候选生成 |
 | `database/remote_metadata/` | ChromaDB collection | 远程论文 metadata、fetch 状态与浏览器恢复缓存 |
-| `database/research.sqlite3` | Research artifacts 与 failure memory | Evidence packs、checkpoints、extraction receipts 和可恢复失败记录 |
+| `database/research.sqlite3` | Research artifacts 与 failure memory | Evidence packs、run manifests、checkpoints、extraction receipts 和可恢复失败记录 |
 | `research_checkpoints/` | `checkpoint.json` 与渲染后的 `checkpoint.md` | 可恢复的 indepth 研究工作流状态 |
 | `paper_summaries/` | query-independent 的派生论文 summary | 导航与上下文恢复，不能作为引用依据 |
 | `browser/` | 托管 Chromium、profile、extensions | publisher PDF 访问所需的 `browser` 策略资产 |

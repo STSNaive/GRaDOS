@@ -101,8 +101,8 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
     assert full_context.parameters["properties"]["max_total_tokens"]["maximum"] == 128000
 
     audit = tools["audit_draft_support"]
-    assert "claim-level `supported`, `weak`, `unsupported`, or `misattributed`" in (audit.description or "")
-    assert "author-year citations" in (audit.description or "")
+    assert "claim-level `verified`, `minor_distortion`, `major_distortion`" in (audit.description or "")
+    assert "revision actions" in (audit.description or "")
     assert audit.parameters["properties"]["draft_text"]["minLength"] == 1
     assert audit.parameters["properties"]["candidate_limit"]["maximum"] == 25
     assert "project_id" not in tools["query_research_artifacts"].parameters["properties"]
@@ -1306,6 +1306,8 @@ def test_stage_b_evidence_tools_are_wired_to_local_library(tmp_path: Path, monke
                     year="2025",
                     journal="Composite Structures",
                     section_name="Results",
+                    paragraph_start=4,
+                    paragraph_count=1,
                     snippet="Composite damping improves vibration attenuation by 18%.",
                     score=1.3,
                 )
@@ -1336,4 +1338,4 @@ def test_stage_b_evidence_tools_are_wired_to_local_library(tmp_path: Path, monke
     assert context["papers"][0]["sections"][0]["content"].startswith("## Abstract")
     assert grid["grids"][0]["rows"][0]["support_strength"] == "high"
     assert "| Paper |" in comparison["rendered"]
-    assert audit["claims"][0]["status"] == "supported"
+    assert audit["claims"][0]["verdict"] == "verified"

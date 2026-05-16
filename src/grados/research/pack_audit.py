@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from grados.research.draft_audit import (
+    VERDICT_MAJOR_DISTORTION,
+    VERDICT_MINOR_DISTORTION,
+    VERDICT_UNVERIFIABLE,
+    VERDICT_UNVERIFIABLE_ACCESS,
+    VERDICT_VERIFIED,
     _extract_citation_markers,
     _split_claims,
     _strip_citations,
@@ -70,28 +75,96 @@ def _citation_matches_item(marker: Any, item: EvidencePackItem) -> bool:
     return item.year == marker_year and any(marker_author in author for author in item_authors)
 
 
-def _claim_status(
+def _claim_verdict(
     claim_text: str,
     markers: list[Any],
     ranked: list[tuple[EvidencePackItem, float]],
     *,
     strict: bool,
-) -> str:
+) -> dict[str, Any]:
     if not ranked:
-        return "unsupported"
+        return {
+            "verdict": VERDICT_UNVERIFIABLE,
+            "severity": "blocking",
+            "issue_type": "no_supporting_passage",
+            "revision_action": "search_and_prepare_evidence_pack",
+            "mismatch_detail": "The evidence pack contains no candidate passage for this claim.",
+            "confidence": 0.0,
+            "requires_canonical_reread": True,
+        }
     top_score = ranked[0][1]
     if top_score < 0.18:
-        return "unsupported"
+        return {
+            "verdict": VERDICT_UNVERIFIABLE,
+            "severity": "blocking",
+            "issue_type": "no_supporting_passage",
+            "revision_action": "search_and_prepare_evidence_pack",
+            "mismatch_detail": "The best pack passage is below the support threshold.",
+            "confidence": round(float(top_score), 6),
+            "requires_canonical_reread": True,
+        }
     if top_score < 0.32:
-        return "weak"
+        return {
+            "verdict": VERDICT_MINOR_DISTORTION,
+            "severity": "minor",
+            "issue_type": "low_confidence_support",
+            "revision_action": "revise_wording_or_add_locator",
+            "mismatch_detail": "A related pack passage exists, but the overlap is too weak for verification.",
+            "confidence": round(float(top_score), 6),
+            "requires_canonical_reread": True,
+        }
     if strict and _GENERALIZER_PATTERN.search(claim_text) and top_score < 0.62:
-        return "overgeneralized"
+        return {
+            "verdict": VERDICT_MINOR_DISTORTION,
+            "severity": "minor",
+            "issue_type": "scope_overreach",
+            "revision_action": "revise_wording_or_add_locator",
+            "mismatch_detail": "The claim uses broad language that the pack evidence does not fully cover.",
+            "confidence": round(float(top_score), 6),
+            "requires_canonical_reread": True,
+        }
     if markers and any(getattr(marker, "style", "") == "author_year" for marker in markers):
         if not any(_citation_matches_item(marker, item) for item, _ in ranked[:3] for marker in markers):
-            return "misattributed"
+            return {
+                "verdict": VERDICT_MAJOR_DISTORTION,
+                "severity": "major",
+                "issue_type": "citation_mismatch",
+                "revision_action": "rewrite_or_replace_citation",
+                "mismatch_detail": "The pack has related evidence, but not from the cited author-year source.",
+                "confidence": round(float(top_score), 6),
+                "requires_canonical_reread": True,
+            }
     if strict and not markers:
-        return "uncited_factual_claim"
-    return "supported"
+        return {
+            "verdict": VERDICT_UNVERIFIABLE,
+            "severity": "blocking",
+            "issue_type": "missing_citation",
+            "revision_action": "add_citation_or_locator",
+            "mismatch_detail": "Strict pack audit requires a citation marker for factual claims.",
+            "confidence": round(float(top_score), 6),
+            "requires_canonical_reread": True,
+        }
+    return {
+        "verdict": VERDICT_VERIFIED,
+        "severity": "none",
+        "issue_type": "",
+        "revision_action": "keep",
+        "mismatch_detail": "",
+        "confidence": round(float(top_score), 6),
+        "requires_canonical_reread": False,
+    }
+
+
+def _access_verdict(reason: str) -> dict[str, Any]:
+    return {
+        "verdict": VERDICT_UNVERIFIABLE_ACCESS,
+        "severity": "access",
+        "issue_type": reason,
+        "revision_action": "reacquire_full_text_or_switch_parser",
+        "mismatch_detail": "The evidence pack cannot be treated as current canonical full-text evidence.",
+        "confidence": 0.0,
+        "requires_canonical_reread": True,
+    }
 
 
 def _rank_evidence(claim_text: str, items: list[EvidencePackItem]) -> list[tuple[EvidencePackItem, float]]:
@@ -127,7 +200,7 @@ def audit_answer_against_pack(
             "strict": strict,
             "search_scope": "pack_only",
             "claims_checked": 0,
-            "status_counts": {},
+            "verdict_counts": {},
             "claims": [],
             "claim_map": [],
             "error": loaded.get("error", "pack_not_found"),
@@ -137,16 +210,16 @@ def audit_answer_against_pack(
     pack_is_current = bool(verify_result.get("current_valid"))
     claims = _split_claims(draft)
     audited_claims: list[dict[str, Any]] = []
-    status_counts: Counter[str] = Counter()
+    verdict_counts: Counter[str] = Counter()
 
     for index, claim in enumerate(claims, 1):
         query_text = _strip_citations(claim)
         markers = _extract_citation_markers(claim, citation_style)
         ranked = _rank_evidence(query_text, pack.evidence_items)
         if strict and not pack_is_current:
-            status = "needs_human_review"
+            verdict_payload = _access_verdict("stale_pack")
         else:
-            status = _claim_status(query_text, markers, ranked, strict=strict)
+            verdict_payload = _claim_verdict(query_text, markers, ranked, strict=strict)
         evidence = [
             {
                 "canonical_uri": item.canonical_uri,
@@ -165,20 +238,28 @@ def audit_answer_against_pack(
             "claim_id": f"claim_{index}",
             "text": claim,
             "query_text": query_text,
-            "status": status,
+            "verdict": str(verdict_payload["verdict"]),
             "citation_marker_present": bool(markers),
             "citations": [asdict(marker) for marker in markers],
             "evidence": evidence,
+            "severity": str(verdict_payload["severity"]),
+            "issue_type": str(verdict_payload["issue_type"]),
+            "revision_action": str(verdict_payload["revision_action"]),
+            "mismatch_detail": str(verdict_payload["mismatch_detail"]),
+            "confidence": float(verdict_payload["confidence"]),
+            "requires_canonical_reread": bool(verdict_payload["requires_canonical_reread"]),
         }
         audited_claims.append(audited)
-        status_counts[status] += 1
+        verdict_counts[str(verdict_payload["verdict"])] += 1
 
     claim_map: list[dict[str, Any]] = []
     if return_claim_map:
         claim_map = [
             {
                 "claim_id": claim["claim_id"],
-                "status": claim["status"],
+                "verdict": claim["verdict"],
+                "issue_type": claim["issue_type"],
+                "revision_action": claim["revision_action"],
                 "evidence_block_ids": [
                     str(item["block_id"]) for item in claim["evidence"] if item.get("block_id")
                 ],
@@ -192,7 +273,7 @@ def audit_answer_against_pack(
         "strict": strict,
         "search_scope": "pack_only",
         "claims_checked": len(audited_claims),
-        "status_counts": dict(status_counts),
+        "verdict_counts": dict(verdict_counts),
         "claims": audited_claims,
         "claim_map": claim_map,
         "verify": verify_result,
@@ -216,28 +297,33 @@ def suggest_missing_evidence(
         strict=True,
         return_claim_map=False,
     )
-    actionable_statuses = {
-        "unsupported",
-        "weak",
-        "overgeneralized",
-        "misattributed",
-        "uncited_factual_claim",
-        "needs_human_review",
+    actionable_verdicts = {
+        VERDICT_MINOR_DISTORTION,
+        VERDICT_MAJOR_DISTORTION,
+        VERDICT_UNVERIFIABLE,
+        VERDICT_UNVERIFIABLE_ACCESS,
+    }
+    next_actions = {
+        VERDICT_MINOR_DISTORTION: "revise_wording_or_add_locator",
+        VERDICT_MAJOR_DISTORTION: "rewrite_or_replace_citation",
+        VERDICT_UNVERIFIABLE: "search_and_prepare_evidence_pack",
+        VERDICT_UNVERIFIABLE_ACCESS: "reacquire_full_text_or_switch_parser",
     }
     suggestions: list[dict[str, Any]] = []
     for claim in audit.get("claims", []):
         if len(suggestions) >= max(1, max_suggestions):
             break
-        status = str(claim.get("status", ""))
-        if status not in actionable_statuses:
+        verdict = str(claim.get("verdict", ""))
+        if verdict not in actionable_verdicts:
             continue
         suggestions.append(
             {
                 "claim_id": claim.get("claim_id", ""),
-                "status": status,
+                "verdict": verdict,
+                "issue_type": claim.get("issue_type", ""),
                 "suggested_query": claim.get("query_text", claim.get("text", "")),
-                "reason": "pack_evidence_insufficient",
-                "next_action": "prepare_or_extend_evidence_pack",
+                "reason": claim.get("issue_type") or "pack_evidence_insufficient",
+                "next_action": next_actions.get(verdict, "search_and_prepare_evidence_pack"),
             }
         )
 

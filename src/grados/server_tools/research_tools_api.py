@@ -35,7 +35,8 @@ async def save_research_artifact(
             min_length=1,
             description=(
                 "Artifact kind such as `search_snapshot`, "
-                "`extraction_receipt`, `evidence_grid`, or `evidence_checkpoint`."
+                "`extraction_receipt`, `evidence_grid`, `evidence_checkpoint`, "
+                "or `research_run_manifest`."
             ),
         ),
     ],
@@ -53,7 +54,12 @@ async def save_research_artifact(
     ] = None,
     metadata: Annotated[
         dict[str, object] | None,
-        Field(description="Optional structured metadata such as query terms, filters, or audit settings."),
+        Field(
+            description=(
+                "Optional structured metadata such as query terms, filters, or audit settings. "
+                "Set `research_run_id` to link this artifact into a run manifest."
+            )
+        ),
     ] = None,
 ) -> dict[str, object]:
     """Persist a reusable research artifact in the local state database."""
@@ -387,7 +393,7 @@ async def audit_draft_support(
         Field(
             description=(
                 "Strict mode treats mismatched resolvable citations as "
-                "`misattributed`; balanced mode softens that to `weak`. "
+                "`major_distortion`; balanced mode softens that to `minor_distortion`. "
                 "Numeric citations stay support-only until bibliography mapping exists."
             )
         ),
@@ -468,7 +474,10 @@ async def suggest_missing_evidence(
     ],
     draft: Annotated[
         str,
-        Field(min_length=1, description="Draft whose weak or unsupported claims need follow-up evidence."),
+        Field(
+            min_length=1,
+            description="Draft whose non-verified pack-audit claims need follow-up evidence or revision.",
+        ),
     ],
     max_suggestions: Annotated[
         int,
@@ -493,7 +502,8 @@ def register_research_tools_api(mcp: FastMCP) -> None:
         description=(
             "Save a structured research artifact produced during search, extraction, reading, or writing. "
             "Use this for reusable intermediate outputs such as search snapshots, "
-            "extraction receipts, evidence grids, and compression-safe evidence checkpoints."
+            "extraction receipts, evidence grids, compression-safe evidence checkpoints, "
+            "and run-linked artifacts."
         )
     )(save_research_artifact)
 
@@ -569,23 +579,23 @@ def register_research_tools_api(mcp: FastMCP) -> None:
     mcp.tool(
         description=(
             "Audit draft claims against the local paper library. "
-            "Returns claim-level `supported`, `weak`, `unsupported`, or "
-            "`misattributed` statuses plus candidate evidence snippets and reread anchors; "
-            "`misattributed` currently requires resolvable author-year citations."
+            "Returns claim-level `verified`, `minor_distortion`, `major_distortion`, "
+            "`unverifiable`, or `unverifiable_access` verdicts plus candidate evidence snippets, "
+            "issue types, revision actions, and reread anchors."
         )
     )(audit_draft_support)
 
     mcp.tool(
         description=(
             "Audit draft claims against one evidence pack only. Strict mode does not search the full "
-            "library for replacement evidence; unsupported claims stay unsupported until a separate "
-            "evidence-gathering step extends or prepares a pack."
+            "library for replacement evidence; non-verified claims stay visible until a separate "
+            "evidence-gathering or revision step extends or prepares a pack."
         )
     )(audit_answer_against_pack)
 
     mcp.tool(
         description=(
-            "Suggest follow-up evidence queries for weak or unsupported pack-audit claims. "
+            "Suggest follow-up evidence or revision work for non-verified pack-audit claims. "
             "This is suggestion-only and does not alter strict audit verdicts."
         )
     )(suggest_missing_evidence)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from os import PathLike
 from pathlib import Path
 from typing import Annotated
 
@@ -129,6 +130,16 @@ def _local_state_for_paper(
     return state
 
 
+def _research_state_db_path(paths: object) -> Path:
+    database_state = getattr(paths, "database_state", None)
+    if isinstance(database_state, (str, PathLike)):
+        return Path(database_state)
+    chroma_dir = getattr(paths, "database_chroma", None)
+    if isinstance(chroma_dir, (str, PathLike)):
+        return Path(chroma_dir).parent / "research.sqlite3"
+    raise ValueError("GRaDOS paths must include database_state or database_chroma")
+
+
 def _format_local_state_line(state: dict[str, object]) -> str:
     parts = [
         f"already_saved={str(bool(state.get('already_saved'))).lower()}",
@@ -188,6 +199,12 @@ async def _run_indepth_for_results(
         make_research_checkpoint,
         write_research_checkpoint,
     )
+    from grados.research_state import (
+        append_research_run_event,
+        build_research_run_config_lock,
+        create_research_run_manifest,
+        link_research_run_artifact,
+    )
     from grados.server_tools import library_tools
     from grados.storage.remote_metadata import record_remote_fetch_result
 
@@ -202,6 +219,23 @@ async def _run_indepth_for_results(
             f"from the same limit; {len(candidates) - INDEPTH_HARD_CANDIDATE_LIMIT} were left for later."
         )
         candidates = candidates[:INDEPTH_HARD_CANDIDATE_LIMIT]
+
+    state_db = _research_state_db_path(paths)
+    run_manifest = create_research_run_manifest(
+        state_db,
+        user_question=query,
+        search_queries=[query],
+        config_lock=build_research_run_config_lock(config, paths=paths),
+        metadata={"source": "search_academic_papers", "mode": "indepth"},
+    )
+    research_run_id = str(run_manifest["research_run_id"])
+    append_research_run_event(
+        state_db,
+        research_run_id=research_run_id,
+        event_type="search_started",
+        source="search_academic_papers",
+        payload={"query": query, "limit": limit, "candidate_count": len(candidates), "mode": "indepth"},
+    )
 
     checkpoint_papers: list[ResearchCheckpointPaper] = []
     findings: list[str] = []
@@ -219,19 +253,53 @@ async def _run_indepth_for_results(
         receipt = ""
         fetch_status = str(state.get("fetch_status") or "metadata_only")
         failure_reason = ""
+        append_research_run_event(
+            state_db,
+            research_run_id=research_run_id,
+            event_type="candidate_seen",
+            source="search_academic_papers",
+            payload={
+                "doi": doi,
+                "safe_doi": safe_doi,
+                "title": title,
+                "already_saved": bool(state.get("already_saved")),
+                "fetch_status": fetch_status,
+            },
+        )
 
         if not state.get("already_saved"):
             try:
+                append_research_run_event(
+                    state_db,
+                    research_run_id=research_run_id,
+                    event_type="extract_attempted",
+                    source="extract_paper_full_text",
+                    payload={"doi": doi, "publisher": str(getattr(paper, "publisher", "") or "")},
+                )
                 receipt = await library_tools.extract_paper_full_text(
                     doi=doi,
                     publisher=str(getattr(paper, "publisher", "") or ""),
                     expected_title=title or None,
                 )
                 fetch_status = _receipt_fetch_status(receipt)
+                append_research_run_event(
+                    state_db,
+                    research_run_id=research_run_id,
+                    event_type="extract_finished",
+                    source="extract_paper_full_text",
+                    payload={"doi": doi, "fetch_status": fetch_status},
+                )
             except Exception as exc:
                 fetch_status = "failed"
                 failure_reason = f"{exc.__class__.__name__}: {exc}"
                 warnings.append(f"indepth extraction failed for {doi}: {failure_reason}")
+                append_research_run_event(
+                    state_db,
+                    research_run_id=research_run_id,
+                    event_type="failure_recorded",
+                    source="extract_paper_full_text",
+                    payload={"doi": doi, "failure_type": "extract", "error": failure_reason},
+                )
                 if metadata_dir is not None:
                     try:
                         record_remote_fetch_result(
@@ -266,12 +334,26 @@ async def _run_indepth_for_results(
                     )
                     summaries_written += 1
                     paper_summary_id = paper_summary.summary_id
+                    append_research_run_event(
+                        state_db,
+                        research_run_id=research_run_id,
+                        event_type="summary_written",
+                        source="generate_paper_summary",
+                        payload={"doi": doi, "paper_summary_id": paper_summary_id},
+                    )
                     findings.extend(paper_summary.key_findings[:2])
                     evidence_anchors.extend(paper_summary.evidence_anchors[:4])
                 except Exception as exc:
                     fetch_status = "summary_failed"
                     failure_reason = f"paper_summary failed: {exc.__class__.__name__}: {exc}"
                     warnings.append(f"{doi}: {failure_reason}")
+                    append_research_run_event(
+                        state_db,
+                        research_run_id=research_run_id,
+                        event_type="failure_recorded",
+                        source="generate_paper_summary",
+                        payload={"doi": doi, "failure_type": "paper_summary", "error": failure_reason},
+                    )
                     if metadata_dir is not None:
                         try:
                             record_remote_fetch_result(
@@ -327,6 +409,7 @@ async def _run_indepth_for_results(
             )
 
     checkpoint = make_research_checkpoint(
+        research_run_id=research_run_id,
         user_question=query,
         search_queries=[query],
         papers=checkpoint_papers,
@@ -337,8 +420,33 @@ async def _run_indepth_for_results(
         warnings=warnings,
     )
     checkpoint_path = write_research_checkpoint(getattr(paths, "research_checkpoints"), checkpoint)
+    link_research_run_artifact(
+        state_db,
+        research_run_id=research_run_id,
+        artifact_id=checkpoint.conversation_id,
+        kind="research_checkpoint",
+        title=f"Indepth checkpoint: {query[:80]}",
+        role="checkpoint",
+        path=str(checkpoint_path),
+        metadata={
+            "search_queries": [query],
+            "candidate_count": len(candidates),
+            "fulltext_count": fulltext_count,
+            "summaries_written": summaries_written,
+        },
+        canonical_anchors=[anchor.model_dump(mode="json") for anchor in evidence_anchors],
+    )
+    append_research_run_event(
+        state_db,
+        research_run_id=research_run_id,
+        event_type="research_checkpoint_written",
+        source="write_research_checkpoint",
+        artifact_id=checkpoint.conversation_id,
+        payload={"path": str(checkpoint_path)},
+    )
     summary = (
         "### Indepth Checkpoint\n"
+        f"- Research Run ID: `{research_run_id}`\n"
         f"- Path: `{checkpoint_path}`\n"
         f"- Candidates processed: {len(candidates)}\n"
         f"- Full text available: {fulltext_count}\n"

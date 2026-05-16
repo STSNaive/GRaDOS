@@ -49,9 +49,12 @@ def test_research_checkpoint_writes_json_and_markdown(tmp_path: Path) -> None:
     assert (folder / "checkpoint.json").is_file()
     assert (folder / "checkpoint.md").is_file()
     payload = json.loads((folder / "checkpoint.json").read_text(encoding="utf-8"))
+    assert payload["research_run_id"].startswith("run_")
     assert payload["conversation_id"].startswith("research_")
     assert payload["papers"][0]["paper_uri"] == "grados://papers/10_1234_demo"
-    assert "Evidence Discipline" in (folder / "checkpoint.md").read_text(encoding="utf-8")
+    rendered = (folder / "checkpoint.md").read_text(encoding="utf-8")
+    assert "Research Run ID" in rendered
+    assert "Evidence Discipline" in rendered
 
 
 def test_paper_summary_generation_and_stale_detection(tmp_path: Path, monkeypatch) -> None:

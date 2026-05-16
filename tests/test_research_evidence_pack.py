@@ -227,7 +227,9 @@ def test_strict_pack_audit_does_not_search_full_library(monkeypatch, tmp_path: P
     )
 
     assert audit["search_scope"] == "pack_only"
-    assert audit["claims"][0]["status"] == "supported"
+    assert audit["claims"][0]["verdict"] == "verified"
+    assert audit["verdict_counts"] == {"verified": 1}
+    assert audit["claim_map"][0]["verdict"] == "verified"
     assert audit["claim_map"][0]["evidence_block_ids"]
 
 
@@ -250,4 +252,39 @@ def test_suggest_missing_evidence_is_separate_from_strict_audit(monkeypatch, tmp
 
     assert suggestion["mode"] == "suggestion_only"
     assert suggestion["search_scope"] == "none"
-    assert suggestion["suggestions"][0]["next_action"] == "prepare_or_extend_evidence_pack"
+    assert suggestion["suggestions"][0]["verdict"] in {
+        "minor_distortion",
+        "major_distortion",
+        "unverifiable",
+        "unverifiable_access",
+    }
+    assert suggestion["suggestions"][0]["next_action"] in {
+        "revise_wording_or_add_locator",
+        "rewrite_or_replace_citation",
+        "search_and_prepare_evidence_pack",
+        "reacquire_full_text_or_switch_parser",
+    }
+
+
+def test_pack_audit_uses_unverifiable_access_for_stale_pack(monkeypatch, tmp_path: Path) -> None:
+    _save_demo_paper(tmp_path)
+    _patch_search(monkeypatch)
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="composite damping",
+        scoped_dois=["10.1234/demo"],
+    )
+
+    _save_demo_paper(tmp_path, _body("Composite damping improved vibration attenuation by 9%."))
+    audit = audit_answer_against_pack(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+        draft="Composite damping improved vibration attenuation by 18% (Smith, 2025).",
+        strict=True,
+    )
+
+    assert audit["verify"]["current_valid"] is False
+    assert audit["claims"][0]["verdict"] == "unverifiable_access"
+    assert audit["claims"][0]["issue_type"] == "stale_pack"

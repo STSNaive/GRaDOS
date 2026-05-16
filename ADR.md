@@ -549,3 +549,26 @@
 - GRaDOS 可以公开一个 default-off 的 ChatGPT Pro 增强开关，同时维持 server/runtime 边界。
 - `codex` 下载和 ChatGPT Pro 综合共享 Chrome extension 时有明确的串行协调协议，避免两个 host-side 功能互相抢占 browser lifecycle。
 - 文档和 skill protocol 负责指导 host agent；后续若真实任务证明需要机器可读 session receipt，再另行设计而不是提前扩展配置面。
+
+---
+
+## ADR-021：Research run manifest 是目录页，audit 使用论文修改导向 verdict
+
+- 状态：Accepted
+- 日期：2026-05-14
+
+### 背景
+- `research_checkpoint`、`paper_summary`、`evidence_checkpoint` 和 evidence pack 已能分别恢复研究状态、论文级 summary、证据 anchor 和可验证 handoff pack，但一次 research run 中的 query、候选、抽取、解析、summary、pack、audit 和失败路径仍较分散。
+- 旧 audit 输出使用 `supported`、`weak`、`unsupported`、`misattributed` 等状态，适合早期支持度粗筛，但对论文修改不够直接，难以表达小幅措辞偏差、实质误述、访问不可验证等不同修改动作。
+
+### 决策
+- 新增 `research_run_manifest` artifact kind，作为一次 research run 的轻量目录页。它可以链接 search query、候选、extraction/parser receipt、`paper_summary`、`research_checkpoint`、`evidence_checkpoint`、evidence pack、audit result id、canonical anchor 和失败记录。
+- Manifest 只保存 artifact index、append-only event ledger 与 redacted config/provenance snapshot；它不是 citation evidence，不复制全文或 evidence pack 内容，也不替代现有 checkpoint 或 pack。
+- 事件 ledger 采用追加语义；需要修正时追加 correction/follow-up event，而不是改写历史事件。配置快照必须 redacted，token、cookie、API key 和 secret 不得落明文。
+- `audit_draft_support` 和 `audit_answer_against_pack` 直接切换到新的 verdict taxonomy：`verified`、`minor_distortion`、`major_distortion`、`unverifiable`、`unverifiable_access`。
+- 旧 user-visible statuses `supported`、`weak`、`unsupported`、`misattributed`、`overgeneralized`、`uncited_factual_claim`、`needs_human_review` 不作为兼容 alias 保留。工具输出使用 `verdict` / `verdict_counts`，并带 `issue_type`、`revision_action`、`mismatch_detail` 等论文修改字段。
+
+### 结果与影响
+- Host agent 可以通过 manifest 回放一次研究的目录、失败和配置上下文，但最终引用仍必须回到 canonical `papers/*.md` 或 `current_valid=true` 的 evidence pack。
+- Audit 输出直接服务论文修改：`minor_distortion` 指向小修，`major_distortion` 指向重写/换引用/删除，`unverifiable` 指向补证据，`unverifiable_access` 指向重新获取全文或换 parser。
+- 这是一次有意的 schema 变更；README、skill reference、tests 和下游使用方都应迁移到 `verdict` 字段与新 verdict 集。
