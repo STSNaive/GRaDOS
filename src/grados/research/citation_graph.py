@@ -85,9 +85,19 @@ def get_citation_graph(
         for key, record in doc_by_doi.items()
     }
     incoming: dict[str, list[str]] = defaultdict(list)
+    local_cites_by_doi: dict[str, list[str]] = {}
+    external_cites_by_doi: dict[str, list[str]] = {}
     for src, cited in outgoing.items():
+        local_cites: list[str] = []
+        external_cites: list[str] = []
         for target in cited:
             incoming[target].append(src)
+            if target in doc_by_doi:
+                local_cites.append(target)
+            else:
+                external_cites.append(target)
+        local_cites_by_doi[src] = local_cites
+        external_cites_by_doi[src] = external_cites
 
     requested = [normalize_doi(value) for value in ([doi] + (dois or [])) if value and value.strip()]
     requested = list(dict.fromkeys(requested))
@@ -176,16 +186,16 @@ def get_citation_graph(
                 title=record.paper.title,
                 year=record.paper.year,
                 safe_doi=record.paper.safe_doi,
-                cites_local_count=len([value for value in outgoing.get(node_doi, []) if value in doc_by_doi]),
+                cites_local_count=len(local_cites_by_doi.get(node_doi, [])),
                 cited_by_local_count=len(incoming.get(node_doi, [])),
-                cites_external_count=len([value for value in outgoing.get(node_doi, []) if value not in doc_by_doi]),
+                cites_external_count=len(external_cites_by_doi.get(node_doi, [])),
             )
         )
 
     if seed_targets:
         target = seed_targets[0]
-        cited_local = [doc_by_doi[value] for value in outgoing.get(target, []) if value in doc_by_doi]
-        cited_external = [value for value in outgoing.get(target, []) if value not in doc_by_doi][:limit]
+        cited_local = [doc_by_doi[value] for value in local_cites_by_doi.get(target, [])]
+        cited_external = external_cites_by_doi.get(target, [])[:limit]
         cited_by = [doc_by_doi[value] for value in incoming.get(target, []) if value in doc_by_doi]
     else:
         cited_local = []

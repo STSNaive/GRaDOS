@@ -13,6 +13,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 - Added `research_run_manifest` artifacts with `research_run_id`, run-level artifact indexes, append-only event ledgers, redacted config/provenance snapshots, and automatic linking for `save_research_artifact(..., metadata={"research_run_id": ...})`.
+- Added deterministic external synthesis packet/result tools: `preview_external_synthesis_packet`, `prepare_external_synthesis_packet`, `save_external_synthesis_result`, and `audit_external_synthesis_result`, keeping ChatGPT Pro advisory output tied to current-valid evidence packs before canonical rereading.
 - Added default-off `research.external_synthesis.enabled` config, `grados external-synthesis is-enabled --quiet`, `grados external-synthesis status --json`, and host-agent protocol docs for using the latest visible ChatGPT Pro model at the highest available thinking strength without making GRaDOS call ChatGPT or share unverified evidence.
 - Added a canonical paragraph-block registry plus persisted `evidence_pack` artifacts and MCP tools: `prepare_evidence_pack`, `read_evidence_pack`, `verify_evidence_pack`, `audit_answer_against_pack`, and `suggest_missing_evidence`.
 - Added a rebuildable SQLite FTS5/BM25 index at `database/fts.sqlite3`, exact lookup candidates, hybrid RRF saved-paper retrieval, and `grados eval-retrieval` for local retrieval fixtures.

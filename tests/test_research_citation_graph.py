@@ -58,6 +58,11 @@ def test_get_citation_graph_builds_neighbors_and_common_references(tmp_path: Pat
     assert graph.summary is not None
     assert graph.summary.cited_local[0].doi == "10.1000/b"
     assert graph.summary.cited_external == ["10.1000/shared"]
+    nodes_by_doi = {node.doi: node for node in graph.nodes}
+    assert nodes_by_doi["10.1000/a"].cites_local_count == 1
+    assert nodes_by_doi["10.1000/a"].cites_external_count == 1
+    assert nodes_by_doi["10.1000/b"].cites_local_count == 0
+    assert nodes_by_doi["10.1000/b"].cites_external_count == 1
     assert common.common_references[0].doi == "10.1000/shared"
 
 

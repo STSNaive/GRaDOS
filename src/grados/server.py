@@ -19,19 +19,24 @@ from grados.server_tools.library_tools import (
 )
 from grados.server_tools.research_tools_api import (
     audit_draft_support,
+    audit_external_synthesis_result,
     build_evidence_grid,
     compare_papers,
     get_citation_graph,
     get_papers_full_context,
     manage_failure_cases,
+    prepare_external_synthesis_packet,
+    preview_external_synthesis_packet,
     query_research_artifacts,
     register_research_tools_api,
+    save_external_synthesis_result,
     save_research_artifact,
 )
 from grados.server_tools.search_tools import register_search_tools, search_academic_papers, search_saved_papers
 
 __all__ = [
     "audit_draft_support",
+    "audit_external_synthesis_result",
     "build_evidence_grid",
     "compare_papers",
     "extract_paper_full_text",
@@ -44,10 +49,13 @@ __all__ = [
     "paper_overview_resource",
     "papers_index_resource",
     "parse_pdf_file",
+    "prepare_external_synthesis_packet",
+    "preview_external_synthesis_packet",
     "query_research_artifacts",
     "read_paper_asset",
     "read_saved_paper",
     "run_server",
+    "save_external_synthesis_result",
     "save_paper_to_zotero",
     "save_research_artifact",
     "search_academic_papers",

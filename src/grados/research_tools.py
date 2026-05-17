@@ -35,6 +35,12 @@ from grados.research.evidence_pack import (
     read_evidence_pack,
     verify_evidence_pack,
 )
+from grados.research.external_synthesis import (
+    audit_external_synthesis_result,
+    prepare_external_synthesis_packet,
+    preview_external_synthesis_packet,
+    save_external_synthesis_result,
+)
 from grados.research.pack_audit import (
     audit_answer_against_pack,
     suggest_missing_evidence,
@@ -64,12 +70,16 @@ __all__ = [
     "PaperComparisonRow",
     "audit_draft_support",
     "audit_answer_against_pack",
+    "audit_external_synthesis_result",
     "build_evidence_grid",
     "compare_papers",
     "get_citation_graph",
     "get_papers_full_context",
     "prepare_evidence_pack",
+    "prepare_external_synthesis_packet",
+    "preview_external_synthesis_packet",
     "read_evidence_pack",
+    "save_external_synthesis_result",
     "suggest_missing_evidence",
     "verify_evidence_pack",
 ]

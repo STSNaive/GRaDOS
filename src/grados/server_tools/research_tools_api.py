@@ -19,13 +19,31 @@ __all__ = [
     "get_papers_full_context",
     "manage_failure_cases",
     "prepare_evidence_pack",
+    "prepare_external_synthesis_packet",
+    "preview_external_synthesis_packet",
     "query_research_artifacts",
     "read_evidence_pack",
     "register_research_tools_api",
+    "save_external_synthesis_result",
     "save_research_artifact",
     "suggest_missing_evidence",
+    "audit_external_synthesis_result",
     "verify_evidence_pack",
 ]
+
+
+def _external_synthesis_disabled_response() -> dict[str, object]:
+    return {
+        "ok": False,
+        "sendable": False,
+        "saved": False,
+        "enabled": False,
+        "error": "external_synthesis_disabled",
+        "next_action": (
+            "Set research.external_synthesis.enabled=true and verify with "
+            "`grados external-synthesis is-enabled --quiet` before using this protocol."
+        ),
+    }
 
 
 async def save_research_artifact(
@@ -168,6 +186,177 @@ async def verify_evidence_pack(
 
     paths, _ = get_paths_and_config()
     return run_verify(paths.database_state, paths.papers, pack_id=pack_id)
+
+
+async def preview_external_synthesis_packet(
+    pack_id: Annotated[
+        str,
+        Field(min_length=1, description="Evidence pack id returned by `prepare_evidence_pack`."),
+    ],
+    mode: Annotated[
+        Literal["review", "synthesize"],
+        Field(description="External ChatGPT Pro packet mode."),
+    ] = "review",
+    max_items: Annotated[
+        int,
+        Field(ge=1, le=50, description="Maximum verified evidence anchors to include."),
+    ] = 25,
+    max_excerpt_chars: Annotated[
+        int,
+        Field(ge=120, le=2000, description="Maximum characters per canonical excerpt."),
+    ] = 700,
+) -> dict[str, object]:
+    """Preview a ChatGPT Pro packet without saving or contacting external services."""
+    from grados.research_tools import preview_external_synthesis_packet as run_preview
+
+    paths, config = get_paths_and_config()
+    if not config.research.external_synthesis.enabled:
+        return _external_synthesis_disabled_response()
+    return run_preview(
+        paths.database_state,
+        paths.papers,
+        pack_id=pack_id,
+        mode=mode,
+        max_items=max_items,
+        max_excerpt_chars=max_excerpt_chars,
+    )
+
+
+async def prepare_external_synthesis_packet(
+    pack_id: Annotated[
+        str,
+        Field(min_length=1, description="Evidence pack id returned by `prepare_evidence_pack`."),
+    ],
+    mode: Annotated[
+        Literal["review", "synthesize"],
+        Field(description="External ChatGPT Pro packet mode."),
+    ] = "review",
+    max_items: Annotated[
+        int,
+        Field(ge=1, le=50, description="Maximum verified evidence anchors to include."),
+    ] = 25,
+    max_excerpt_chars: Annotated[
+        int,
+        Field(ge=120, le=2000, description="Maximum characters per canonical excerpt."),
+    ] = 700,
+    metadata: Annotated[
+        dict[str, object] | None,
+        Field(description="Optional metadata such as research_run_id for manifest linking."),
+    ] = None,
+) -> dict[str, object]:
+    """Persist a current-valid packet for host-side ChatGPT Pro review or synthesis."""
+    from grados.research_tools import prepare_external_synthesis_packet as run_prepare
+
+    paths, config = get_paths_and_config()
+    if not config.research.external_synthesis.enabled:
+        return _external_synthesis_disabled_response()
+    return run_prepare(
+        paths.database_state,
+        paths.papers,
+        pack_id=pack_id,
+        mode=mode,
+        max_items=max_items,
+        max_excerpt_chars=max_excerpt_chars,
+        metadata=metadata,
+    )
+
+
+async def save_external_synthesis_result(
+    pack_id: Annotated[
+        str,
+        Field(min_length=1, description="Evidence pack id used for the external synthesis packet."),
+    ],
+    response: Annotated[
+        dict[str, object] | str,
+        Field(description="Raw ChatGPT Pro response as text or structured JSON-like content."),
+    ],
+    packet_artifact_id: Annotated[
+        str | None,
+        Field(description="Optional external_synthesis_packet artifact id returned by prepare."),
+    ] = None,
+    prompt_hash: Annotated[
+        str | None,
+        Field(description="Optional host prompt hash when no packet artifact id is available."),
+    ] = None,
+    conversation_url: Annotated[
+        str | None,
+        Field(description="Optional ChatGPT conversation URL or external session locator."),
+    ] = None,
+    model_label: Annotated[
+        str | None,
+        Field(description="Host-observed ChatGPT model label. Metadata only; not config."),
+    ] = None,
+    thinking_label: Annotated[
+        str | None,
+        Field(description="Host-observed thinking level label. Metadata only; not config."),
+    ] = None,
+    mode: Annotated[
+        Literal["review", "synthesize"],
+        Field(description="External ChatGPT Pro result mode."),
+    ] = "review",
+    claims: Annotated[
+        list[dict[str, object]] | None,
+        Field(description="Optional structured claims parsed or copied from ChatGPT Pro output."),
+    ] = None,
+    gaps: Annotated[
+        list[str] | None,
+        Field(description="Optional missing-evidence or gap list copied from ChatGPT Pro output."),
+    ] = None,
+    metadata: Annotated[
+        dict[str, object] | None,
+        Field(description="Optional metadata such as research_run_id for manifest linking."),
+    ] = None,
+) -> dict[str, object]:
+    """Save a host-provided ChatGPT Pro response as advisory research state."""
+    from grados.research_tools import save_external_synthesis_result as run_save
+
+    paths, config = get_paths_and_config()
+    if not config.research.external_synthesis.enabled:
+        return _external_synthesis_disabled_response()
+    return run_save(
+        paths.database_state,
+        paths.papers,
+        pack_id=pack_id,
+        response=response,
+        packet_artifact_id=packet_artifact_id or "",
+        prompt_hash=prompt_hash or "",
+        conversation_url=conversation_url or "",
+        model_label=model_label or "",
+        thinking_label=thinking_label or "",
+        mode=mode,
+        claims=claims,
+        gaps=gaps,
+        metadata=metadata,
+    )
+
+
+async def audit_external_synthesis_result(
+    result_id: Annotated[
+        str,
+        Field(min_length=1, description="external_synthesis_result artifact id to audit."),
+    ],
+    strict: Annotated[
+        bool,
+        Field(description="When true, use only current-valid pack evidence."),
+    ] = True,
+    citation_style: Annotated[
+        Literal["author_year", "numeric"],
+        Field(description="Citation style used in the saved external response."),
+    ] = "author_year",
+) -> dict[str, object]:
+    """Audit a saved ChatGPT Pro response against its source evidence pack."""
+    from grados.research_tools import audit_external_synthesis_result as run_audit
+
+    paths, config = get_paths_and_config()
+    if not config.research.external_synthesis.enabled:
+        return _external_synthesis_disabled_response()
+    return run_audit(
+        paths.database_state,
+        paths.papers,
+        result_id=result_id,
+        strict=strict,
+        citation_style=citation_style,
+    )
 
 
 async def manage_failure_cases(
@@ -535,6 +724,35 @@ def register_research_tools_api(mcp: FastMCP) -> None:
             "Does not use Chroma, FTS, or retrieval scores for current-valid evidence."
         )
     )(verify_evidence_pack)
+
+    mcp.tool(
+        description=(
+            "Preview the compact host-side ChatGPT Pro packet for a current-valid evidence pack. "
+            "This never opens Chrome, calls ChatGPT, or saves an artifact."
+        )
+    )(preview_external_synthesis_packet)
+
+    mcp.tool(
+        description=(
+            "Persist a compact external_synthesis_packet built only from current-valid evidence pack "
+            "anchors. The host may paste/send the returned prompt to ChatGPT Pro, but GRaDOS does "
+            "not call external models."
+        )
+    )(prepare_external_synthesis_packet)
+
+    mcp.tool(
+        description=(
+            "Save a host-provided ChatGPT Pro response as an advisory external_synthesis_result "
+            "artifact linked to the source evidence pack and optional packet/session metadata."
+        )
+    )(save_external_synthesis_result)
+
+    mcp.tool(
+        description=(
+            "Audit a saved external_synthesis_result against its source evidence pack, flagging "
+            "unknown anchor ids, pack-external DOIs, stale packs, and non-verified claims."
+        )
+    )(audit_external_synthesis_result)
 
     mcp.tool(
         description=(

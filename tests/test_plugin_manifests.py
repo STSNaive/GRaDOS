@@ -78,7 +78,9 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     assert "highest available thinking-time option" in external_synthesis_reference
     assert "GRaDOS produces the verified evidence payload" in external_synthesis_reference
     assert "sending the prompt, and reading the reply" in external_synthesis_reference
-    assert 'kind="external_synthesis_review"' in external_synthesis_reference
+    assert 'kind="external_synthesis_packet"' in external_synthesis_reference
+    assert "`save_external_synthesis_result`" in external_synthesis_reference
+    assert "`audit_external_synthesis_result`" in external_synthesis_reference
     assert "single shared Chrome resource" in external_synthesis_reference
     assert "Docling -> MinerU -> PyMuPDF" in tools_reference
     assert "TDM -> OA -> Sci-Hub -> Headless" not in tools_reference

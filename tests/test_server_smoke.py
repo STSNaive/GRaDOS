@@ -40,6 +40,7 @@ def test_server_registers_expected_tools() -> None:
     assert tool_names == [
         "audit_answer_against_pack",
         "audit_draft_support",
+        "audit_external_synthesis_result",
         "build_evidence_grid",
         "compare_papers",
         "extract_paper_full_text",
@@ -51,10 +52,13 @@ def test_server_registers_expected_tools() -> None:
         "manage_failure_cases",
         "parse_pdf_file",
         "prepare_evidence_pack",
+        "prepare_external_synthesis_packet",
+        "preview_external_synthesis_packet",
         "query_research_artifacts",
         "read_evidence_pack",
         "read_paper_asset",
         "read_saved_paper",
+        "save_external_synthesis_result",
         "save_paper_to_zotero",
         "save_research_artifact",
         "search_academic_papers",
@@ -1255,6 +1259,18 @@ def test_stage_b_state_tools_round_trip(tmp_path: Path, monkeypatch) -> None:
     assert queried["items"][0]["content"]["topic"] == "composite damping"
     assert recorded["failure_id"].startswith("failure_")
     assert any("browser-assisted extraction" in item for item in suggestion["suggestions"])
+
+
+def test_external_synthesis_tools_respect_config_gate(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    from grados.server_tools.research_tools_api import preview_external_synthesis_packet
+
+    result = asyncio.run(preview_external_synthesis_packet(pack_id="pack_missing"))
+
+    assert result["ok"] is False
+    assert result["error"] == "external_synthesis_disabled"
+    assert result["sendable"] is False
 
 
 def test_stage_b_evidence_tools_are_wired_to_local_library(tmp_path: Path, monkeypatch) -> None:
