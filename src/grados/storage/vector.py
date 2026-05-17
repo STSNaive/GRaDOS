@@ -371,6 +371,7 @@ def search_papers(
     *,
     papers_dir: Path | None = None,
     doi: str = "",
+    dois: list[str] | None = None,
     authors: str = "",
     year_from: int | None = None,
     year_to: int | None = None,
@@ -395,8 +396,12 @@ def search_papers(
         chroma_dir=chroma_dir,
         fallback_list_paper_documents=list_paper_documents,
     )
+    scoped_dois = {value.strip().lower() for value in (dois or []) if value.strip()}
     filtered_documents = [
-        doc for doc in index_documents if matches_filters(doc, doi, authors, year_from, year_to, journal, source)
+        doc
+        for doc in index_documents
+        if matches_filters(doc, doi, authors, year_from, year_to, journal, source)
+        and (not scoped_dois or str(doc.get("doi", "")).lower() in scoped_dois)
     ]
     if not filtered_documents:
         return []

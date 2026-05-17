@@ -105,6 +105,55 @@ def test_build_evidence_grid_and_audit_draft_support(monkeypatch, tmp_path: Path
     assert numeric_supported.claims[0].issue_type == ""
 
 
+def test_build_evidence_grid_batches_scoped_doi_searches(monkeypatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, int, tuple[str, ...]]] = []
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = chroma_dir
+        calls.append((query, limit, tuple(kwargs.get("dois") or [])))
+        return [
+            PaperSearchResult(
+                doi="10.1234/b",
+                safe_doi="10_1234_b",
+                title="Paper B",
+                authors=["Lee"],
+                year="2025",
+                journal="Composite Structures",
+                section_name="Results",
+                paragraph_start=8,
+                paragraph_count=1,
+                snippet="Paper B reports a secondary attenuation result.",
+                score=1.1,
+            ),
+            PaperSearchResult(
+                doi="10.1234/a",
+                safe_doi="10_1234_a",
+                title="Paper A",
+                authors=["Smith"],
+                year="2025",
+                journal="Composite Structures",
+                section_name="Results",
+                paragraph_start=4,
+                paragraph_count=2,
+                snippet="Paper A reports the primary attenuation result.",
+                score=1.4,
+            ),
+        ]
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    grid = build_evidence_grid(
+        tmp_path / "chroma",
+        topic="attenuation",
+        subquestions=["attenuation"],
+        dois=["10.1234/a", "10.1234/b"],
+        max_papers=2,
+    )
+
+    assert calls == [("attenuation", 2, ("10.1234/a", "10.1234/b"))]
+    assert [row.doi for row in grid.grids[0].rows] == ["10.1234/a", "10.1234/b"]
+
+
 def test_audit_draft_support_requires_canonical_paragraph_window(monkeypatch, tmp_path: Path) -> None:
     def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
         _ = (chroma_dir, query, limit, kwargs)
