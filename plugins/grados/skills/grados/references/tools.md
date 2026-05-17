@@ -3,6 +3,7 @@
 ## Contents
 
 - [GRaDOS Server Tools](#grados-server-tools)
+- [Live MCP Contract Guardrails](#live-mcp-contract-guardrails)
 - [Indepth Mode](#indepth-mode)
 - [Optional Codex Chrome Extension](#optional-codex-chrome-extension)
 - [MCP Resources](#mcp-resources)
@@ -42,6 +43,20 @@
 | `grados:audit_draft_support` | Audit draft claims against the local paper library and return first-pass `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts plus candidate evidence snippets, issue types, revision actions, and anchors. `candidate_limit` controls how many candidates are retrieved per claim for host-agent reranking. The host agent model must reread canonical paragraph windows before final support judgment. |
 
 There is no separate local RAG server in the Python release. Saved-paper canonical storage and semantic retrieval are built directly into GRaDOS through ChromaDB.
+
+## Live MCP Contract Guardrails
+
+These checked guardrails mirror selected hard schema facts from the live FastMCP surface (`mcp.list_tools()`). Update this table when the public MCP schema changes.
+
+| Tool | Live schema guardrail |
+| --- | --- |
+| `grados:search_academic_papers` | `query` minLength=1; `limit` range 1-50; optional `indepth` uses the same `limit`. |
+| `grados:search_saved_papers` | `query` minLength=1; `limit` range 1-25; `use_reranking` defaults to true. |
+| `grados:read_saved_paper` | accepts `doi`, `safe_doi`, or `uri`; `start_paragraph` minimum 0; `max_paragraphs` range 1-100. |
+| `grados:read_paper_asset` | list-mode `limit` range 1-100; `offset` minimum 0; `include_image` is explicit opt-in. |
+| `grados:query_research_artifacts` | filters by `artifact_id`, `kind`, or `query`; `detail` defaults to false; `limit` range 1-50. |
+| `grados:get_papers_full_context` | `dois` minItems=1; `mode` enum `estimate` / `full`; `max_total_tokens` range 1000-128000. |
+| `grados:audit_draft_support` | `draft_text` minLength=1; `citation_style` enum `author_year` / `numeric`; `strictness` enum `strict` / `balanced`; `candidate_limit` range 1-25. |
 
 ## Host Agent Reasoning Boundary
 
