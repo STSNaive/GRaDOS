@@ -435,9 +435,11 @@ def upsert_remote_metadata(
     client = get_client(metadata_dir)
     collection = get_remote_metadata_collection(client)
     lookup_ids: list[str] = []
+    seen_lookup_ids: set[str] = set()
     for record in normalized:
         for lookup_id in _remote_record_lookup_ids(record):
-            if lookup_id not in lookup_ids:
+            if lookup_id not in seen_lookup_ids:
+                seen_lookup_ids.add(lookup_id)
                 lookup_ids.append(lookup_id)
     existing = _existing_records_by_id(collection, lookup_ids)
 

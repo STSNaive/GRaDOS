@@ -28,6 +28,7 @@ class FakeEmbeddingBackend:
 class FakeRemoteMetadataCollection:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, object]] = {}
+        self.get_id_calls: list[list[str]] = []
 
     def upsert(self, *, ids, documents, metadatas, embeddings) -> None:  # noqa: ANN001, ANN003
         for row_id, document, metadata, embedding in zip(ids, documents, metadatas, embeddings, strict=False):
@@ -40,7 +41,9 @@ class FakeRemoteMetadataCollection:
     def get(self, *, ids=None, limit=None, where=None, include=None):  # noqa: ANN001, ANN003
         items = list(self.rows.items())
         if ids is not None:
-            requested = {str(row_id) for row_id in ids}
+            requested_ids = [str(row_id) for row_id in ids]
+            self.get_id_calls.append(requested_ids)
+            requested = set(requested_ids)
             items = [(row_id, row) for row_id, row in items if row_id in requested]
         if where:
             items = [
@@ -204,6 +207,41 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     assert refreshed.fetch_resume == ""
     assert '"state": "challenge"' in refreshed.fetch_trace
     assert '"state": "ok"' in refreshed.fetch_trace
+
+
+def test_upsert_remote_metadata_deduplicates_lookup_ids_before_fetch(tmp_path: Path, monkeypatch) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+
+    collection = FakeRemoteMetadataCollection()
+
+    monkeypatch.setattr(remote_metadata, "get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(remote_metadata, "get_remote_metadata_collection", lambda client: collection)
+    monkeypatch.setattr(remote_metadata, "load_embedding_backend", lambda config=None: FakeEmbeddingBackend())
+
+    upsert_remote_metadata(
+        tmp_path / "chroma",
+        [
+            PaperMetadata(
+                title="Composite Damping Study",
+                abstract="First abstract.",
+                doi="10.1234/demo",
+                year="2026",
+                source="Crossref",
+            ),
+            PaperMetadata(
+                title="Composite Damping Study Updated",
+                abstract="Second abstract.",
+                doi="10.1234/demo",
+                year="2026",
+                source="PubMed",
+            ),
+        ],
+    )
+
+    assert collection.get_id_calls
+    lookup_ids = collection.get_id_calls[0]
+    assert lookup_ids == list(dict.fromkeys(lookup_ids))
+    assert lookup_ids.count(safe_doi_filename("10.1234/demo")) == 1
 
 
 def test_remote_metadata_doi_lookup_rejects_legacy_id_collision(tmp_path: Path, monkeypatch) -> None:
