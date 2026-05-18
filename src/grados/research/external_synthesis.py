@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Literal
 
+from grados.research.draft_audit import (
+    VERDICT_MAJOR_DISTORTION,
+    VERDICT_UNVERIFIABLE,
+    VERDICT_VERIFIED,
+)
 from grados.research.evidence_pack import (
     EvidencePack,
     EvidencePackItem,
@@ -35,6 +41,12 @@ ExternalSynthesisMode = Literal["review", "synthesize"]
 
 _ANCHOR_ID_PATTERN = re.compile(r"\banchor_[0-9]{3,}\b")
 _DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
+_BLOCK_ID_PATTERN = re.compile(
+    r"\b(?:md_p\d{5}_[0-9a-f]{12}|paragraph-\d{6}-[0-9a-f]{12}|[A-Za-z0-9_.-]+::p\d+:\d+:\d+)\b",
+    re.IGNORECASE,
+)
+_CANONICAL_URI_PATTERN = re.compile(r"\bgrados://papers/[^\s,;)\]}>\"']+")
+_WORD_PATTERN = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]{2,}", re.IGNORECASE)
 
 
 def _normalize_mode(mode: str | None) -> ExternalSynthesisMode:
@@ -160,6 +172,24 @@ def _packet_prompt_body(packet_without_prompt: dict[str, Any]) -> str:
     )
 
 
+def _packet_prompt_payload(packet: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(packet)
+    payload.pop("host_prompt", None)
+    payload.pop("prompt_hash", None)
+    payload.pop("estimated_chars", None)
+    payload.pop("estimated_tokens", None)
+    return payload
+
+
+def _render_host_prompt(packet: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    host_prompt = _packet_prompt_body(_packet_prompt_payload(packet))
+    return host_prompt, {
+        "prompt_hash": hashlib.sha256(host_prompt.encode("utf-8")).hexdigest(),
+        "estimated_chars": len(host_prompt),
+        "estimated_tokens": max(1, len(host_prompt) // 4),
+    }
+
+
 def _build_packet(
     pack: EvidencePack,
     verify_result: dict[str, Any],
@@ -199,11 +229,8 @@ def _build_packet(
             "Do not cite without a later GRaDOS canonical reread or current-valid evidence pack.",
         ],
     }
-    host_prompt = _packet_prompt_body(payload)
-    payload["host_prompt"] = host_prompt
-    payload["prompt_hash"] = hashlib.sha256(host_prompt.encode("utf-8")).hexdigest()
-    payload["estimated_chars"] = len(host_prompt)
-    payload["estimated_tokens"] = max(1, len(host_prompt) // 4)
+    _, prompt_metadata = _render_host_prompt(payload)
+    payload.update(prompt_metadata)
     return payload
 
 
@@ -306,6 +333,7 @@ def prepare_external_synthesis_packet(
         max_items=max_items,
         max_excerpt_chars=max_excerpt_chars,
     )
+    host_prompt, _ = _render_host_prompt(packet)
     artifact_metadata = {
         **(metadata or {}),
         "protocol": EXTERNAL_SYNTHESIS_PROTOCOL_VERSION,
@@ -329,7 +357,7 @@ def prepare_external_synthesis_packet(
         "kind": EXTERNAL_SYNTHESIS_PACKET_KIND,
         "metadata": receipt["metadata"],
         "packet": packet,
-        "host_prompt": packet["host_prompt"],
+        "host_prompt": host_prompt,
     }
 
 
@@ -346,6 +374,12 @@ def _response_text(raw_response: str | dict[str, Any]) -> str:
     if isinstance(raw_response, str):
         return raw_response
     return json.dumps(raw_response, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
 
 
 def save_external_synthesis_result(
@@ -397,6 +431,16 @@ def save_external_synthesis_result(
     verify_result = verify_evidence_pack(db_path, papers_dir, pack_id=pack.pack_id)
     text = _response_text(response)
     response_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    structured_claims = claims
+    if structured_claims is None and isinstance(response, dict):
+        response_claims = response.get("claims")
+        if isinstance(response_claims, list):
+            structured_claims = [dict(item) for item in response_claims if isinstance(item, dict)]
+    structured_gaps = gaps
+    if structured_gaps is None and isinstance(response, dict):
+        structured_gaps = _coerce_string_list(
+            response.get("gaps") or response.get("missing_evidence")
+        )
     content_payload: dict[str, Any] = {
         "schema_version": EXTERNAL_SYNTHESIS_PROTOCOL_VERSION,
         "kind": EXTERNAL_SYNTHESIS_RESULT_KIND,
@@ -411,8 +455,8 @@ def save_external_synthesis_result(
         "raw_response": response,
         "response_text": text,
         "response_sha256": response_hash,
-        "claims": claims or [],
-        "gaps": gaps or [],
+        "claims": structured_claims or [],
+        "gaps": structured_gaps or [],
         "verify_at_save": verify_result,
         "advisory_only": True,
         "next_action": "audit_external_synthesis_result",
@@ -468,6 +512,40 @@ def _allowed_refs_from_pack(pack: EvidencePack) -> dict[str, set[str]]:
     }
 
 
+def _source_items_from_pack(pack: EvidencePack) -> list[dict[str, Any]]:
+    return [
+        _packet_item(item, index=index, max_excerpt_chars=2000)
+        for index, item in enumerate(pack.evidence_items, 1)
+    ]
+
+
+def _packet_items(packet_content: dict[str, Any]) -> list[dict[str, Any]]:
+    items = packet_content.get("items")
+    if not isinstance(items, list):
+        return []
+    return [dict(item) for item in items if isinstance(item, dict)]
+
+
+def _allowed_refs_from_items(items: list[dict[str, Any]]) -> dict[str, set[str]]:
+    return {
+        "anchor_ids": {str(item.get("anchor_id")) for item in items if item.get("anchor_id")},
+        "block_ids": {str(item.get("block_id")) for item in items if item.get("block_id")},
+        "canonical_uris": {
+            str(item.get("canonical_uri")) for item in items if item.get("canonical_uri")
+        },
+        "dois": {str(item.get("doi")).lower() for item in items if item.get("doi")},
+    }
+
+
+def _response_payload_for_audit(content: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "raw_response": content.get("raw_response"),
+        "response_text": content.get("response_text"),
+        "claims": content.get("claims"),
+        "gaps": content.get("gaps"),
+    }
+
+
 def _collect_anchor_refs(value: Any) -> set[str]:
     refs: set[str] = set()
     if isinstance(value, str):
@@ -481,12 +559,176 @@ def _collect_anchor_refs(value: Any) -> set[str]:
     return refs
 
 
+def _collect_pattern_refs(value: Any, pattern: re.Pattern[str]) -> set[str]:
+    refs: set[str] = set()
+    if isinstance(value, str):
+        refs.update(match.group(0).rstrip(".,;:)]}>\"'") for match in pattern.finditer(value))
+    elif isinstance(value, dict):
+        for nested in value.values():
+            refs.update(_collect_pattern_refs(nested, pattern))
+    elif isinstance(value, list):
+        for nested in value:
+            refs.update(_collect_pattern_refs(nested, pattern))
+    return {ref for ref in refs if ref}
+
+
 def _extract_dois(text: str) -> set[str]:
     dois: set[str] = set()
     for match in _DOI_PATTERN.finditer(text):
         doi = match.group(0).rstrip(".,;:)]}>\"'").lower()
         dois.add(doi)
     return dois
+
+
+def _collect_dois(value: Any) -> set[str]:
+    return {doi.lower() for doi in _collect_pattern_refs(value, _DOI_PATTERN)}
+
+
+def _normalize_token(token: str) -> str:
+    token = token.lower().strip()
+    for suffix in ("ingly", "edly", "ing", "ed", "es", "s"):
+        if len(token) > len(suffix) + 3 and token.endswith(suffix):
+            return token[: -len(suffix)]
+    return token
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        _normalize_token(match.group(0))
+        for match in _WORD_PATTERN.finditer(text.lower())
+        if len(match.group(0)) >= 2
+    }
+
+
+def _overlap_score(claim_text: str, evidence_text: str) -> float:
+    claim_tokens = _tokens(claim_text)
+    evidence_tokens = _tokens(evidence_text)
+    if not claim_tokens or not evidence_tokens:
+        return 0.0
+    overlap = len(claim_tokens & evidence_tokens)
+    return overlap / math.sqrt(len(claim_tokens) * len(evidence_tokens))
+
+
+def _anchor_ids_from_value(value: Any) -> list[str]:
+    if isinstance(value, list):
+        refs: list[str] = []
+        for item in value:
+            refs.extend(sorted(_collect_anchor_refs(item)))
+            if isinstance(item, str) and _ANCHOR_ID_PATTERN.fullmatch(item.strip()):
+                refs.append(item.strip())
+        return sorted(set(refs))
+    if isinstance(value, str):
+        return sorted(_collect_anchor_refs(value))
+    return []
+
+
+def _structured_claim_inputs(content: dict[str, Any]) -> list[dict[str, Any]]:
+    claims = content.get("claims")
+    if (not isinstance(claims, list) or not claims) and isinstance(content.get("raw_response"), dict):
+        raw_claims = content["raw_response"].get("claims")
+        if isinstance(raw_claims, list):
+            claims = raw_claims
+    if not isinstance(claims, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for item in claims:
+        if isinstance(item, dict):
+            text = str(item.get("text") or item.get("claim") or "").strip()
+            anchor_ids = _anchor_ids_from_value(item.get("anchor_ids"))
+            normalized.append({"text": text, "anchor_ids": anchor_ids, "raw": dict(item)})
+        elif isinstance(item, str):
+            normalized.append({"text": item.strip(), "anchor_ids": [], "raw": item})
+    return normalized
+
+
+def _audit_structured_claims(
+    content: dict[str, Any],
+    *,
+    allowed: dict[str, set[str]],
+    source_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items_by_anchor = {
+        str(item.get("anchor_id")): item
+        for item in source_items
+        if item.get("anchor_id")
+    }
+    audited: list[dict[str, Any]] = []
+    for index, claim in enumerate(_structured_claim_inputs(content), 1):
+        text = str(claim.get("text") or "").strip()
+        anchor_ids = [str(anchor_id) for anchor_id in claim.get("anchor_ids", [])]
+        unknown_anchor_ids = sorted(set(anchor_ids) - allowed["anchor_ids"])
+        scored: list[tuple[str, float]] = []
+        for anchor_id in sorted(set(anchor_ids) - set(unknown_anchor_ids)):
+            item = items_by_anchor.get(anchor_id)
+            if not item:
+                continue
+            support_text = " ".join(
+                str(item.get(key) or "")
+                for key in ("candidate_claim", "short_excerpt", "title", "heading_path")
+            )
+            scored.append((anchor_id, _overlap_score(text, support_text)))
+        best_anchor_id = ""
+        best_score = 0.0
+        if scored:
+            best_anchor_id, best_score = max(scored, key=lambda pair: pair[1])
+        supporting_anchor_ids = sorted(anchor_id for anchor_id, score in scored if score >= 0.18)
+
+        if not text:
+            verdict = VERDICT_UNVERIFIABLE
+            severity = "blocking"
+            issue_type = "missing_claim_text"
+            revision_action = "copy_structured_claim_text"
+            mismatch_detail = "The structured claim has anchor ids but no claim text to audit."
+        elif not anchor_ids:
+            verdict = VERDICT_UNVERIFIABLE
+            severity = "blocking"
+            issue_type = "missing_anchor_ids"
+            revision_action = "add_packet_anchor_ids"
+            mismatch_detail = "Structured claims must carry anchor_ids from the saved packet."
+        elif unknown_anchor_ids:
+            verdict = VERDICT_MAJOR_DISTORTION
+            severity = "major"
+            issue_type = "unknown_anchor_ids"
+            revision_action = "remove_or_replace_unknown_anchors"
+            mismatch_detail = "The claim cites anchors outside the audit reference scope."
+        elif not scored:
+            verdict = VERDICT_UNVERIFIABLE
+            severity = "blocking"
+            issue_type = "no_supporting_packet_item"
+            revision_action = "reprepare_packet_or_add_locator"
+            mismatch_detail = "The cited anchors could not be resolved to packet items."
+        elif not supporting_anchor_ids:
+            verdict = VERDICT_UNVERIFIABLE
+            severity = "blocking"
+            issue_type = "anchor_text_mismatch"
+            revision_action = "revise_claim_or_anchor_ids"
+            mismatch_detail = "The claim text has too little overlap with its cited packet anchors."
+        else:
+            verdict = VERDICT_VERIFIED
+            severity = "none"
+            issue_type = ""
+            revision_action = "reread_canonical_window"
+            mismatch_detail = ""
+
+        audited.append(
+            {
+                "claim_id": f"external_claim_{index}",
+                "text": text,
+                "anchor_ids": anchor_ids,
+                "unknown_anchor_ids": unknown_anchor_ids,
+                "supporting_anchor_ids": supporting_anchor_ids,
+                "best_anchor_id": best_anchor_id,
+                "verdict": verdict,
+                "severity": severity,
+                "issue_type": issue_type,
+                "revision_action": revision_action,
+                "mismatch_detail": mismatch_detail,
+                "confidence": round(float(best_score), 6),
+                "requires_canonical_reread": True,
+            }
+        )
+    return audited
 
 
 def audit_external_synthesis_result(
@@ -497,7 +739,7 @@ def audit_external_synthesis_result(
     strict: bool = True,
     citation_style: str = "author_year",
 ) -> dict[str, Any]:
-    """Audit a saved ChatGPT Pro result against its source evidence pack."""
+    """Audit a saved ChatGPT Pro result against its linked packet or source pack."""
     artifact = _read_artifact(db_path, result_id)
     if artifact is None:
         return {"ok": False, "result_id": result_id, "error": "result_not_found"}
@@ -521,11 +763,64 @@ def audit_external_synthesis_result(
             "error": str(loaded.get("error", "pack_not_found")),
         }
     response_text = str(content.get("response_text") or _response_text(content.get("raw_response", "")))
-    allowed = _allowed_refs_from_pack(pack)
-    referenced_anchor_ids = _collect_anchor_refs(content)
+    packet_artifact_id = str(content.get("packet_artifact_id") or "")
+    packet_content: dict[str, Any] | None = None
+    if packet_artifact_id:
+        packet_artifact = _read_artifact(db_path, packet_artifact_id)
+        if packet_artifact is None or packet_artifact.get("kind") != EXTERNAL_SYNTHESIS_PACKET_KIND:
+            return {
+                "ok": False,
+                "result_id": result_id,
+                "pack_id": pack.pack_id,
+                "packet_artifact_id": packet_artifact_id,
+                "error": "packet_artifact_not_found",
+                "ready_for_canonical_reread": False,
+            }
+        loaded_packet_content = packet_artifact.get("content")
+        if not isinstance(loaded_packet_content, dict) or loaded_packet_content.get("pack_id") != pack.pack_id:
+            return {
+                "ok": False,
+                "result_id": result_id,
+                "pack_id": pack.pack_id,
+                "packet_artifact_id": packet_artifact_id,
+                "error": "packet_artifact_pack_mismatch",
+                "ready_for_canonical_reread": False,
+            }
+        packet_pack_sha = str(loaded_packet_content.get("pack_sha256") or "")
+        if packet_pack_sha and packet_pack_sha != pack.pack_sha256:
+            return {
+                "ok": False,
+                "result_id": result_id,
+                "pack_id": pack.pack_id,
+                "packet_artifact_id": packet_artifact_id,
+                "error": "packet_artifact_pack_sha_mismatch",
+                "ready_for_canonical_reread": False,
+            }
+        packet_content = loaded_packet_content
+
+    if packet_content is not None:
+        source_items = _packet_items(packet_content)
+        allowed = _allowed_refs_from_items(source_items)
+        reference_scope = "packet"
+    else:
+        source_items = _source_items_from_pack(pack)
+        allowed = _allowed_refs_from_pack(pack)
+        reference_scope = "pack"
+
+    response_payload = _response_payload_for_audit(content)
+    referenced_anchor_ids = _collect_anchor_refs(response_payload)
     unknown_anchor_ids = sorted(referenced_anchor_ids - allowed["anchor_ids"])
-    referenced_dois = _extract_dois(response_text)
+    referenced_block_ids = _collect_pattern_refs(response_payload, _BLOCK_ID_PATTERN)
+    unknown_block_ids = sorted(referenced_block_ids - allowed["block_ids"])
+    referenced_canonical_uris = _collect_pattern_refs(response_payload, _CANONICAL_URI_PATTERN)
+    unknown_canonical_uris = sorted(referenced_canonical_uris - allowed["canonical_uris"])
+    referenced_dois = _collect_dois(response_payload)
     outside_dois = sorted(referenced_dois - allowed["dois"])
+    structured_claims = _audit_structured_claims(
+        content,
+        allowed=allowed,
+        source_items=source_items,
+    )
     pack_audit = audit_answer_against_pack(
         db_path,
         papers_dir,
@@ -540,12 +835,12 @@ def audit_external_synthesis_result(
         for claim in pack_audit.get("claims", [])
         if isinstance(claim, dict)
     ]
-    usable_claim_ids = [
+    prose_usable_claim_ids = [
         str(claim.get("claim_id"))
         for claim in claims
         if claim.get("verdict") == "verified"
     ]
-    claims_requiring_revision = [
+    prose_claims_requiring_revision = [
         {
             "claim_id": str(claim.get("claim_id")),
             "verdict": str(claim.get("verdict")),
@@ -555,30 +850,65 @@ def audit_external_synthesis_result(
         for claim in claims
         if claim.get("verdict") != "verified"
     ]
+    structured_claims_requiring_revision = [
+        {
+            "claim_id": str(claim.get("claim_id")),
+            "verdict": str(claim.get("verdict")),
+            "issue_type": str(claim.get("issue_type")),
+            "revision_action": str(claim.get("revision_action")),
+        }
+        for claim in structured_claims
+        if claim.get("verdict") != VERDICT_VERIFIED
+    ]
+    structured_usable_claim_ids = [
+        str(claim.get("claim_id"))
+        for claim in structured_claims
+        if claim.get("verdict") == VERDICT_VERIFIED
+    ]
     verdict_counts = pack_audit.get("verdict_counts", {})
-    non_verified = sum(
+    prose_non_verified = sum(
         int(count)
         for verdict, count in (verdict_counts.items() if isinstance(verdict_counts, dict) else [])
         if verdict != "verified"
     )
     verify_result = pack_audit.get("verify", {})
+    has_structured_claims = bool(structured_claims)
     ready_for_canonical_reread = (
         bool(isinstance(verify_result, dict) and verify_result.get("current_valid"))
         and not unknown_anchor_ids
+        and not unknown_block_ids
+        and not unknown_canonical_uris
         and not outside_dois
-        and non_verified == 0
+        and (
+            not structured_claims_requiring_revision
+            if has_structured_claims
+            else prose_non_verified == 0
+        )
     )
     return {
         "ok": ready_for_canonical_reread,
         "result_id": result_id,
         "pack_id": pack.pack_id,
+        "packet_artifact_id": packet_artifact_id,
+        "allowed_reference_scope": reference_scope,
         "advisory_only": True,
         "ready_for_canonical_reread": ready_for_canonical_reread,
         "referenced_anchor_ids": sorted(referenced_anchor_ids),
         "unknown_anchor_ids": unknown_anchor_ids,
+        "referenced_block_ids": sorted(referenced_block_ids),
+        "unknown_block_ids": unknown_block_ids,
+        "referenced_canonical_uris": sorted(referenced_canonical_uris),
+        "unknown_canonical_uris": unknown_canonical_uris,
         "pack_outside_dois": outside_dois,
-        "usable_claim_ids": usable_claim_ids,
-        "claims_requiring_revision": claims_requiring_revision,
+        "structured_claims": structured_claims,
+        "structured_claims_checked": len(structured_claims),
+        "prose_claims_requiring_revision": prose_claims_requiring_revision,
+        "usable_claim_ids": structured_usable_claim_ids if has_structured_claims else prose_usable_claim_ids,
+        "claims_requiring_revision": (
+            structured_claims_requiring_revision
+            if has_structured_claims
+            else prose_claims_requiring_revision
+        ),
         "audit": pack_audit,
         "next_action": (
             "Reread verified canonical windows with read_saved_paper before final citation."

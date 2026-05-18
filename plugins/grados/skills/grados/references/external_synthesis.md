@@ -27,10 +27,10 @@ Minimal deterministic workflow:
 
 1. Prepare and verify evidence with `prepare_evidence_pack`, then `verify_evidence_pack`.
 2. Preview the external packet with `preview_external_synthesis_packet`. This is a dry run: it does not save artifacts, open Chrome, call ChatGPT, or use any browser state.
-3. If the preview is sendable, call `prepare_external_synthesis_packet`. It persists `research_artifacts(kind="external_synthesis_packet")` and returns the host prompt plus packet metadata.
+3. If the preview is sendable, call `prepare_external_synthesis_packet`. It persists `research_artifacts(kind="external_synthesis_packet")` with packet payload and prompt hash, then returns the host prompt as a regenerable view plus packet metadata.
 4. The host sends the returned prompt to the selected ChatGPT Pro conversation.
 5. Save the response with `save_external_synthesis_result`, including the source `pack_id`, optional `packet_artifact_id`, conversation URL/session locator, model label, thinking label, raw response, and any structured claims or gaps copied from the response.
-6. Audit the saved result with `audit_external_synthesis_result`. Treat only `ready_for_canonical_reread=true` outputs as candidates for the next writing step, then reread accepted canonical windows with `read_saved_paper` before final citation.
+6. Audit the saved result with `audit_external_synthesis_result`. When a packet id is linked, audit uses only that packet's items as the allowed reference scope; without a packet id it falls back to the current-valid source pack. Treat only `ready_for_canonical_reread=true` outputs as candidates for the next writing step, then reread accepted canonical windows with `read_saved_paper` before final citation.
 
 `external_synthesis_packet` and `external_synthesis_result` artifacts are recovery and audit material only. They are not final citation evidence.
 
@@ -42,6 +42,6 @@ When both this protocol and the optional `codex` Chrome-extension download route
 
 Evidence sent to ChatGPT Pro should be minimal and verified. Each item should include `anchor_id`, DOI or `safe_doi`, `canonical_uri`, `paragraph_start`, `paragraph_count`, a short excerpt, candidate claim, and limitations. `prepare_external_synthesis_packet` builds these items only when `verify_evidence_pack` reports `current_valid=true`. Do not send the full local paper library, unrelated full text, publisher/PDF pages, login state, download artifacts, or unverified web content.
 
-Request structured output with `claims`, `anchor_ids`, `confidence`, `caveat`, and `missing_evidence` / `gaps`. ChatGPT Pro must not add papers, DOIs, facts, or citations that were not in the provided pack. After receiving the response, the host must save and audit it. `audit_external_synthesis_result` flags unknown anchor ids, pack-external DOIs, stale packs, and non-verified claims; final citations may only use verified canonical paragraph windows.
+Request structured output with `claims`, `anchor_ids`, `confidence`, `caveat`, and `missing_evidence` / `gaps`. ChatGPT Pro must not add papers, DOIs, facts, or citations that were not in the provided packet. After receiving the response, the host must save and audit it. `audit_external_synthesis_result` treats structured `claims[].anchor_ids` as the primary handoff contract, flags unknown anchors/locators and outside DOIs, and keeps prose audit output as a risk scan; final citations may only use verified canonical paragraph windows.
 
 Stop and report rather than silently degrading when Chrome extension is unavailable, Chrome resource state is inconsistent, the target model cannot be confirmed, the ChatGPT conversation cannot be recovered, ChatGPT adds outside evidence, the evidence pack is too large, or `verify_evidence_pack` returns `current_valid=false`.

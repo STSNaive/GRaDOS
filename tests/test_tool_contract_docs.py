@@ -81,6 +81,14 @@ def test_skill_tool_reference_mirrors_selected_live_schema_guardrails() -> None:
         assert doc_fragment in tools_reference
 
 
+def test_external_synthesis_tool_description_mentions_packet_scope() -> None:
+    description = _live_tools()["audit_external_synthesis_result"].description or ""
+
+    assert "linked packet" in description
+    assert "source evidence pack" in description
+    assert "structured claim anchor ids" in description
+
+
 def test_docs_do_not_claim_removed_project_id_parameter() -> None:
     tools = _live_tools()
     assert "project_id" not in tools["query_research_artifacts"].parameters["properties"]

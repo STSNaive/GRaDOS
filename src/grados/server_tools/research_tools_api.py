@@ -344,7 +344,7 @@ async def audit_external_synthesis_result(
         Field(description="Citation style used in the saved external response."),
     ] = "author_year",
 ) -> dict[str, object]:
-    """Audit a saved ChatGPT Pro response against its source evidence pack."""
+    """Audit a saved ChatGPT Pro response against its linked packet or source pack."""
     from grados.research_tools import audit_external_synthesis_result as run_audit
 
     paths, config = get_paths_and_config()
@@ -749,8 +749,10 @@ def register_research_tools_api(mcp: FastMCP) -> None:
 
     mcp.tool(
         description=(
-            "Audit a saved external_synthesis_result against its source evidence pack, flagging "
-            "unknown anchor ids, pack-external DOIs, stale packs, and non-verified claims."
+            "Audit a saved external_synthesis_result against its linked packet when present, "
+            "otherwise its source evidence pack, using structured claim anchor ids while "
+            "flagging unknown anchors, locators, outside DOIs, stale packs, and non-verified "
+            "claims."
         )
     )(audit_external_synthesis_result)
 

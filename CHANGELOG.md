@@ -41,6 +41,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed external synthesis audit to validate ChatGPT Pro references against the saved packet when one is linked, accept structured `claims[].anchor_ids` without requiring author-year prose citations, and store packet artifacts without embedding a duplicate full host prompt.
 - Changed draft and pack audit outputs from `status` / `status_counts` to `verdict` / `verdict_counts`, using the paper-revision verdict set `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, and `unverifiable_access` with issue types and revision actions instead of the removed `supported`, `weak`, `unsupported`, and `misattributed` status language.
 - Changed `search_saved_papers` to use dense retrieval, SQLite FTS/BM25, exact lookup, and RRF when reranking is enabled; if dense retrieval is unavailable it now returns FTS fallback results with mode/retriever/rank/score/query trace.
 - Changed direct PDF download timeout handling so `current_pdf_timeout()` uses `extract.pdf_read_timeout=120s`, while landing-page/native text fetches keep `extract.fetch_read_timeout=60s`.

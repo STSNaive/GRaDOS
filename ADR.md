@@ -539,7 +539,8 @@
 - `enabled=false` 时，GRaDOS 行为不变：不打开 Chrome、不调用 ChatGPT、不改变 evidence pack、`read_saved_paper` 或最终综合路径。
 - `enabled=true` 只表示 host-side orchestration 协议。GRaDOS server 仍只负责搜索、抽取、canonical anchors、evidence pack、saved-paper reread 和验证，不直接调用 ChatGPT Pro。
 - GRaDOS 产出的是经过验证的 evidence payload 与约束；具体发送给 ChatGPT 的 prompt 由 Codex host agent 根据用户任务、evidence payload 和协议拼装。Chrome extension / host agent 负责发送、读取和恢复 ChatGPT 对话，GRaDOS 不读取浏览器 UI。
-- ChatGPT 输出只有在 host agent 显式回传时才进入 GRaDOS，例如保存为 `external_synthesis_review` research artifact；回传结果仍必须经 `audit_answer_against_pack`、`verify_evidence_pack` 或 canonical reread 才能影响最终引用判断。
+- ChatGPT 输出只有在 host agent 显式回传时才进入 GRaDOS，例如保存为 `external_synthesis_result` research artifact，并可关联源 `external_synthesis_packet`；回传结果仍必须经 `audit_external_synthesis_result`、`verify_evidence_pack` 或 canonical reread 才能影响最终引用判断。
+- 若回传结果关联了 `external_synthesis_packet`，审计边界以该 packet 实际发送的 anchors、DOI、block id 和 canonical URI 为准；结构化 `claims[].anchor_ids` 是主要交接合同，正文 pack audit 只作为额外风险扫描。
 - ChatGPT Pro 输出只能作为 reviewer/synthesizer 建议，不是 citation evidence；它不得新增未提供的论文、DOI、事实或引用。最终引用必须回到 GRaDOS 验证后的 canonical paragraph windows。
 - 一次 GRaDOS workflow 使用一个 ChatGPT conversation。host agent 需要在当前 UI 中确认已选择最新/最强 Pro 模型和最高可用 thinking-time；遇到本地化 UI 时选择语义等价项，发送一次英文 protocol prompt，记录可恢复 conversation URL/标识，并把后续 evidence pack、outline、claim review 追加到同一对话。
 - 当 `research.external_synthesis.enabled=true` 且 `extract.fetch_strategy.enabled.codex=true` 时，host agent 必须把 Chrome 当作一个 workflow-level shared resource：同一时间只允许一个 Chrome task；优先先完成 `chrome_acquisition`，再进入 `chrome_synthesis`；确需交错时保持 publisher/PDF tab 与 ChatGPT tab 分离，并恢复同一 ChatGPT conversation。
