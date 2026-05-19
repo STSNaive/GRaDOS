@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,11 @@ from grados.server import mcp
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOL_TABLE_PATTERN = re.compile(r"\| `grados:([^`/][^`]*)` \|")
+TOOL_TIER_SECTION_PATTERN = re.compile(
+    r"## Tool Tiers\n(?P<section>.*?)\n## GRaDOS Server Tools",
+    re.DOTALL,
+)
+INLINE_TOOL_PATTERN = re.compile(r"`grados:([^`]+)`")
 
 
 def _live_tools() -> dict[str, Any]:
@@ -32,6 +38,22 @@ def test_skill_tool_reference_matches_live_mcp_tool_names() -> None:
     documented_tool_names = set(TOOL_TABLE_PATTERN.findall(tools_reference))
 
     assert documented_tool_names == live_tool_names
+
+
+def test_skill_tool_tiers_cover_each_live_mcp_tool_once() -> None:
+    live_tool_names = set(_live_tools())
+    tools_reference = _read("skills/grados/references/tools.md")
+    tier_section_match = TOOL_TIER_SECTION_PATTERN.search(tools_reference)
+
+    assert tier_section_match is not None
+    tier_table = "\n".join(
+        line for line in tier_section_match.group("section").splitlines() if line.startswith("|")
+    )
+    tier_tool_names = INLINE_TOOL_PATTERN.findall(tier_table)
+    tier_counts = Counter(tier_tool_names)
+
+    assert set(tier_counts) == live_tool_names
+    assert {name: count for name, count in tier_counts.items() if count != 1} == {}
 
 
 def test_readmes_keep_light_coverage_of_live_mcp_tool_names() -> None:

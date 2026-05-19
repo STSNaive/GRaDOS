@@ -2,6 +2,8 @@
 
 ## Contents
 
+- [Default Tool Routes](#default-tool-routes)
+- [Tool Tiers](#tool-tiers)
 - [GRaDOS Server Tools](#grados-server-tools)
 - [Live MCP Contract Guardrails](#live-mcp-contract-guardrails)
 - [Indepth Mode](#indepth-mode)
@@ -9,6 +11,35 @@
 - [MCP Resources](#mcp-resources)
 
 ---
+
+## Default Tool Routes
+
+Use these routes to keep the host agent from treating every public MCP tool as an equal first choice. They are defaults, not mandatory sequences: the host agent may skip, reorder, or replace a helper step when a known DOI, exact paragraph selector, task-specific audit request, recovery state, or context budget makes another path more reliable. The hard rule is evidence quality: final factual claims still require canonical rereading through `grados:read_saved_paper` or a current-valid evidence pack.
+
+| Task | Default route | Mechanical steps already handled inside GRaDOS |
+| --- | --- | --- |
+| Ordinary research answer | `grados:search_saved_papers` for local reuse/context, then `grados:search_academic_papers` for current database coverage. Read saved DOIs directly; extract only unsaved relevant DOIs with `grados:extract_paper_full_text`, then structure/read. If exact selectors are already known, read directly. | `grados:extract_paper_full_text` controls fetch strategy order, parser fallback, canonical save, index refresh, and remote metadata updates. |
+| Local PDF workflow | `grados:import_local_pdf_library` for directories or `grados:parse_pdf_file` for one PDF -> structure/read. | Local PDF parsing uses the configured parser waterfall, byte limits, canonical save, index refresh, and metadata update when a DOI is provided. |
+| Codex Chrome download handoff | `grados:ingest_codex_downloaded_pdf` after a pending `codex` receipt. | The ingest tool validates the download candidate and calls `grados:parse_pdf_file` internally. |
+| Evidence organization | Saved papers -> `grados:build_evidence_grid`, `grados:compare_papers`, or `grados:get_papers_full_context(mode="estimate")` -> accepted anchors reread with `grados:read_saved_paper`. | Helper tools rank, align, or budget context, but they do not create final citation evidence. |
+| Draft audit | `grados:audit_draft_support` -> reread accepted or disputed anchors with `grados:read_saved_paper`. | The audit proposes verdicts and anchors; final support judgment still requires canonical reread. |
+| Pack-scoped audit | `grados:audit_answer_against_pack` with a known pack id. | The pack audit tool calls pack verification internally; call `grados:verify_evidence_pack` separately only when you need a standalone status report. |
+| Handoff or context recovery | Prefer `grados:prepare_evidence_pack`; restore with `grados:read_evidence_pack` only when inspection is needed, then `grados:verify_evidence_pack` before treating restored text as current. | `grados:prepare_evidence_pack` retrieves candidate anchors, materializes canonical blocks, and persists the pack through research artifacts. |
+| External synthesis | Gate first, then `grados:prepare_evidence_pack` -> `grados:prepare_external_synthesis_packet` -> host sends packet -> `grados:save_external_synthesis_result` -> `grados:audit_external_synthesis_result`. | Packet preview is optional dry-run; prepare/save/audit each verify or validate their pack/artifact inputs internally. |
+
+Do not start ordinary research with audit, comparison, external synthesis, Zotero, failure memory, or generic artifact tools unless the user asks for that mode or the run needs recovery. Do not use snippets, summaries, grids, comparisons, audits, checkpoints, receipts, or external synthesis prose as final citation evidence.
+
+## Tool Tiers
+
+| Tier | Tools | Use when |
+| --- | --- | --- |
+| Default research path | `grados:search_saved_papers`, `grados:search_academic_papers`, `grados:extract_paper_full_text`, `grados:get_saved_paper_structure`, `grados:read_saved_paper` | Normal literature questions, local reuse plus current database discovery, selective extraction, and citation-grade reading. |
+| Conditional input/assets | `grados:import_local_pdf_library`, `grados:parse_pdf_file`, `grados:ingest_codex_downloaded_pdf`, `grados:read_paper_asset` | The user provides PDFs, a Codex download needs ingest, or a cited paragraph depends on a figure/table/formula/source asset. |
+| Analysis helpers | `grados:build_evidence_grid`, `grados:compare_papers`, `grados:audit_draft_support`, `grados:get_papers_full_context`, `grados:get_citation_graph` | Saved papers need organization, comparison, context budgeting, citation neighborhoods, or first-pass claim auditing. |
+| Handoff/recovery | `grados:prepare_evidence_pack`, `grados:read_evidence_pack`, `grados:verify_evidence_pack`, `grados:audit_answer_against_pack`, `grados:suggest_missing_evidence`, `grados:save_research_artifact`, `grados:query_research_artifacts`, `grados:manage_failure_cases` | Evidence must survive compression/handoff, a pack needs audit or inspection, or workflow/failure state needs explicit recovery. |
+| Advanced external/admin | `grados:preview_external_synthesis_packet`, `grados:prepare_external_synthesis_packet`, `grados:save_external_synthesis_result`, `grados:audit_external_synthesis_result`, `grados:save_paper_to_zotero` | External synthesis is explicitly enabled or the final actually cited papers should be saved to Zotero. |
+
+`grados:save_research_artifact`, `grados:query_research_artifacts`, and `grados:manage_failure_cases` are advanced recovery surfaces. Prefer typed higher-level tools when they exist.
 
 ## GRaDOS Server Tools
 
@@ -29,7 +60,7 @@
 | `grados:prepare_evidence_pack` | Retrieve candidate anchors, reread canonical paragraph blocks from `papers/*.md`, and persist a minimal `evidence_pack` artifact with pack hash, block hashes, and answerability status. Use this when evidence must survive handoff or context compression. |
 | `grados:read_evidence_pack` | Restore a persisted evidence pack by pack id or artifact id. The stored text is a snapshot until `verify_evidence_pack` confirms it still matches current canonical Markdown. |
 | `grados:verify_evidence_pack` | Rebuild the canonical block registry from current `papers/*.md` and report `snapshot_valid`, `current_valid`, missing papers, document changes, relocated blocks, missing blocks, hash mismatches, and ambiguous relocations. |
-| `grados:preview_external_synthesis_packet` | Dry-run a compact external-synthesis packet from one current-valid evidence pack. It reports sendability, size estimates, prompt hash, and host guidance without saving artifacts or contacting any external service. |
+| `grados:preview_external_synthesis_packet` | Dry-run a compact external-synthesis packet from one current-valid evidence pack. It reports sendability, size estimates, prompt hash, and host guidance without saving artifacts or contacting any external service. Optional before prepare, not required for the send path. |
 | `grados:prepare_external_synthesis_packet` | Persist an `external_synthesis_packet` artifact with verified anchor ids, canonical paragraph coordinates, short excerpts, candidate claims, limitations, and prompt hash, returning the host prompt as a regenerable view. It refuses stale or non-current packs. |
 | `grados:save_external_synthesis_result` | Save a host-provided external synthesis response as an advisory `external_synthesis_result` artifact linked to its source pack, optional packet id, prompt hash, conversation/session URL, model label, and thinking label. |
 | `grados:audit_external_synthesis_result` | Audit a saved external synthesis result against its linked packet when available, otherwise its source pack; structured `claims[].anchor_ids` are the primary handoff contract, while prose audit remains a risk scan before canonical reread. |
@@ -123,7 +154,7 @@ Recommended metadata:
 
 Restore with `grados:query_research_artifacts(kind="evidence_checkpoint", detail=true)`. Before citing, auditing, or comparing any restored claim, call `grados:read_saved_paper` with the saved `canonical_uri` or `safe_doi`, `start_paragraph`, and `max_paragraphs=paragraph_count`. Search snippets, summaries, checkpoints, and tool previews are only navigation material; final answers and citations must be checked against canonical `papers/*.md` content.
 
-Restore an evidence pack with `grados:read_evidence_pack(pack_id=...)`, then call `grados:verify_evidence_pack(pack_id=...)`. If `current_valid=false`, treat the pack as a historical snapshot and either reread the affected canonical paper windows or prepare a fresh pack.
+For a standalone pack status check, call `grados:verify_evidence_pack(pack_id=...)`; it reads the pack internally. Use `grados:read_evidence_pack(pack_id=...)` only when you need to inspect the stored snapshot. If `current_valid=false`, treat the pack as historical and either reread the affected canonical paper windows or prepare a fresh pack.
 
 ## Optional Codex Chrome Extension
 
