@@ -191,6 +191,8 @@ def audit_answer_against_pack(
     strict: bool = True,
     citation_style: str = "author_year",
     return_claim_map: bool = True,
+    include_suggestions: bool = False,
+    max_suggestions: int = 8,
 ) -> dict[str, Any]:
     """Audit draft claims using only materialized evidence items from one pack."""
     pack, loaded = _load_pack(db_path, pack_id)
@@ -267,7 +269,7 @@ def audit_answer_against_pack(
             for claim in audited_claims
         ]
 
-    return {
+    result: dict[str, Any] = {
         "pack_id": pack.pack_id,
         "pack_sha256": pack.pack_sha256,
         "strict": strict,
@@ -278,6 +280,15 @@ def audit_answer_against_pack(
         "claim_map": claim_map,
         "verify": verify_result,
     }
+    if include_suggestions:
+        result["suggestions"] = suggest_missing_evidence(
+            db_path,
+            papers_dir,
+            pack_id=pack.pack_id,
+            draft=draft,
+            max_suggestions=max_suggestions,
+        )
+    return result
 
 
 def suggest_missing_evidence(

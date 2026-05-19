@@ -7,7 +7,7 @@
 - Config: `research.indepth.enabled` defaults to `false`.
 - CLI: `grados search "query" --indepth` overrides the default for one request.
 - MCP: `search_academic_papers(indepth=true)` does the same for one tool call.
-- Candidate count: `indepth` uses the same `limit` as metadata search. The implementation may apply a safety cap, but it does not introduce a second user-facing top-N.
+- Candidate count: `indepth` uses the same `limit` as metadata search. There is no separate hidden top-N cap; control breadth with the search `limit` and, for large reviews, follow-up batches.
 - Scope: `indepth` only processes the returned search candidates. It does not fetch papers outside the current search page.
 
 ## Checkpoint Folder

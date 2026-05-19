@@ -18,6 +18,7 @@ from grados.research.evidence_pack import (
     EvidencePack,
     EvidencePackItem,
     evidence_pack_from_dict,
+    prepare_evidence_pack,
     read_evidence_pack,
     verify_evidence_pack,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "EXTERNAL_SYNTHESIS_PACKET_KIND",
     "EXTERNAL_SYNTHESIS_RESULT_KIND",
     "audit_external_synthesis_result",
+    "prepare_external_synthesis_from_topic",
     "prepare_external_synthesis_packet",
     "preview_external_synthesis_packet",
     "save_external_synthesis_result",
@@ -361,6 +363,62 @@ def prepare_external_synthesis_packet(
     }
 
 
+def prepare_external_synthesis_from_topic(
+    chroma_dir: Path,
+    db_path: Path,
+    papers_dir: Path,
+    *,
+    topic: str,
+    subquestions: list[str] | None = None,
+    scoped_dois: list[str] | None = None,
+    evidence_max_windows: int = 8,
+    mode: str = "review",
+    max_items: int = 25,
+    max_excerpt_chars: int = 700,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Prepare a pack, verify it through packet preparation, and persist a sendable packet."""
+    pack_receipt = prepare_evidence_pack(
+        chroma_dir,
+        db_path,
+        topic=topic,
+        subquestions=subquestions,
+        scoped_dois=scoped_dois,
+        max_windows=evidence_max_windows,
+    )
+    pack_id = str(pack_receipt.get("pack_id") or "")
+    if not pack_id:
+        return {
+            "ok": False,
+            "sendable": False,
+            "saved": False,
+            "error": "evidence_pack_not_prepared",
+            "evidence_pack": pack_receipt,
+        }
+
+    packet_metadata = {
+        **(metadata or {}),
+        "source": "prepare_external_synthesis_from_topic",
+        "evidence_pack_artifact_id": str(pack_receipt.get("artifact_id") or ""),
+    }
+    packet = prepare_external_synthesis_packet(
+        db_path,
+        papers_dir,
+        pack_id=pack_id,
+        mode=mode,
+        max_items=max_items,
+        max_excerpt_chars=max_excerpt_chars,
+        metadata=packet_metadata,
+    )
+    return {
+        **packet,
+        "route": "prepare_external_synthesis_from_topic",
+        "pack_id": pack_id,
+        "pack_artifact_id": str(pack_receipt.get("artifact_id") or ""),
+        "evidence_pack": pack_receipt,
+    }
+
+
 def _read_artifact(db_path: Path, artifact_id: str) -> dict[str, Any] | None:
     result = query_research_artifacts(db_path, artifact_id=artifact_id, detail=True, limit=1)
     items = result.get("items", [])
@@ -397,6 +455,7 @@ def save_external_synthesis_result(
     claims: list[dict[str, Any]] | None = None,
     gaps: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    audit: bool = True,
 ) -> dict[str, Any]:
     """Persist a host-provided ChatGPT Pro response as advisory research state."""
     resolved_mode = _normalize_mode(mode)
@@ -487,9 +546,10 @@ def save_external_synthesis_result(
         content=content_payload,
         metadata=artifact_metadata,
     )
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "saved": True,
+        "audited": False,
         "artifact_id": receipt["artifact_id"],
         "kind": EXTERNAL_SYNTHESIS_RESULT_KIND,
         "pack_id": pack.pack_id,
@@ -500,6 +560,17 @@ def save_external_synthesis_result(
         "next_action": "audit_external_synthesis_result",
         "metadata": receipt["metadata"],
     }
+    if audit:
+        audit_result = audit_external_synthesis_result(
+            db_path,
+            papers_dir,
+            result_id=str(receipt["artifact_id"]),
+        )
+        result["audited"] = True
+        result["audit"] = audit_result
+        result["ready_for_canonical_reread"] = bool(audit_result.get("ready_for_canonical_reread"))
+        result["next_action"] = str(audit_result.get("next_action") or result["next_action"])
+    return result
 
 
 def _allowed_refs_from_pack(pack: EvidencePack) -> dict[str, set[str]]:

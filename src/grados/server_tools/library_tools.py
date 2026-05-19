@@ -128,6 +128,34 @@ def _metadata_only_receipt(
     return "\n".join(lines)
 
 
+def _already_saved_receipt(doi: str, record: object, papers_dir: Path) -> str:
+    section_headings = list(getattr(record, "section_headings", []) or [])
+    safe_doi = str(getattr(record, "safe_doi", "") or "")
+    file_path = str((papers_dir / f"{safe_doi}.md").resolve()) if safe_doi else ""
+    result = "## Paper Already Saved\n\n"
+    result += f"- **DOI:** {getattr(record, 'doi', '') or doi}\n"
+    result += f"- **Paper ID:** {safe_doi}\n"
+    result += f"- **Safe DOI:** {safe_doi}\n"
+    result += f"- **URI:** {getattr(record, 'canonical_uri', '')}\n"
+    result += f"- **File:** {file_path}\n"
+    result += f"- **Words:** {int(getattr(record, 'word_count', 0) or 0):,}\n"
+    result += f"- **Characters:** {int(getattr(record, 'char_count', 0) or 0):,}\n"
+    if getattr(record, "title", ""):
+        result += f"- **Title:** {getattr(record, 'title')}\n"
+    if getattr(record, "source", ""):
+        result += f"- **Source:** {getattr(record, 'source')}\n"
+    if getattr(record, "fetch_outcome", ""):
+        result += f"- **Outcome:** {getattr(record, 'fetch_outcome')}\n"
+    result += "- **Fetch Status:** fulltext\n"
+    result += "- **Has Fulltext:** true\n"
+    result += "- **Index Status:** existing\n"
+    result += "- **Next Action:** read_saved_paper\n"
+    result += "- **Refresh:** call `extract_paper_full_text` with `force_refresh=true` to refetch/reparse.\n"
+    if section_headings:
+        result += "\n### Sections\n" + "\n".join(f"- {heading}" for heading in section_headings)
+    return result
+
+
 def _append_remote_metadata_warning(result: str, warning: str | None) -> str:
     if not warning:
         return result
@@ -339,16 +367,31 @@ async def extract_paper_full_text(
             )
         ),
     ] = False,
+    force_refresh: Annotated[
+        bool,
+        Field(
+            description=(
+                "When false, return the existing saved-paper receipt if canonical Markdown is already present. "
+                "Set force_refresh=true to refetch/reparse and overwrite local full text."
+            )
+        ),
+    ] = False,
 ) -> str:
     """Fetch, parse, and save one paper's canonical full text by DOI."""
     from grados.extract.fetch import fetch_paper
     from grados.extract.parse import normalize_document_text_with_diagnostics, parse_pdf_with_diagnostics
     from grados.extract.qa import is_valid_paper_content
+    from grados.storage.papers import load_paper_record
 
     paths, config = get_paths_and_config()
     indexing_config = getattr(config, "indexing", None)
     api_keys = {k: v for k, v in config.api_keys.model_dump().items() if v}
     metadata_dir = _remote_metadata_dir(paths)
+    if not force_refresh:
+        record = load_paper_record(paths.papers, doi=doi)
+        if record is not None and record.content_markdown.strip():
+            return _already_saved_receipt(doi, record, paths.papers)
+
     browser_resume = _load_browser_resume(paths, doi) if resume_browser else None
     if resume_browser and browser_resume is None:
         browser_resume = {}
@@ -1732,6 +1775,7 @@ def register_library_tools(mcp: FastMCP) -> None:
     mcp.tool(
         description=(
             "Fetch, parse, and save one paper's canonical full text by DOI. "
+            "If canonical Markdown is already saved, returns an already-saved receipt unless `force_refresh=true`. "
             "Returns a compact save receipt with URI, file path, section headings, "
             "and warnings rather than the full paper text."
         )

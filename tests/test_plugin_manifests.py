@@ -21,6 +21,9 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     assert codex_plugin["name"] == "grados"
     assert codex_plugin["skills"] == "./skills/"
     assert codex_plugin["mcpServers"] == "./plugin.mcp.json"
+    assert "evidence-grounded writing" in codex_plugin["description"]
+    assert "manuscripts" in codex_plugin["interface"]["longDescription"]
+    assert any("experiment or simulation protocol" in prompt for prompt in codex_plugin["interface"]["defaultPrompt"])
     assert (codex_plugin_root / codex_plugin["skills"][2:] / "grados" / "SKILL.md").is_file()
     assert (codex_plugin_root / codex_plugin["mcpServers"][2:]).is_file()
 
@@ -51,7 +54,13 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
         "agents/openai.yaml",
         "references/external_synthesis.md",
         "references/indepth.md",
+        "references/paper_writing.md",
         "references/tools.md",
+        "references/writing_profiles/experimental_protocol.md",
+        "references/writing_profiles/experiment_report.md",
+        "references/writing_profiles/literature_review.md",
+        "references/writing_profiles/manuscript.md",
+        "references/domain_profiles/mechanics_elastic_metamaterials.md",
     ]
     for relative_path in mirrored_files:
         assert (
@@ -61,11 +70,16 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
 
     tools_reference = (canonical_skill_root / "references" / "tools.md").read_text(encoding="utf-8")
     skill_text = (canonical_skill_root / "SKILL.md").read_text(encoding="utf-8")
+    paper_writing_reference = (
+        canonical_skill_root / "references" / "paper_writing.md"
+    ).read_text(encoding="utf-8")
     external_synthesis_reference = (
         canonical_skill_root / "references" / "external_synthesis.md"
     ).read_text(encoding="utf-8")
     assert "`codex` is a disabled-by-default fetch-strategy entry" in tools_reference
     assert "ChatGPT Pro" not in skill_text
+    assert "references/paper_writing.md" in skill_text
+    assert "experimental protocols, research reports, manuscripts" in skill_text
     assert "references/external_synthesis.md" in skill_text
     assert "grados external-synthesis is-enabled --quiet" in skill_text
     assert "uvx grados external-synthesis is-enabled --quiet" in skill_text
@@ -82,6 +96,13 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     assert "`save_external_synthesis_result`" in external_synthesis_reference
     assert "`audit_external_synthesis_result`" in external_synthesis_reference
     assert "single shared Chrome resource" in external_synthesis_reference
+    assert "writing_profiles/experimental_protocol.md" in paper_writing_reference
+    assert "writing_profiles/literature_review.md" in paper_writing_reference
+    assert "writing_profiles/experiment_report.md" in paper_writing_reference
+    assert "writing_profiles/manuscript.md" in paper_writing_reference
+    assert "domain_profiles/mechanics_elastic_metamaterials.md" in paper_writing_reference
+    assert "`validate_claim_matrix`" in paper_writing_reference
+    assert "`prepare_claim_evidence_pack`" in paper_writing_reference
     assert "Docling -> MinerU -> PyMuPDF" in tools_reference
     assert "TDM -> OA -> Sci-Hub -> Headless" not in tools_reference
     assert "PyMuPDF -> Marker -> Docling" not in tools_reference

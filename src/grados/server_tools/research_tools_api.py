@@ -19,6 +19,7 @@ __all__ = [
     "get_papers_full_context",
     "manage_failure_cases",
     "prepare_evidence_pack",
+    "prepare_external_synthesis_from_topic",
     "prepare_external_synthesis_packet",
     "preview_external_synthesis_packet",
     "query_research_artifacts",
@@ -261,6 +262,61 @@ async def prepare_external_synthesis_packet(
     )
 
 
+async def prepare_external_synthesis_from_topic(
+    topic: Annotated[
+        str,
+        Field(min_length=1, description="Research topic or question to turn into an external synthesis packet."),
+    ],
+    subquestions: Annotated[
+        list[str] | None,
+        Field(description="Optional focused subquestions for evidence pack preparation."),
+    ] = None,
+    scoped_dois: Annotated[
+        list[str] | None,
+        Field(description="Optional saved-paper DOI scope for evidence pack candidate selection."),
+    ] = None,
+    evidence_max_windows: Annotated[
+        int,
+        Field(ge=1, le=25, description="Maximum candidate windows to materialize per evidence subquestion."),
+    ] = 8,
+    mode: Annotated[
+        Literal["review", "synthesize"],
+        Field(description="External ChatGPT Pro packet mode."),
+    ] = "review",
+    max_items: Annotated[
+        int,
+        Field(ge=1, le=50, description="Maximum verified evidence anchors to include in the packet."),
+    ] = 25,
+    max_excerpt_chars: Annotated[
+        int,
+        Field(ge=120, le=2000, description="Maximum characters per canonical excerpt."),
+    ] = 700,
+    metadata: Annotated[
+        dict[str, object] | None,
+        Field(description="Optional metadata such as research_run_id for manifest linking."),
+    ] = None,
+) -> dict[str, object]:
+    """Prepare a fresh evidence pack and persist a current-valid external synthesis packet."""
+    from grados.research_tools import prepare_external_synthesis_from_topic as run_prepare_from_topic
+
+    paths, config = get_paths_and_config()
+    if not config.research.external_synthesis.enabled:
+        return _external_synthesis_disabled_response()
+    return run_prepare_from_topic(
+        paths.database_chroma,
+        paths.database_state,
+        paths.papers,
+        topic=topic,
+        subquestions=subquestions,
+        scoped_dois=scoped_dois,
+        evidence_max_windows=evidence_max_windows,
+        mode=mode,
+        max_items=max_items,
+        max_excerpt_chars=max_excerpt_chars,
+        metadata=metadata,
+    )
+
+
 async def save_external_synthesis_result(
     pack_id: Annotated[
         str,
@@ -306,6 +362,10 @@ async def save_external_synthesis_result(
         dict[str, object] | None,
         Field(description="Optional metadata such as research_run_id for manifest linking."),
     ] = None,
+    audit: Annotated[
+        bool,
+        Field(description="When true, immediately audit the saved advisory result before returning."),
+    ] = True,
 ) -> dict[str, object]:
     """Save a host-provided ChatGPT Pro response as advisory research state."""
     from grados.research_tools import save_external_synthesis_result as run_save
@@ -327,6 +387,7 @@ async def save_external_synthesis_result(
         claims=claims,
         gaps=gaps,
         metadata=metadata,
+        audit=audit,
     )
 
 
@@ -451,7 +512,13 @@ async def get_citation_graph(
 async def get_papers_full_context(
     dois: Annotated[
         list[str],
-        Field(min_length=1, description="Saved-paper DOI list. Best for 1-8 papers you intend to read closely."),
+        Field(
+            min_length=1,
+            description=(
+                "Saved-paper DOI list for a context-budgeted reading batch. "
+                "Use `mode=estimate` and multiple calls for broad paper sets."
+            ),
+        ),
     ],
     section_filter: Annotated[
         list[str] | None,
@@ -471,7 +538,7 @@ async def get_papers_full_context(
         Field(ge=1000, le=128000, description="Approximate token budget across all returned papers when `mode=full`."),
     ] = 32000,
 ) -> dict[str, object]:
-    """Return full-context material for a small saved-paper set."""
+    """Return full-context material for a context-budgeted saved-paper batch."""
     from grados.research_tools import get_papers_full_context as run_full_context
 
     paths, _ = get_paths_and_config()
@@ -510,7 +577,14 @@ async def build_evidence_grid(
     ] = None,
     max_papers: Annotated[
         int,
-        Field(ge=1, le=12, description="Maximum paper hits to consider per subquestion."),
+        Field(
+            ge=1,
+            le=12,
+            description=(
+                "Per-call paper hits to consider per subquestion; run more calls or scoped batches "
+                "for broader evidence maps."
+            ),
+        ),
     ] = 8,
 ) -> dict[str, object]:
     """Construct an evidence grid for writing preparation."""
@@ -640,6 +714,14 @@ async def audit_answer_against_pack(
         bool,
         Field(description="Include a compact claim-to-pack-evidence map."),
     ] = True,
+    include_suggestions: Annotated[
+        bool,
+        Field(description="Include suggestion-only follow-up work for non-verified claims."),
+    ] = False,
+    max_suggestions: Annotated[
+        int,
+        Field(ge=1, le=25, description="Maximum suggestion-only follow-up items when include_suggestions=true."),
+    ] = 8,
 ) -> dict[str, object]:
     """Audit a draft strictly against one materialized evidence pack."""
     from grados.research_tools import audit_answer_against_pack as run_audit_pack
@@ -653,6 +735,8 @@ async def audit_answer_against_pack(
         strict=strict,
         citation_style=citation_style,
         return_claim_map=return_claim_map,
+        include_suggestions=include_suggestions,
+        max_suggestions=max_suggestions,
     )
 
 
@@ -713,8 +797,9 @@ def register_research_tools_api(mcp: FastMCP) -> None:
 
     mcp.tool(
         description=(
-            "Read a previously saved evidence pack from research artifacts. "
-            "Use this before drafting or pack-scoped auditing."
+            "Inspect or recover a previously saved evidence pack snapshot from research artifacts. "
+            "For current-valid status or pack-scoped auditing, use the verify/audit tools directly; "
+            "they read the pack internally."
         )
     )(read_evidence_pack)
 
@@ -742,8 +827,17 @@ def register_research_tools_api(mcp: FastMCP) -> None:
 
     mcp.tool(
         description=(
+            "Prepare a fresh evidence pack from a topic and persist a verified external_synthesis_packet "
+            "in one deterministic route. This is the default external synthesis setup when no pack id "
+            "already exists; GRaDOS still does not call external models."
+        )
+    )(prepare_external_synthesis_from_topic)
+
+    mcp.tool(
+        description=(
             "Save a host-provided ChatGPT Pro response as an advisory external_synthesis_result "
-            "artifact linked to the source evidence pack and optional packet/session metadata."
+            "artifact linked to the source evidence pack and optional packet/session metadata. "
+            "By default, immediately audits the saved result before returning."
         )
     )(save_external_synthesis_result)
 
@@ -773,9 +867,9 @@ def register_research_tools_api(mcp: FastMCP) -> None:
 
     mcp.tool(
         description=(
-            "Return structured full-context material for a small set of saved papers. "
-            "Use `mode=estimate` to budget context first, then `mode=full` "
-            "when you are ready to enter a CAG-style deep-reading pass."
+            "Return structured full-context material for a context-budgeted batch of saved papers. "
+            "Use `mode=estimate` to budget context first, then `mode=full` when the batch fits; "
+            "run additional batches for broad reading."
         )
     )(get_papers_full_context)
 
@@ -809,7 +903,8 @@ def register_research_tools_api(mcp: FastMCP) -> None:
         description=(
             "Audit draft claims against one evidence pack only. Strict mode does not search the full "
             "library for replacement evidence; non-verified claims stay visible until a separate "
-            "evidence-gathering or revision step extends or prepares a pack."
+            "evidence-gathering or revision step extends or prepares a pack. Set include_suggestions=true "
+            "to attach suggestion-only follow-up work in the same response."
         )
     )(audit_answer_against_pack)
 

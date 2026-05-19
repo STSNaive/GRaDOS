@@ -16,7 +16,7 @@ def get_papers_full_context(
     mode: str = "estimate",
     max_total_tokens: int = 32000,
 ) -> FullContextResult:
-    """Return structured full-context material for a small paper set."""
+    """Return structured full-context material for a context-budgeted paper batch."""
     resolved, missing = _resolve_documents(chroma_dir, dois)
     papers: list[FullContextPaper] = []
     total_estimated = 0

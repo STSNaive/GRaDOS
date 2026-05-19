@@ -265,6 +265,16 @@ def test_suggest_missing_evidence_is_separate_from_strict_audit(monkeypatch, tmp
         "reacquire_full_text_or_switch_parser",
     }
 
+    audit_with_suggestions = audit_answer_against_pack(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+        draft="The method completely guarantees fatigue resistance (Smith, 2025).",
+        include_suggestions=True,
+    )
+    assert audit_with_suggestions["suggestions"]["mode"] == "suggestion_only"
+    assert audit_with_suggestions["suggestions"]["suggestion_count"] == suggestion["suggestion_count"]
+
 
 def test_pack_audit_uses_unverifiable_access_for_stale_pack(monkeypatch, tmp_path: Path) -> None:
     _save_demo_paper(tmp_path)

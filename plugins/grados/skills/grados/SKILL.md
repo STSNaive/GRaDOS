@@ -4,9 +4,10 @@ description: >-
   Searches academic databases (Crossref, PubMed, Web of Science, Elsevier,
   Springer), extracts full-text papers via DOI, and synthesizes
   citation-grounded answers in Chinese. Triggers on scientific phenomena,
-  literature reviews, state-of-the-art methods, or questions requiring
-  peer-reviewed evidence. Does not trigger for general coding, math,
-  or non-research tasks.
+  literature reviews, state-of-the-art methods, evidence-grounded
+  experimental protocols, research reports, manuscripts, or questions
+  requiring peer-reviewed evidence. Does not trigger for general coding,
+  math, or non-research tasks.
 ---
 
 # GRaDOS: Strict Academic Research Protocol
@@ -20,6 +21,8 @@ Directive: **rigorous, citation-grounded, hallucination-free** answers. Never gu
 All search queries MUST be in **English**. All answers to the user MUST be in **Chinese**.
 
 For tool details, schemas, resources, browser assistance, and optional workflows, see [references/tools.md](references/tools.md).
+
+For evidence-grounded writing tasks such as experimental protocols, literature reviews, experiment reports, or manuscripts, follow [references/paper_writing.md](references/paper_writing.md). Load only the relevant writing profile and domain profile for the user's task.
 
 Before using external synthesis, run the GRaDOS CLI gate with the same `GRADOS_HOME` as the active server: `grados external-synthesis is-enabled --quiet` (or `uvx grados external-synthesis is-enabled --quiet` when using the plugin launcher). Use external synthesis only when the command exits with code 0; if the command is unavailable, fails, or exits nonzero, ignore [references/external_synthesis.md](references/external_synthesis.md) and do not use external synthesis.
 
@@ -38,13 +41,13 @@ For research answers, always include remote database search so the agent checks 
 
 Use GRaDOS routes as flexible defaults, not fixed scripts. Start from the outcome contract and evidence invariants, then choose the shortest reliable path for the user's task. Deviate from these routes when the user asks for audit/comparison/recovery, when a known DOI or `canonical_uri` makes direct reading cheaper, when tool results already provide exact paragraph selectors, or when failures make another route more efficient. Let higher-level tools run their mechanical substeps:
 
-1. **Ordinary research question:** `grados:search_saved_papers` for reuse/context, then `grados:search_academic_papers` for current database coverage. If a searched DOI is already saved, read it directly with optional `grados:get_saved_paper_structure` -> `grados:read_saved_paper`; extract only unsaved relevant DOIs with `grados:extract_paper_full_text`, then return to structure/read.
+1. **Ordinary research question:** `grados:search_saved_papers` for reuse/context, then `grados:search_academic_papers` for current database coverage. If a searched DOI is already saved, read it directly with optional `grados:get_saved_paper_structure` -> `grados:read_saved_paper`; extract only unsaved relevant DOIs with `grados:extract_paper_full_text`, then return to structure/read. Call extraction on a saved DOI only for explicit maintenance work such as refresh, reparse, or acquisition debugging.
 2. **User provides local PDFs:** use `grados:import_local_pdf_library` for a directory or `grados:parse_pdf_file` for one PDF, then use `grados:get_saved_paper_structure` and `grados:read_saved_paper`.
 3. **Comparison, evidence mapping, or draft checking:** after papers are saved, use `grados:build_evidence_grid`, `grados:compare_papers`, or `grados:audit_draft_support` as helpers; reread accepted anchors with `grados:read_saved_paper`.
-4. **Handoff, compression, or pack-scoped audit:** use `grados:prepare_evidence_pack`. Call `grados:verify_evidence_pack` for restored or handoff packs; `grados:audit_answer_against_pack` verifies its pack internally.
-5. **External synthesis:** only after the CLI gate passes, use the route in [references/external_synthesis.md](references/external_synthesis.md). `grados:preview_external_synthesis_packet` is a dry run, not a required step before `grados:prepare_external_synthesis_packet`.
+4. **Handoff, compression, or pack-scoped audit:** use `grados:prepare_evidence_pack`. Call `grados:verify_evidence_pack` for restored or handoff packs; it reads the pack internally. Use `grados:read_evidence_pack` only to inspect or recover the stored snapshot. `grados:audit_answer_against_pack` verifies its pack internally.
+5. **External synthesis:** only after the CLI gate passes, use the route in [references/external_synthesis.md](references/external_synthesis.md). Prefer `grados:prepare_external_synthesis_from_topic` when no pack id exists; use `grados:prepare_external_synthesis_packet` for an existing pack. `grados:preview_external_synthesis_packet` is a dry run, not a required step. After the host returns external output, `grados:save_external_synthesis_result` audits by default before any canonical reread or final use.
 
-For ordinary research, do not start with audit, comparison, external synthesis, Zotero, failure memory, or generic artifact tools unless the user specifically asks for that mode or the task state requires recovery. Do not manually orchestrate fetch strategy, parser fallback, canonical save, indexing, remote-metadata updates, pack persistence, or pack verification when a higher-level GRaDOS tool already performs that step.
+For ordinary research, do not start with audit, comparison, external synthesis, Zotero, failure memory, or generic artifact tools unless the user specifically asks for that mode or the task state requires recovery. Do not manually orchestrate fetch strategy, parser fallback, canonical save, indexing, remote-metadata updates, pack persistence, pack verification, optional dry runs, or snapshot inspection when a higher-level GRaDOS tool already performs that step.
 
 ## Evidence Invariants
 
@@ -98,8 +101,8 @@ Before and alongside remote database search:
 
 ### 3. Extract Or Import Full Text
 
-1. For each relevant DOI, call `grados:extract_paper_full_text` and always pass `expected_title`.
-2. If `papers/{safe_doi}.md` already exists, skip re-extraction for that DOI.
+1. For each relevant unsaved DOI, call `grados:extract_paper_full_text` and always pass `expected_title`.
+2. If `papers/{safe_doi}.md` already exists or the search result reports `already_saved=true`, skip ordinary re-extraction and read that DOI directly. Call extraction on an already saved DOI only when the task is explicitly to refresh, reparse, debug acquisition, or rebuild local full text.
 3. For many candidates, extract in manageable batches and continue while new papers are likely to improve coverage, reveal useful references, or clarify uncertainty.
 4. If extraction fails for a strongly relevant paper, record its title, DOI, and abstract-based relevance in `未能获取全文`; silently skip marginal failures.
 

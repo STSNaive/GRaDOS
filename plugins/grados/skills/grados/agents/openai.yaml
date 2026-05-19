@@ -1,6 +1,6 @@
 interface:
   display_name: "GRaDOS"
-  short_description: "Academic paper search and full-text extraction for scientific research"
+  short_description: "Academic paper search, full-text extraction, and evidence-grounded writing"
 
 policy:
   allow_implicit_invocation: true
@@ -9,5 +9,5 @@ dependencies:
   tools:
     - type: "mcp"
       value: "grados"
-      description: "GRaDOS MCP server for academic paper search and full-text extraction"
+      description: "GRaDOS MCP server for academic paper search, full-text extraction, and evidence-grounded writing"
       transport: "stdio"

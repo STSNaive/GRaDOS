@@ -573,3 +573,34 @@
 - Host agent 可以通过 manifest 回放一次研究的目录、失败和配置上下文，但最终引用仍必须回到 canonical `papers/*.md` 或 `current_valid=true` 的 evidence pack。
 - Audit 输出直接服务论文修改：`minor_distortion` 指向小修，`major_distortion` 指向重写/换引用/删除，`unverifiable` 指向补证据，`unverifiable_access` 指向重新获取全文或换 parser。
 - 这是一次有意的 schema 变更；README、skill reference、tests 和下游使用方都应迁移到 `verdict` 字段与新 verdict 集。
+
+---
+
+## ADR-022：论文写作流水线放在 skill/profile 层，证据真值留在 GRaDOS core
+
+- 状态：Accepted
+- 日期：2026-05-19
+
+### 背景
+- 用户希望对 agent 说“用 GRaDOS 获取真实论文信息来设计实验流程/写论文”时，agent 能稳定完成任务。
+- ARIS、STORM、PaperQA、GPT Researcher、AutoResearchClaw、AI-Scientist 等相关项目说明，长写作任务通常需要阶段化 workflow、outline/claim ledger、审稿 gate、citation check、LaTeX/BibTeX 或图表 provenance 等能力。
+- GRaDOS 已经具备 canonical full text、`read_saved_paper`、evidence pack、pack verification、draft/pack audit、external synthesis advisory 和 `research_run_manifest` 等证据基础设施；缺口主要在 host agent 如何把这些能力组织成论文写作流水线。
+
+### 决策
+- 不把 GRaDOS core 改造成完整自动科研 runtime。GRaDOS core 继续负责 deterministic evidence substrate：搜索、获取全文、canonical 保存、检索候选、canonical reread、evidence pack、验证和审计。
+- 写作流程放在 `skills/grados/references/paper_writing.md` 与 profile 文档中，由 host agent 执行规划、写作、改写和任务状态推进。
+- `paper_writing.md` 作为 workflow router，不作为独立 skill。它按任务加载最小必要 profile：
+  - `writing_profiles/experimental_protocol.md`
+  - `writing_profiles/literature_review.md`
+  - `writing_profiles/experiment_report.md`
+  - `writing_profiles/manuscript.md`
+- 领域特化 guardrail 放在 `domain_profiles/`。当前已加入 mechanics / elastic metamaterials profile，用于约束力学、弹性/声学/机械超材料、phononic crystal、band gap、有限样品与无限周期、仿真与实验等高风险混淆点。
+- `claim_matrix` 是写作阶段的 durable claim ledger，可先作为 `save_research_artifact(kind="claim_matrix")` 保存；它不是 citation evidence。最终事实 claim 仍必须回到 canonical paragraph window 或 current-valid evidence pack。
+- `validate_claim_matrix` 和 `prepare_claim_evidence_pack` 是下一步可实现的 deterministic helper 方向，但在 MCP tool 真正实现前，文档必须明确它们不是 live tools。当前可用 gate 仍由 `read_saved_paper`、`prepare_evidence_pack`、`verify_evidence_pack`、`audit_answer_against_pack` 等现有工具组合完成。
+- 不新增一组 `literature_review`、`experimental_protocol`、`experiment_report`、`manuscript` 同名 MCP tools。profile 是 skill/reference 文档；MCP tool 只在承担确定性校验、canonical materialization 或最终 assurance 时新增。
+
+### 结果与影响
+- `@grados` 遇到实验流程、综述、实验报告或论文写作请求时，可以通过 skill 路由进入写作流水线，而不是只按普通短问答处理。
+- 写作 profile 能借鉴成熟项目的 workflow 结构，但不会把 ARIS wiki、ChatGPT Pro reviewer prose、helper snippet 或模型记忆当作证据来源。
+- Codex plugin mirror 与 manifest drift test 必须同步覆盖 `paper_writing.md`、writing profiles 和 domain profiles，避免 plugin 安装后缺少写作入口。
+- 后续是否实现 claim matrix 校验和 claim-to-pack materialization，应由真实写作任务中反复出现的确定性需求驱动，而不是提前扩张 public MCP surface。

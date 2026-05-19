@@ -37,6 +37,7 @@ from grados.research.evidence_pack import (
 )
 from grados.research.external_synthesis import (
     audit_external_synthesis_result,
+    prepare_external_synthesis_from_topic,
     prepare_external_synthesis_packet,
     preview_external_synthesis_packet,
     save_external_synthesis_result,
@@ -76,6 +77,7 @@ __all__ = [
     "get_citation_graph",
     "get_papers_full_context",
     "prepare_evidence_pack",
+    "prepare_external_synthesis_from_topic",
     "prepare_external_synthesis_packet",
     "preview_external_synthesis_packet",
     "read_evidence_pack",

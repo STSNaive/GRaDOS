@@ -52,6 +52,7 @@ def test_server_registers_expected_tools() -> None:
         "manage_failure_cases",
         "parse_pdf_file",
         "prepare_evidence_pack",
+        "prepare_external_synthesis_from_topic",
         "prepare_external_synthesis_packet",
         "preview_external_synthesis_packet",
         "query_research_artifacts",
@@ -79,6 +80,7 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
 
     extract = tools["extract_paper_full_text"]
     assert "compact save receipt" in (extract.description or "")
+    assert "force_refresh=true" in extract.parameters["properties"]["force_refresh"]["description"]
     assert "does not change fetch routing" in extract.parameters["properties"]["publisher"]["description"]
 
     read_tool = tools["read_saved_paper"]
@@ -101,7 +103,8 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
     assert "project_id" not in artifact.parameters["properties"]
 
     full_context = tools["get_papers_full_context"]
-    assert "CAG-style deep-reading pass" in (full_context.description or "")
+    assert "context-budgeted batch" in (full_context.description or "")
+    assert "additional batches" in (full_context.description or "")
     assert full_context.parameters["properties"]["max_total_tokens"]["maximum"] == 128000
 
     audit = tools["audit_draft_support"]
@@ -111,6 +114,12 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
     assert audit.parameters["properties"]["candidate_limit"]["maximum"] == 25
     assert "project_id" not in tools["query_research_artifacts"].parameters["properties"]
     assert "project_id" not in audit.parameters["properties"]
+
+    pack_audit = tools["audit_answer_against_pack"]
+    assert "include_suggestions" in pack_audit.parameters["properties"]
+
+    save_external = tools["save_external_synthesis_result"]
+    assert save_external.parameters["properties"]["audit"]["default"] is True
 
 
 def test_server_registers_expected_paper_resources() -> None:
@@ -422,6 +431,91 @@ def test_search_academic_papers_indepth_records_failed_extraction(tmp_path: Path
     assert remote_calls[0]["has_fulltext"] is False
 
 
+def test_search_academic_papers_indepth_uses_search_limit_without_hidden_cap(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import grados.server_tools.search_tools as search_tools
+    import grados.storage.remote_metadata as remote_metadata
+    from grados.storage.papers import save_paper_markdown
+
+    home = tmp_path / "grados-home"
+    paths = SimpleNamespace(
+        papers=home / "papers",
+        database_chroma=home / "database" / "chroma",
+        database_remote_metadata=home / "database" / "remote_metadata",
+        research_checkpoints=home / "research_checkpoints",
+        paper_summaries=home / "paper_summaries",
+    )
+    config = SimpleNamespace(
+        search=SimpleNamespace(order=["Crossref"], enabled={"Crossref": True}),
+        research=SimpleNamespace(indepth=SimpleNamespace(enabled=True, auto_summarize=False)),
+        academic_etiquette_email="research@example.edu",
+        indexing=IndexingConfig(),
+    )
+    extracted: list[str] = []
+
+    async def fake_run_resumable_search(**kwargs):  # noqa: ANN003
+        return ResumableSearchResult(
+            query=kwargs["query"],
+            limit=kwargs["limit"],
+            results=[
+                PaperMetadata(
+                    title=f"Indepth Demo {index}",
+                    doi=f"10.1234/indepth-{index}",
+                    abstract="A candidate for indepth extraction.",
+                    year="2026",
+                    source="Crossref",
+                )
+                for index in range(10)
+            ],
+            has_more=False,
+            exhausted_sources=["Crossref"],
+            next_continuation_token=None,
+            warnings=[],
+            continuation_applied=True,
+        )
+
+    async def fake_extract_paper_full_text(**kwargs):  # noqa: ANN003
+        doi = kwargs["doi"]
+        extracted.append(doi)
+        expected_safe = safe_doi_filename(doi)
+        save_paper_markdown(
+            doi=doi,
+            markdown=(
+                f"# Indepth Demo {doi}\n\n"
+                "## Abstract\n\n"
+                "This paper studies composite damping.\n\n"
+                "## Results\n\n"
+                "The results show improved damping.\n"
+            ),
+            papers_dir=paths.papers,
+            title=f"Indepth Demo {doi}",
+        )
+        return (
+            "## Paper Extracted Successfully\n\n"
+            f"- **DOI:** {doi}\n"
+            f"- **Paper ID:** {expected_safe}\n"
+            f"- **Safe DOI:** {expected_safe}\n"
+            "- **Fetch Status:** fulltext\n"
+            "- **Has Fulltext:** true\n"
+            "- **Index Status:** indexed\n"
+        )
+
+    monkeypatch.setattr(search_tools, "get_paths_and_config", lambda: (paths, config))
+    monkeypatch.setattr(search_tools, "get_api_keys", lambda loaded_config: {})
+    monkeypatch.setattr("grados.search.resumable.run_resumable_search", fake_run_resumable_search)
+    monkeypatch.setattr("grados.server_tools.library_tools.extract_paper_full_text", fake_extract_paper_full_text)
+    monkeypatch.setattr(remote_metadata, "upsert_remote_metadata", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(remote_metadata, "get_remote_metadata_by_doi", lambda *args, **kwargs: None)
+
+    result = asyncio.run(search_academic_papers("composite damping", limit=10))
+
+    assert len(extracted) == 10
+    assert "Candidates processed: 10" in result
+    assert "first 8" not in result
+
+
 def test_search_saved_papers_rejects_invalid_year_range() -> None:
     result = asyncio.run(search_saved_papers("composite vibration", year_from=2025, year_to=2024))
 
@@ -724,6 +818,7 @@ def test_extract_paper_full_text_writes_asset_manifest(tmp_path: Path, monkeypat
 
     import grados.extract.fetch as fetch_module
     import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
     import grados.storage.vector as vector
 
     async def fake_fetch_paper(**kwargs):
@@ -739,6 +834,7 @@ def test_extract_paper_full_text_writes_asset_manifest(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
     monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", lambda *args, **kwargs: 1)
     captured: dict[str, object] = {}
 
     def fake_index_paper(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -868,6 +964,50 @@ def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, m
     assert calls[0]["metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
     assert calls[0]["fetch_status"] == "metadata_only"
     assert calls[0]["has_fulltext"] is False
+
+
+def test_extract_paper_full_text_reuses_saved_paper_unless_force_refresh(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.extract.fetch as fetch_module
+    import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    papers_dir = tmp_path / "grados-home" / "papers"
+    save_paper_markdown(
+        doi="10.1234/demo",
+        markdown="# Demo Paper Title\n\n## Abstract\n\nSaved canonical text.",
+        papers_dir=papers_dir,
+        title="Demo Paper Title",
+        source="Existing",
+    )
+    fetch_calls: list[dict[str, object]] = []
+
+    async def fake_fetch_paper(**kwargs):
+        fetch_calls.append(kwargs)
+        return fetch_module.FetchResult(
+            text="# Demo Paper Title\n\n## Abstract\n\n" + ("Refreshed content. " * 80),
+            outcome="native_full_text",
+            source="Elsevier TDM",
+        )
+
+    monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: 1)
+
+    reused = asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
+    refreshed = asyncio.run(extract_paper_full_text(doi="10.1234/demo", force_refresh=True))
+
+    assert "Paper Already Saved" in reused
+    assert "Next Action:** read_saved_paper" in reused
+    assert "force_refresh=true" in reused
+    assert len(fetch_calls) == 1
+    assert "Paper Extracted Successfully" in refreshed
 
 
 def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeypatch) -> None:

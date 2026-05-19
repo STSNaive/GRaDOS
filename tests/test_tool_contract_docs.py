@@ -73,6 +73,7 @@ def test_skill_tool_reference_mirrors_selected_live_schema_guardrails() -> None:
         ("search_academic_papers", "query", "minLength", 1, "`query` minLength=1"),
         ("search_academic_papers", "limit", "minimum", 1, "`limit` range 1-50"),
         ("search_academic_papers", "limit", "maximum", 50, "`limit` range 1-50"),
+        ("extract_paper_full_text", "force_refresh", "default", False, "`force_refresh` defaults to false"),
         ("search_saved_papers", "limit", "maximum", 25, "`limit` range 1-25"),
         ("read_saved_paper", "start_paragraph", "minimum", 0, "`start_paragraph` minimum 0"),
         ("read_saved_paper", "max_paragraphs", "maximum", 100, "`max_paragraphs` range 1-100"),
@@ -81,8 +82,20 @@ def test_skill_tool_reference_mirrors_selected_live_schema_guardrails() -> None:
         ("query_research_artifacts", "limit", "maximum", 50, "`limit` range 1-50"),
         ("get_papers_full_context", "dois", "minItems", 1, "`dois` minItems=1"),
         ("get_papers_full_context", "max_total_tokens", "maximum", 128000, "`max_total_tokens` range 1000-128000"),
+        ("build_evidence_grid", "max_papers", "minimum", 1, "`max_papers` range 1-12"),
+        ("build_evidence_grid", "max_papers", "maximum", 12, "`max_papers` range 1-12"),
         ("audit_draft_support", "draft_text", "minLength", 1, "`draft_text` minLength=1"),
         ("audit_draft_support", "candidate_limit", "maximum", 25, "`candidate_limit` range 1-25"),
+        (
+            "audit_answer_against_pack",
+            "include_suggestions",
+            "default",
+            False,
+            "`include_suggestions` defaults to false",
+        ),
+        ("audit_answer_against_pack", "max_suggestions", "minimum", 1, "`max_suggestions` range 1-25"),
+        ("audit_answer_against_pack", "max_suggestions", "maximum", 25, "`max_suggestions` range 1-25"),
+        ("save_external_synthesis_result", "audit", "default", True, "`audit` defaults to true"),
     ]
     for tool_name, property_name, schema_key, expected, doc_fragment in schema_checks:
         assert _tool_property(tools, tool_name, property_name)[schema_key] == expected
@@ -109,6 +122,37 @@ def test_external_synthesis_tool_description_mentions_packet_scope() -> None:
     assert "linked packet" in description
     assert "source evidence pack" in description
     assert "structured claim anchor ids" in description
+
+
+def test_external_synthesis_has_topic_to_packet_route_and_default_save_audit() -> None:
+    tools = _live_tools()
+    prepare_description = tools["prepare_external_synthesis_from_topic"].description or ""
+    save_description = tools["save_external_synthesis_result"].description or ""
+
+    assert "fresh evidence pack from a topic" in prepare_description
+    assert "does not call external models" in prepare_description
+    assert "By default, immediately audits" in save_description
+    assert _tool_property(tools, "save_external_synthesis_result", "audit")["default"] is True
+
+
+def test_read_evidence_pack_tool_description_is_inspection_only() -> None:
+    description = _live_tools()["read_evidence_pack"].description or ""
+
+    assert "Inspect or recover" in description
+    assert "read the pack internally" in description
+    assert "before drafting" not in description
+    assert "before pack-scoped auditing" not in description
+
+
+def test_full_context_schema_avoids_low_fixed_paper_cap() -> None:
+    tools = _live_tools()
+    description = tools["get_papers_full_context"].description or ""
+    dois_description = _tool_property(tools, "get_papers_full_context", "dois")["description"]
+
+    assert "1-8" not in description
+    assert "1-8" not in dois_description
+    assert "context-budgeted" in description
+    assert "multiple calls" in dois_description
 
 
 def test_docs_do_not_claim_removed_project_id_parameter() -> None:

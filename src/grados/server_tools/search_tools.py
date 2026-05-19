@@ -16,8 +16,6 @@ from grados.server_tools.shared import get_api_keys, get_paths_and_config
 
 __all__ = ["register_search_tools", "search_academic_papers", "search_saved_papers"]
 
-INDEPTH_HARD_CANDIDATE_LIMIT = 8
-
 
 def _resolved_indepth_enabled(config: object, override: bool | None) -> bool:
     if override is not None:
@@ -213,12 +211,6 @@ async def _run_indepth_for_results(
         return ["indepth skipped because GRaDOS paths were unavailable."], ""
 
     candidates = [paper for paper in papers[:limit] if normalize_doi(str(getattr(paper, "doi", "") or ""))]
-    if len(candidates) > INDEPTH_HARD_CANDIDATE_LIMIT:
-        warnings.append(
-            f"indepth processed the first {INDEPTH_HARD_CANDIDATE_LIMIT} returned candidates "
-            f"from the same limit; {len(candidates) - INDEPTH_HARD_CANDIDATE_LIMIT} were left for later."
-        )
-        candidates = candidates[:INDEPTH_HARD_CANDIDATE_LIMIT]
 
     state_db = _research_state_db_path(paths)
     run_manifest = create_research_run_manifest(

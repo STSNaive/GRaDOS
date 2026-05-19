@@ -39,13 +39,15 @@ When external synthesis is enabled, GRaDOS can turn a current-valid evidence pac
 
 For run-level recovery, a `research_run_manifest` is a lightweight directory page for one research run. It can link search queries, candidates, extraction/parser receipts, `paper_summary`, `research_checkpoint`, `evidence_checkpoint`, `evidence_pack`, audit result IDs, canonical anchors, and failure records. It may keep an append-only event ledger plus a redacted config/provenance snapshot; append correction events instead of rewriting past events, and never store secrets. The run manifest is navigation/provenance only and must never replace canonical rereading of `papers/*.md` or current-valid evidence packs for final citation support.
 
+For evidence-grounded writing, the bundled skill includes `references/paper_writing.md` as the workflow router. It points host agents to task-specific profiles for experiment/simulation protocols, literature reviews, experiment reports, and manuscripts, plus a mechanics/elastic-metamaterials domain profile. These profiles guide planning, claim matrices, section gates, and delivery checks; they do not create a second evidence source or a separate MCP runtime.
+
 ### MCP Tools 🔧
 
 | Server | Tool | Description |
 | --- | --- | --- |
 | GRaDOS | `search_academic_papers` | Search remote academic databases for paper metadata, DOI deduplication, resumable continuation tokens, and local saved/full-text/summary state. Optional `indepth=true` materializes returned candidates with the same `limit`; default config is off. |
 | GRaDOS | `search_saved_papers` | Search the local saved-paper library with semantic retrieval, SQLite FTS/BM25 fallback, exact lookup, metadata filters, and hybrid RRF. Returned snippets and Evidence Anchor JSON blocks are screening/reranking material, not citation evidence. |
-| GRaDOS | `extract_paper_full_text` | Fetch, parse, and save one paper's canonical full text by DOI. Returns a compact save receipt with URI, file path, sections, and warnings rather than the full paper text. |
+| GRaDOS | `extract_paper_full_text` | Fetch, parse, and save one paper's canonical full text by DOI. If the DOI is already saved, default `force_refresh=false` returns an already-saved receipt; set `force_refresh=true` to refetch/reparse. |
 | GRaDOS | `read_saved_paper` | Read paragraph windows from one saved paper for canonical deep reading and citation verification. Accepts a DOI, safe DOI, or `grados://papers/...` URI. |
 | GRaDOS | `get_saved_paper_structure` | Return a low-token structure card for one saved paper with preview text, headings, asset summary, and parser provenance summary when available. Use it for screening before deep reading, not as the final citation source. |
 | GRaDOS | `read_paper_asset` | List or read parser-generated figures, tables, formulas, page images, and debug/source assets for a saved paper. Images are returned inline only on request and within configured size limits. |
@@ -60,13 +62,14 @@ For run-level recovery, a `research_run_manifest` is a lightweight directory pag
 | GRaDOS | `verify_evidence_pack` | Rebuild canonical block manifests from current `papers/*.md` and report snapshot/current validity, missing papers, document changes, relocation, and hash mismatches. |
 | GRaDOS | `preview_external_synthesis_packet` | Dry-run a compact external-synthesis packet from one current-valid evidence pack without saving artifacts or contacting external services. |
 | GRaDOS | `prepare_external_synthesis_packet` | Persist an `external_synthesis_packet` artifact with verified anchor ids, canonical paragraph coordinates, excerpts, candidate claims, limitations, and prompt hash, returning the host prompt as a regenerable view. |
-| GRaDOS | `save_external_synthesis_result` | Save a host-provided ChatGPT Pro response as advisory `external_synthesis_result` state linked to its source pack, optional packet, prompt hash, and session metadata. |
+| GRaDOS | `prepare_external_synthesis_from_topic` | Prepare a fresh evidence pack from a topic and persist a verified external-synthesis packet in one route, returning both pack and packet ids plus the host prompt. |
+| GRaDOS | `save_external_synthesis_result` | Save a host-provided ChatGPT Pro response as advisory `external_synthesis_result` state linked to its source pack, optional packet, prompt hash, and session metadata. Defaults to `audit=true`. |
 | GRaDOS | `audit_external_synthesis_result` | Audit a saved external synthesis result against its linked packet when available, otherwise its source pack, using structured `claims[].anchor_ids` as the primary handoff contract while still reporting prose risks. |
-| GRaDOS | `audit_answer_against_pack` | Audit draft claims using only evidence items inside one verified pack. It returns `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts and does not search the full library to fill gaps. |
+| GRaDOS | `audit_answer_against_pack` | Audit draft claims using only evidence items inside one verified pack. It returns `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts and does not search the full library to fill gaps. Optional `include_suggestions=true` attaches follow-up planning. |
 | GRaDOS | `suggest_missing_evidence` | Suggest follow-up evidence or revision work for non-verified pack-audit claims without changing strict audit results. |
 | GRaDOS | `manage_failure_cases` | Record, inspect, and summarize failed fetch, parse, search, or citation attempts. Can also suggest conservative retry steps from local failure memory. |
 | GRaDOS | `get_citation_graph` | Return lightweight local citation relationships, including citation neighbors, common references, and reverse citing-paper lookups. |
-| GRaDOS | `get_papers_full_context` | Return structured full-context material for a small paper set, with token estimates or actual section content for CAG-style deep reading. |
+| GRaDOS | `get_papers_full_context` | Return structured full-context material for context-budgeted saved-paper batches, with token estimates or actual section content for CAG-style deep reading. |
 | GRaDOS | `build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. Rows carry reread anchors for agent-side reranking before citation verification. |
 | GRaDOS | `compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. Returned excerpts carry per-axis reread anchors. |
 | GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return first-pass `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts with candidate evidence snippets, issue types, revision actions, and anchors. `candidate_limit` controls candidates per claim. |
@@ -110,6 +113,9 @@ After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 - `plugins/grados/.codex-plugin/`: self-contained Codex plugin bundle used by the marketplace
 - `plugins/grados/plugin.mcp.json`: plugin-scoped MCP config copied into the Codex bundle
 - `skills/grados/SKILL.md`: structured research workflow built on top of the MCP tools
+- `skills/grados/references/paper_writing.md`: evidence-grounded writing workflow router
+- `skills/grados/references/writing_profiles/`: task profiles for protocols, reviews, reports, and manuscripts
+- `skills/grados/references/domain_profiles/`: domain-specific writing guardrails, currently including mechanics and elastic metamaterials
 
 ## Installation 🚀
 
@@ -240,6 +246,7 @@ GRaDOS still ships a repo-local skill in `skills/grados/`. The `grados client in
 
 - `skills/grados/SKILL.md` contains the current `search -> structure -> deep read -> cite -> verify` workflow
 - `skills/grados/references/tools.md` documents the current MCP tools and 2 resources
+- `skills/grados/references/paper_writing.md` routes evidence-grounded writing tasks to focused profiles for protocols, reviews, reports, and manuscripts
 - `skills/grados/agents/openai.yaml` describes the OpenAI / Codex-facing dependency on the `grados` MCP server
 
 Codex and Claude Code use the same skill directory shape, `<skills-root>/grados/SKILL.md`, with the same supporting files under that directory. Only the skills root differs:
@@ -405,7 +412,7 @@ The browser strategy is a first-class path for institutional publisher access. I
 
 `codex` is disabled by default. When enabled and placed in `extract.fetch_strategy.order`, it acts as a Codex Chrome extension host-agent handoff at that exact point in the order: `extract_paper_full_text` returns a Chrome download receipt, then the host agent downloads the PDF in Chrome with the [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) and calls `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`. If Unpaywall finds an OA URL, the receipt starts from that URL instead of `https://doi.org/{doi}`.
 
-If `research.external_synthesis.enabled=true`, the same host agent may use ChatGPT Pro only after GRaDOS has prepared and verified an evidence pack. The host can dry-run with `preview_external_synthesis_packet`, persist a sendable packet with `prepare_external_synthesis_packet`, save the returned response with `save_external_synthesis_result`, and then run `audit_external_synthesis_result` before any canonical reread or final citation. When a packet id is linked, audit accepts only anchors, DOIs, block ids, and canonical URIs from that saved packet; structured `claims[].anchor_ids` are the primary claim contract, and prose audit output is retained as a risk scan. The host must select the latest/highest-capability Pro model visible in the ChatGPT UI and the highest available thinking-time option; these choices are fixed by protocol, not configurable GRaDOS keys. In localized ChatGPT UIs, the host should choose options by semantic meaning rather than requiring exact English strings. When `codex` downloads and ChatGPT Pro synthesis are both enabled, the host must treat Chrome as one shared resource: finish `chrome_acquisition` first when possible, keep publisher/PDF tabs separate from the ChatGPT conversation tab, resume the same ChatGPT conversation URL for later synthesis turns, and stop with a report if Chrome extension state, tabs, or the conversation cannot be recovered.
+If `research.external_synthesis.enabled=true`, the same host agent may use ChatGPT Pro only after GRaDOS has prepared and verified an evidence pack. When starting from a topic, `prepare_external_synthesis_from_topic` prepares the pack and packet in one route; when a pack id already exists, use `prepare_external_synthesis_packet`. The host can dry-run with `preview_external_synthesis_packet`, save the returned response with `save_external_synthesis_result(audit=true)`, and rerun `audit_external_synthesis_result` only when needed. When a packet id is linked, audit accepts only anchors, DOIs, block ids, and canonical URIs from that saved packet; structured `claims[].anchor_ids` are the primary claim contract, and prose audit output is retained as a risk scan. The host must select the latest/highest-capability Pro model visible in the ChatGPT UI and the highest available thinking-time option; these choices are fixed by protocol, not configurable GRaDOS keys. In localized ChatGPT UIs, the host should choose options by semantic meaning rather than requiring exact English strings. When `codex` downloads and ChatGPT Pro synthesis are both enabled, the host must treat Chrome as one shared resource: finish `chrome_acquisition` first when possible, keep publisher/PDF tabs separate from the ChatGPT conversation tab, resume the same ChatGPT conversation URL for later synthesis turns, and stop with a report if Chrome extension state, tabs, or the conversation cannot be recovered.
 
 PDF parsing priority:
 

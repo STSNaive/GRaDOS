@@ -12,6 +12,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Updated the locked Python dependency graph for vulnerable networking, XML, auth, multipart, and parser-adjacent packages, including `authlib`, `cryptography`, `lxml`, `python-multipart`, `urllib3`, and Docling parser dependencies.
 
 ### Added
+- Added an evidence-grounded writing workflow reference for the bundled GRaDOS skill, including `paper_writing.md`, four writing profiles for experimental protocols, literature reviews, experiment reports, and manuscripts, plus a mechanics/elastic-metamaterials domain profile.
+- Added `prepare_external_synthesis_from_topic`, a higher-level MCP route that prepares an evidence pack from a topic and persists a verified external-synthesis packet while keeping the lower-level pack/packet tools available for recovery and explicit control.
 - Added `research_run_manifest` artifacts with `research_run_id`, run-level artifact indexes, append-only event ledgers, redacted config/provenance snapshots, and automatic linking for `save_research_artifact(..., metadata={"research_run_id": ...})`.
 - Added deterministic external synthesis packet/result tools: `preview_external_synthesis_packet`, `prepare_external_synthesis_packet`, `save_external_synthesis_result`, and `audit_external_synthesis_result`, keeping ChatGPT Pro advisory output tied to current-valid evidence packs before canonical rereading.
 - Added default-off `research.external_synthesis.enabled` config, `grados external-synthesis is-enabled --quiet`, `grados external-synthesis status --json`, and host-agent protocol docs for using the latest visible ChatGPT Pro model at the highest available thinking strength without making GRaDOS call ChatGPT or share unverified evidence.
@@ -41,6 +43,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed the bundled GRaDOS skill and Codex plugin metadata to route evidence-grounded writing tasks through the writing workflow reference while keeping writing profiles as skill documentation rather than new MCP tools.
+- Changed `extract_paper_full_text` to be idempotent by default for already saved DOIs, returning an already-saved receipt and `read_saved_paper` next action unless `force_refresh=true` is passed for explicit refetch/reparse/rebuild work.
+- Changed `search_academic_papers(indepth=true)` to process returned DOI candidates using the same search `limit` without the previous hidden 8-candidate cap.
+- Changed `save_external_synthesis_result` to default to `audit=true`, returning the required external-synthesis audit result immediately after saving unless explicitly disabled for recovery/debug workflows.
+- Changed `audit_answer_against_pack` to optionally attach suggestion-only follow-up planning with `include_suggestions=true`, while keeping strict audit verdicts unchanged.
 - Changed external synthesis audit to validate ChatGPT Pro references against the saved packet when one is linked, accept structured `claims[].anchor_ids` without requiring author-year prose citations, and store packet artifacts without embedding a duplicate full host prompt.
 - Changed draft and pack audit outputs from `status` / `status_counts` to `verdict` / `verdict_counts`, using the paper-revision verdict set `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, and `unverifiable_access` with issue types and revision actions instead of the removed `supported`, `weak`, `unsupported`, and `misattributed` status language.
 - Changed `search_saved_papers` to use dense retrieval, SQLite FTS/BM25, exact lookup, and RRF when reranking is enabled; if dense retrieval is unavailable it now returns FTS fallback results with mode/retriever/rank/score/query trace.
@@ -110,6 +117,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Removed unused `extract.sci_hub.auto_update_mirror` and `mirror_url_file` config fields; the current `scihub` runtime uses ordered `endpoints` with `fallback_mirror` retained for legacy configs.
 
 ### Tests
+- Added plugin-manifest drift coverage for the evidence-grounded writing workflow reference, writing profiles, domain profile, and Codex plugin writing prompts.
+- Added regression coverage for idempotent extraction reuse with `force_refresh`, uncapped `indepth` materialization across more than eight candidates, topic-to-packet external synthesis preparation, default save-and-audit behavior, and optional pack-audit suggestions.
 - Added regression coverage for canonical block manifests, evidence-pack schema/hash verification, current-valid failures after canonical Markdown edits, block relocation detection, and pack-scoped audits.
 - Added regression coverage for FTS indexing/search, dense-unavailable fallback, hybrid RRF trace output, and `grados eval-retrieval`.
 - Added regression coverage for Codex handoff receipts, watch-dir PDF candidate validation, ambiguity/failure records, timeout split contracts, and parsed sidecar frontmatter/structure summaries.

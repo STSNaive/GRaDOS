@@ -9,6 +9,7 @@ from grados.research.external_synthesis import (
     EXTERNAL_SYNTHESIS_PACKET_KIND,
     EXTERNAL_SYNTHESIS_RESULT_KIND,
     audit_external_synthesis_result,
+    prepare_external_synthesis_from_topic,
     prepare_external_synthesis_packet,
     preview_external_synthesis_packet,
     save_external_synthesis_result,
@@ -199,6 +200,35 @@ def test_prepare_external_synthesis_packet_rejects_stale_pack(
     assert saved_packets["count"] == 0
 
 
+def test_prepare_external_synthesis_from_topic_persists_pack_and_packet(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _save_demo_paper(tmp_path)
+    _patch_search(monkeypatch)
+
+    packet = prepare_external_synthesis_from_topic(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        topic="composite damping",
+        scoped_dois=["10.1234/demo"],
+    )
+    saved_packets = query_research_artifacts(
+        _db_path(tmp_path),
+        kind=EXTERNAL_SYNTHESIS_PACKET_KIND,
+        detail=True,
+    )
+
+    assert packet["ok"] is True
+    assert packet["saved"] is True
+    assert packet["route"] == "prepare_external_synthesis_from_topic"
+    assert packet["pack_id"]
+    assert packet["pack_artifact_id"]
+    assert packet["evidence_pack"]["evidence_count"] == 1
+    assert saved_packets["count"] == 1
+
+
 def test_external_synthesis_result_round_trip_and_audit(monkeypatch, tmp_path: Path) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
     packet = prepare_external_synthesis_packet(
@@ -240,6 +270,8 @@ def test_external_synthesis_result_round_trip_and_audit(monkeypatch, tmp_path: P
     )
 
     assert saved["ok"] is True
+    assert saved["audited"] is True
+    assert saved["audit"]["ready_for_canonical_reread"] is True
     assert saved_results["count"] == 1
     assert "host_prompt" in packet
     assert "host_prompt" not in packet["packet"]
