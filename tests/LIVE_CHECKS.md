@@ -59,9 +59,11 @@ Suggested checks:
 
 1. call `extract_paper_full_text` for that DOI
 2. confirm browser path either captures a real PDF or surfaces `publisher_challenge`
-3. if a challenge is surfaced, confirm the receipt includes `Manual Browser Resume` with host, URL/profile when available, and `resume_browser=true` retry guidance
-4. complete publisher verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true`
-5. confirm the resumed attempt starts at the browser path, uses the saved URL/profile when present, and does not save an HTML challenge page as a PDF
+3. inspect `grados browser status --json` and confirm the publisher profile is separate from the ChatGPT profile
+4. inspect the `browser/pdf-sessions/<session>/session.json` record and confirm capture source is `response`, `download`, or `backfill`, not a direct `papers/*.md` write
+5. if a challenge is surfaced, confirm the receipt includes `Manual Browser Resume` with host, URL/profile when available, and `resume_browser=true` retry guidance
+6. complete publisher verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true`
+7. confirm the resumed attempt starts at the browser path, uses the saved URL/profile when present, and does not save an HTML challenge page as a PDF
 
 ### Local Import
 

@@ -304,6 +304,8 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 | `grados client doctor` | Run a lightweight health check for supported clients |
 | `grados client remove claude|codex|all` | Remove GRaDOS MCP wiring and bundled skills from one or more clients |
 | `grados auth set/status/migrate/clear` | Manage provider API keys in the OS keychain |
+| `grados browser status --json` | Inspect the publisher PDF browser runtime, managed executable, profile status, lock, and session directory |
+| `grados browser doctor [--live --doi DOI]` | Check publisher browser prerequisites; `--live` runs a PDF-acquisition probe without saving `papers/*.md` |
 | `grados external-synthesis is-enabled --quiet` | Predicate gate for the optional external synthesis protocol; exit 0 means enabled, exit 1 means disabled |
 | `grados external-synthesis status --json` | Show the same external synthesis gate plus config path details as structured diagnostics |
 | `grados external-synthesis setup-browser` | Open the private GRaDOS ChatGPT profile for first-time ChatGPT login |
@@ -342,6 +344,7 @@ By default, GRaDOS keeps everything in a visible directory:
 ├── browser/
 │   ├── chromium/
 │   ├── profile/
+│   ├── pdf-sessions/
 │   ├── chatgpt-profile/
 │   ├── chatgpt-sessions/
 │   └── extensions/
@@ -413,7 +416,7 @@ Unpaywall is an optional DOI-to-OA-location resolver, not a download strategy. W
 
 Legacy fetch-strategy aliases such as `TDM`, `SciHub`, and `Headless` are still accepted while existing configs migrate. The current `scihub` runtime uses `extract.sci_hub.endpoints` as an ordered access list: the first endpoint is tried first, and later entries are fallbacks. The legacy `extract.sci_hub.fallback_mirror` value is still accepted when `endpoints` is omitted or empty.
 
-The browser strategy is a first-class path for institutional publisher access. If a publisher verification page blocks PDF capture, GRaDOS records a `challenge` with manual-resume metadata in `remote_metadata`; complete the verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true` to continue from the saved browser URL/profile instead of restarting at `api`.
+The browser strategy is a first-class path for institutional publisher access. It uses the GRaDOS-managed publisher profile (`browser/profile`), profile locking, operational PDF browser session records under `browser/pdf-sessions`, and network/download/backfill PDF capture. Browser acquisition never writes `papers/*.md` directly: it returns PDF bytes or a challenge, then `extract_paper_full_text` sends the PDF through the normal archive, parser, QA, and canonical Markdown persistence pipeline. If a publisher verification page blocks PDF capture, GRaDOS records a `challenge` with manual-resume metadata in `remote_metadata`; complete the verification in the managed browser profile, then call `extract_paper_full_text` again with `resume_browser=true` to continue from the saved browser URL/profile instead of restarting at `api`.
 
 `codex` is disabled by default. When enabled and placed in `extract.fetch_strategy.order`, it acts as a Codex Chrome extension host-agent handoff at that exact point in the order: `extract_paper_full_text` returns a Chrome download receipt, then the host agent downloads the PDF in Chrome with the [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) and calls `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`. If Unpaywall finds an OA URL, the receipt starts from that URL instead of `https://doi.org/{doi}`.
 

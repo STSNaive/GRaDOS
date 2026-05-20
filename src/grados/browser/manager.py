@@ -6,7 +6,7 @@ import os
 import platform
 import random
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +163,11 @@ class BrowserSession:
     context: Any  # BrowserContext
     root_page: Any  # Page
     cleanup: Any  # async callable
+    executable_path: str = ""
+    user_data_dir: str | None = None
+    extra_args: list[str] = field(default_factory=list)
+    session_id: str = ""
+    profile_lock: Any | None = None
 
 
 async def launch_browser_session(
@@ -171,6 +176,7 @@ async def launch_browser_session(
     user_data_dir: str | None = None,
     headless: bool = False,
     extra_args: list[str] | None = None,
+    session_id: str = "",
 ) -> BrowserSession:
     """Launch a Patchright browser session (persistent or ephemeral)."""
     from patchright.async_api import async_playwright
@@ -197,7 +203,17 @@ async def launch_browser_session(
                 await context.close()
                 await pw.stop()
 
-            return BrowserSession(pw, None, context, root_page, cleanup)
+            return BrowserSession(
+                pw,
+                None,
+                context,
+                root_page,
+                cleanup,
+                executable_path=executable_path,
+                user_data_dir=user_data_dir,
+                extra_args=args,
+                session_id=session_id,
+            )
         else:
             browser = await pw.chromium.launch(
                 executable_path=executable_path,
@@ -212,7 +228,17 @@ async def launch_browser_session(
                 await browser.close()
                 await pw.stop()
 
-            return BrowserSession(pw, browser, context, root_page, cleanup)
+            return BrowserSession(
+                pw,
+                browser,
+                context,
+                root_page,
+                cleanup,
+                executable_path=executable_path,
+                user_data_dir=user_data_dir,
+                extra_args=args,
+                session_id=session_id,
+            )
     except Exception:
         await pw.stop()
         raise
@@ -240,19 +266,37 @@ async def get_or_create_reusable_session(
     executable_path: str,
     viewport: dict[str, int],
     user_data_dir: str | None = None,
+    extra_args: list[str] | None = None,
+    session_id: str = "",
 ) -> BrowserSession:
     """Return a live reusable session or create a new one."""
     global _reusable_session
 
-    if _reusable_session and _is_session_alive(_reusable_session):
+    if (
+        _reusable_session
+        and _is_session_alive(_reusable_session)
+        and _reusable_session.executable_path == executable_path
+        and _reusable_session.user_data_dir == user_data_dir
+    ):
         s = _reusable_session
         if s.root_page.is_closed():
             s.root_page = s.context.pages[0] if s.context.pages else await s.context.new_page()
         return s
 
+    carry_profile_lock = None
     if _reusable_session:
+        carry_profile_lock = (
+            _reusable_session.profile_lock
+            if _reusable_session.user_data_dir == user_data_dir
+            else None
+        )
         try:
             await _reusable_session.cleanup()
+        except Exception:
+            pass
+        try:
+            if _reusable_session.profile_lock and carry_profile_lock is None:
+                _reusable_session.profile_lock.release()
         except Exception:
             pass
         _reusable_session = None
@@ -262,7 +306,11 @@ async def get_or_create_reusable_session(
         viewport=viewport,
         user_data_dir=user_data_dir,
         headless=False,
+        extra_args=extra_args,
+        session_id=session_id,
     )
+    if carry_profile_lock is not None:
+        session.profile_lock = carry_profile_lock
     _reusable_session = session
     return session
 

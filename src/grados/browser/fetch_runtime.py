@@ -8,8 +8,9 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from grados._retry import current_browser_pdf_backfill_timeout_ms
 from grados.http_limits import (
@@ -33,10 +34,24 @@ def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) ->
     return min(poll_max, current * 2)
 
 
-BrowserBackfill = Callable[
-    [Any, Any, set[str], Any, Any, Callable[[str], None], int],
-    Awaitable[None],
-]
+class BrowserBackfill(Protocol):
+    def __call__(
+        self,
+        page: Any,
+        context: Any,
+        attempted_urls: set[str],
+        try_capture: Any,
+        pdf_captured: Any,
+        report_warning: Callable[[str], None],
+        max_capture_bytes: int = DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
+        backfill_timeout_ms: int | None = None,
+        record_event: Callable[..., None] | None = None,
+    ) -> Awaitable[None]:
+        ...
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass
@@ -46,28 +61,79 @@ class BrowserFetchState:
     warnings: list[str] = field(default_factory=list)
     pdf_buffer: bytes | None = None
     challenge_seen: bool = False
+    challenge_reason: str = ""
     final_url: str = ""
     max_capture_bytes: int = DEFAULT_MAX_BROWSER_CAPTURE_BYTES
+    events: list[dict[str, Any]] = field(default_factory=list)
+    capture_source: str = ""
+    capture_url: str = ""
+    capture_content_type: str = ""
+    capture_bytes: int = 0
 
     def pdf_captured(self) -> bool:
         return self.pdf_buffer is not None
+
+    def record_event(self, name: str, *, url: str = "", details: dict[str, Any] | None = None) -> None:
+        self.events.append(
+            {
+                "timestamp": _now_iso(),
+                "name": name,
+                "url": url,
+                "details": dict(details or {}),
+            }
+        )
 
     def report_warning(self, message: str) -> None:
         normalized = re.sub(r"\s+", " ", message).strip()
         if normalized and normalized not in self.warnings:
             self.warnings.append(normalized)
 
-    def try_capture(self, data: bytes, content_type: str = "", source_url: str = "") -> bool:
+    def try_capture(
+        self,
+        data: bytes,
+        content_type: str = "",
+        source_url: str = "",
+        *,
+        source_kind: str = "capture",
+    ) -> bool:
         label = f"Browser PDF capture from {source_url}" if source_url else "Browser PDF capture"
         try:
             ensure_bytes_within_limit(data, max_bytes=self.max_capture_bytes, label=label)
         except SizeLimitError as exc:
             self.report_warning(str(exc))
+            self.record_event(
+                "pdf_capture_rejected",
+                url=source_url,
+                details={"source": source_kind, "reason": "size_limit", "bytes": len(data)},
+            )
             return False
         check = classify_pdf_content(data, content_type)
         if check["is_pdf"]:
             self.pdf_buffer = data
+            self.capture_source = source_kind
+            self.capture_url = source_url
+            self.capture_content_type = content_type
+            self.capture_bytes = len(data)
+            self.record_event(
+                "pdf_capture_success",
+                url=source_url,
+                details={
+                    "source": source_kind,
+                    "content_type": content_type,
+                    "bytes": len(data),
+                },
+            )
             return True
+        self.record_event(
+            "pdf_capture_rejected",
+            url=source_url,
+            details={
+                "source": source_kind,
+                "reason": check.get("reason", "not_pdf"),
+                "content_type": content_type,
+                "bytes": len(data),
+            },
+        )
         return False
 
     async def inspect_challenge(self, page: Any) -> bool:
@@ -80,6 +146,12 @@ class BrowserFetchState:
         if detect_bot_challenge(title, html, url):
             self.challenge_seen = True
             self.final_url = url
+            self.challenge_reason = "bot_or_verification_challenge"
+            self.record_event(
+                "publisher_challenge",
+                url=url,
+                details={"title": title[:200], "reason": self.challenge_reason},
+            )
             return True
         return False
 
@@ -88,6 +160,14 @@ class BrowserFetchState:
         if pid not in self.action_states:
             self.action_states[pid] = {}
         return self.action_states[pid]
+
+    def capture_payload(self) -> dict[str, Any]:
+        return {
+            "source": self.capture_source,
+            "url": self.capture_url,
+            "content_type": self.capture_content_type,
+            "bytes": self.capture_bytes,
+        }
 
 
 @dataclass
@@ -119,6 +199,11 @@ class BrowserListenerRegistry:
         )
         if not looks_pdf:
             return
+        self.state.record_event(
+            "response_pdf_candidate",
+            url=url,
+            details={"content_type": ct, "content_disposition": cd},
+        )
         try:
             ensure_content_length_allowed(
                 headers,
@@ -126,9 +211,14 @@ class BrowserListenerRegistry:
                 label=f"Browser PDF response from {url}",
             )
             body = await response.body()
-            self.state.try_capture(body, ct, url)
+            self.state.try_capture(body, ct, url, source_kind="response")
         except SizeLimitError as exc:
             self.state.report_warning(str(exc))
+            self.state.record_event(
+                "response_pdf_rejected",
+                url=url,
+                details={"reason": "size_limit", "message": str(exc)},
+            )
         except Exception as exc:
             # Response hooks are opportunistic sniffers and must not stop the
             # main polling loop if the browser rejects body access.
@@ -144,15 +234,25 @@ class BrowserListenerRegistry:
             dl_path = await download.path()
             if dl_path:
                 path = Path(dl_path)
+                self.state.record_event(
+                    "download_candidate",
+                    url=download.url,
+                    details={"path": str(path), "bytes": path.stat().st_size},
+                )
                 ensure_byte_limit(
                     path.stat().st_size,
                     max_bytes=self.state.max_capture_bytes,
                     label=f"Browser PDF download from {download.url}",
                 )
                 body = path.read_bytes()
-                self.state.try_capture(body, "application/pdf", download.url)
+                self.state.try_capture(body, "application/pdf", download.url, source_kind="download")
         except SizeLimitError as exc:
             self.state.report_warning(str(exc))
+            self.state.record_event(
+                "download_rejected",
+                url=getattr(download, "url", ""),
+                details={"reason": "size_limit", "message": str(exc)},
+            )
         except Exception as exc:
             # Download persistence is best-effort; a broken temp file should
             # not abort other capture paths.
@@ -247,6 +347,7 @@ async def run_browser_polling_loop(
                 state.pdf_captured,
                 state.report_warning,
                 state.max_capture_bytes,
+                record_event=state.record_event,
             )
             if state.pdf_captured():
                 break
@@ -260,6 +361,7 @@ async def run_browser_polling_loop(
                 pdf_captured=state.pdf_captured,
                 inspect_challenge=state.inspect_challenge,
                 report_warning=state.report_warning,
+                record_event=state.record_event,
             )
             for strategy in page_strategies:
                 await strategy.run(strategy_context)
@@ -276,6 +378,7 @@ async def run_browser_polling_loop(
                 state.pdf_captured,
                 state.report_warning,
                 state.max_capture_bytes,
+                record_event=state.record_event,
             )
 
         if state.pdf_captured():
@@ -294,6 +397,7 @@ async def try_backfill_from_url(
     report_warning: Callable[[str], None],
     max_capture_bytes: int = DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
     backfill_timeout_ms: int | None = None,
+    record_event: Callable[..., None] | None = None,
 ) -> None:
     """If the page URL looks like a direct PDF link, fetch it via context.request."""
     if pdf_captured() or page.is_closed():
@@ -305,6 +409,8 @@ async def try_backfill_from_url(
         return
 
     attempted_urls.add(url)
+    if record_event is not None:
+        record_event("backfill_attempt", url=url)
     try:
         response = await context.request.get(
             url,
@@ -318,8 +424,25 @@ async def try_backfill_from_url(
         )
         ct = str(headers.get("content-type", ""))
         body = await response.body()
-        try_capture(body, ct, url)
+        try:
+            captured = bool(try_capture(body, ct, url, source_kind="backfill"))
+        except TypeError:
+            captured = bool(try_capture(body, ct, url))
+        if record_event is not None:
+            record_event(
+                "backfill_success" if captured else "backfill_rejected",
+                url=url,
+                details={"content_type": ct, "bytes": len(body)},
+            )
     except SizeLimitError as exc:
         report_warning(str(exc))
+        if record_event is not None:
+            record_event("backfill_rejected", url=url, details={"reason": "size_limit", "message": str(exc)})
     except Exception as exc:
         report_warning(f"Direct PDF backfill failed for {url}: {exc.__class__.__name__}: {exc}")
+        if record_event is not None:
+            record_event(
+                "backfill_error",
+                url=url,
+                details={"error": f"{exc.__class__.__name__}: {exc}"},
+            )

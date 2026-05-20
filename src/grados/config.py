@@ -96,6 +96,10 @@ class GRaDOSPaths:
         return self.browser_root / "chatgpt-sessions"
 
     @property
+    def browser_pdf_sessions(self) -> Path:
+        return self.browser_root / "pdf-sessions"
+
+    @property
     def browser_extensions(self) -> Path:
         return self.browser_root / "extensions"
 
@@ -165,6 +169,7 @@ class GRaDOSPaths:
             ("论文 summary", self.paper_summaries),
             ("浏览器二进制", self.browser_chromium),
             ("浏览器配置", self.browser_profile),
+            ("PDF 浏览器会话", self.browser_pdf_sessions),
             ("ChatGPT 浏览器配置", self.chatgpt_browser_profile),
             ("ChatGPT 浏览器会话", self.chatgpt_browser_sessions),
             ("浏览器扩展", self.browser_extensions),

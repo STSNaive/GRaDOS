@@ -151,6 +151,29 @@ async def _run_scihub_fetch_strategy(context: FetchStrategyContext) -> FetchResu
     )
 
 
+def _browser_fetch_trace(doi: str, browser_result: Any) -> dict[str, Any]:
+    payload = {
+        "via": getattr(browser_result, "via", "browser"),
+        "state": getattr(browser_result, "state", ""),
+        "outcome": getattr(browser_result, "outcome", ""),
+        "host": getattr(browser_result, "host", ""),
+        "manual": bool(getattr(browser_result, "manual", False)),
+        "resume": getattr(browser_result, "resume", {}),
+        "browser_session_id": getattr(browser_result, "session_id", ""),
+        "browser_session_record": getattr(browser_result, "session_record_path", ""),
+        "capture": getattr(browser_result, "capture", {}),
+    }
+    digest = hashlib.sha1(
+        json.dumps({"doi": doi, **payload}, sort_keys=True, ensure_ascii=False).encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()[:16]
+    return {
+        **payload,
+        "time": datetime.now(UTC).isoformat(),
+        "hash": digest,
+    }
+
+
 async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchResult:
     if not context.headless_config or not context.paths:
         return FetchResult(
@@ -174,6 +197,7 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
         ),
         max_capture_bytes=context.max_browser_capture_bytes,
     )
+    browser_trace = _browser_fetch_trace(context.doi, browser_result)
     if browser_result.pdf_buffer:
         return FetchResult(
             pdf_buffer=browser_result.pdf_buffer,
@@ -184,6 +208,7 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
             manual=browser_result.manual,
             host=browser_result.host,
             resume=browser_result.resume,
+            trace=[browser_trace],
             warnings=browser_result.warnings,
         )
     return FetchResult(
@@ -194,6 +219,7 @@ async def _run_browser_fetch_strategy(context: FetchStrategyContext) -> FetchRes
         manual=browser_result.manual,
         host=browser_result.host,
         resume=browser_result.resume,
+        trace=[browser_trace],
         warnings=browser_result.warnings,
     )
 

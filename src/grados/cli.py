@@ -339,6 +339,7 @@ def _setup_browser(paths: GRaDOSPaths) -> None:
     console.print("  下载 Chrome for Testing...", end=" ")
     paths.browser_chromium.mkdir(parents=True, exist_ok=True)
     paths.browser_profile.mkdir(parents=True, exist_ok=True)
+    paths.browser_pdf_sessions.mkdir(parents=True, exist_ok=True)
     paths.chatgpt_browser_profile.mkdir(parents=True, exist_ok=True)
     paths.chatgpt_browser_sessions.mkdir(parents=True, exist_ok=True)
     paths.browser_extensions.mkdir(parents=True, exist_ok=True)
@@ -621,6 +622,113 @@ def search(query: tuple[str, ...], limit: int, continuation_token: str | None, i
 # ── grados status ────────────────────────────────────────────────────────────
 
 
+@main.group("browser")
+def browser_group() -> None:
+    """Inspect the publisher PDF browser runtime."""
+
+
+def _browser_status_payload() -> dict[str, object]:
+    from grados.browser.lock import read_browser_profile_lock
+    from grados.browser.manager import resolve_browser_executable
+    from grados.browser.pdf.types import PDF_BROWSER_MODE_VERSION
+    from grados.browser.profile import browser_profile_status
+
+    paths = GRaDOSPaths()
+    config = load_config(paths)
+    resolution = resolve_browser_executable(config.extract.headless_browser, paths)
+    lock = read_browser_profile_lock(paths.browser_profile)
+    return {
+        "protocol": PDF_BROWSER_MODE_VERSION,
+        "config_file": str(paths.config_file),
+        "config_exists": paths.config_file.is_file(),
+        "browser_profile": str(paths.browser_profile),
+        "browser_profile_status": browser_profile_status(paths.browser_profile),
+        "browser_pdf_sessions": str(paths.browser_pdf_sessions),
+        "browser_lock": lock,
+        "browser_executable": {
+            "found": resolution is not None,
+            "browser": resolution.browser if resolution else "",
+            "source": resolution.source if resolution else "",
+            "executable_path": resolution.executable_path if resolution else "",
+            "profile_directory": resolution.profile_directory if resolution else "",
+        },
+        "headless_browser": config.extract.headless_browser.model_dump(),
+    }
+
+
+@browser_group.command("status")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def browser_status(as_json: bool) -> None:
+    """Show publisher PDF browser runtime state."""
+    payload = _browser_status_payload()
+    if as_json:
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    executable = payload["browser_executable"]
+    profile = payload["browser_profile_status"]
+    assert isinstance(executable, dict)
+    assert isinstance(profile, dict)
+    console.print("[bold]GRaDOS browser runtime[/bold]")
+    console.print(f"  Protocol: {payload['protocol']}")
+    console.print(f"  Executable: {executable.get('executable_path') or 'not found'}")
+    console.print(f"  Source: {executable.get('source') or 'n/a'}")
+    console.print(f"  Publisher profile: {payload['browser_profile']}")
+    console.print(f"  Profile initialized: {'yes' if profile.get('initialized') else 'no'}")
+    console.print(f"  PDF sessions: {payload['browser_pdf_sessions']}")
+    console.print(f"  Active lock: {'yes' if payload['browser_lock'] else 'no'}")
+
+
+@browser_group.command("doctor")
+@click.option("--live", is_flag=True, help="Run a live browser PDF acquisition probe.")
+@click.option("--doi", default="", help="DOI to use for --live probe. Required when --live is set.")
+def browser_doctor(live: bool, doi: str) -> None:
+    """Check publisher PDF browser prerequisites and optional live capture."""
+    payload = _browser_status_payload()
+    executable = payload["browser_executable"]
+    profile = payload["browser_profile_status"]
+    assert isinstance(executable, dict)
+    assert isinstance(profile, dict)
+
+    console.print()
+    console.print("[bold]Browser doctor[/bold]")
+    console.print(f"  Browser executable: {executable.get('executable_path') or 'not found'}")
+    console.print(f"  Browser source: {executable.get('source') or 'n/a'}")
+    console.print(f"  Publisher profile: {payload['browser_profile']}")
+    console.print(f"  Profile initialized: {'yes' if profile.get('initialized') else 'no'}")
+    console.print(f"  PDF sessions: {payload['browser_pdf_sessions']}")
+    console.print(f"  Active lock: {'yes' if payload['browser_lock'] else 'no'}")
+    if not executable.get("found"):
+        console.print("  [yellow]![/yellow] No compatible browser executable found. Run `grados setup`.")
+
+    if live:
+        if not doi.strip():
+            raise click.ClickException("--doi is required with --live.")
+        from grados.browser.generic import fetch_with_browser
+
+        paths = GRaDOSPaths()
+        config = load_config(paths)
+        result = asyncio.run(
+            fetch_with_browser(
+                doi.strip(),
+                config.extract.headless_browser,
+                paths,
+                max_capture_bytes=config.extract.security.max_browser_capture_bytes,
+            )
+        )
+        console.print(f"  Live probe outcome: {result.outcome}")
+        console.print(f"  State: {result.state}")
+        console.print(f"  Session: {result.session_id}")
+        console.print(f"  Record: {result.session_record_path}")
+        if result.capture:
+            console.print(f"  Capture: {result.capture}")
+        if result.resume:
+            console.print(f"  Resume: {result.resume}")
+        for warning in result.warnings:
+            console.print(f"  [yellow]![/yellow] {warning}")
+    console.print()
+
+
 @main.group("external-synthesis")
 def external_synthesis_group() -> None:
     """Inspect the optional external synthesis protocol state."""
@@ -819,6 +927,7 @@ def status() -> None:
         else False
     )
     profile_ok = paths.browser_profile.exists()
+    pdf_sessions_ok = paths.browser_pdf_sessions.exists()
     chroma_ok = paths.database_chroma.exists()
     remote_metadata_ok = paths.database_remote_metadata.exists()
     model_ok = (
@@ -829,6 +938,7 @@ def status() -> None:
 
     console.print(f"  {'[green]✓[/green]' if browser_ok else '[dim]—[/dim]'}  浏览器 (Chrome for Testing)")
     console.print(f"  {'[green]✓[/green]' if profile_ok else '[dim]—[/dim]'}  浏览器配置 (persistent profile)")
+    console.print(f"  {'[green]✓[/green]' if pdf_sessions_ok else '[dim]—[/dim]'}  PDF 浏览器会话")
     console.print(f"  {'[green]✓[/green]' if chroma_ok else '[dim]—[/dim]'}  ChromaDB")
     console.print(f"  {'[green]✓[/green]' if remote_metadata_ok else '[dim]—[/dim]'}  远程元数据缓存")
     console.print(f"  {'[green]✓[/green]' if model_ok else '[dim]—[/dim]'}  嵌入模型缓存")

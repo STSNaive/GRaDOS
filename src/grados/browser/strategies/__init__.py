@@ -21,6 +21,7 @@ class BrowserPageStrategyContext:
     pdf_captured: Callable[[], bool]
     inspect_challenge: Callable[[Any], Awaitable[bool]]
     report_warning: Callable[[str], None]
+    record_event: Callable[..., None] | None = None
 
 
 class BrowserPageStrategy(Protocol):
@@ -47,6 +48,7 @@ async def _run_sciencedirect_page_strategy(context: BrowserPageStrategyContext) 
         context.attempted_urls,
         context.track_page,
         context.report_warning,
+        context.record_event,
     )
     if context.pdf_captured():
         return
@@ -59,6 +61,7 @@ async def _run_sciencedirect_page_strategy(context: BrowserPageStrategyContext) 
         context.pdf_captured,
         context.inspect_challenge,
         context.report_warning,
+        context.record_event,
     )
 
 
@@ -68,6 +71,7 @@ async def _run_generic_page_strategy(context: BrowserPageStrategyContext) -> Non
         context.action_state,
         context.pdf_captured,
         context.report_warning,
+        context.record_event,
     )
 
 

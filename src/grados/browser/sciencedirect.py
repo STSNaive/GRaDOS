@@ -69,6 +69,7 @@ async def try_view_pdf_click(
     attempted_urls: set[str],
     track_page_fn: Callable[..., Any],
     report_warning_fn: Callable[[str], None],
+    record_event_fn: Callable[..., None] | None = None,
 ) -> None:
     """Click the 'View PDF' link on a ScienceDirect landing page.
 
@@ -99,6 +100,16 @@ async def try_view_pdf_click(
     except Exception:
         pass
     absolute_href = urljoin(page.url, href) if href else None
+    if record_event_fn is not None:
+        record_event_fn(
+            "strategy_action",
+            url=page.url,
+            details={
+                "strategy": "ScienceDirect",
+                "action": "click_view_pdf",
+                "href": absolute_href or "",
+            },
+        )
 
     # Click and expect a popup tab
     popup = None
@@ -114,6 +125,12 @@ async def try_view_pdf_click(
             attempted_urls.add(absolute_href)
         action_state["pdf_flow_delegated"] = True
         track_page_fn(popup)
+        if record_event_fn is not None:
+            record_event_fn(
+                "strategy_action_confirmed",
+                url=getattr(popup, "url", ""),
+                details={"strategy": "ScienceDirect", "confirmation": "popup_opened"},
+            )
         try:
             await popup.wait_for_load_state("domcontentloaded")
         except Exception:
@@ -128,11 +145,29 @@ async def try_view_pdf_click(
         track_page_fn(new_page)
         try:
             await new_page.goto(absolute_href, wait_until="domcontentloaded", timeout=20000)
+            if record_event_fn is not None:
+                record_event_fn(
+                    "strategy_action_confirmed",
+                    url=absolute_href,
+                    details={"strategy": "ScienceDirect", "confirmation": "manual_tab_navigation"},
+                )
         except Exception as exc:
             report_warning_fn(
                 f"ScienceDirect manual PDF fallback failed for {absolute_href}: "
                 f"{exc.__class__.__name__}: {exc}"
             )
+            if record_event_fn is not None:
+                record_event_fn(
+                    "strategy_action_failed",
+                    url=absolute_href,
+                    details={"strategy": "ScienceDirect", "error": f"{exc.__class__.__name__}: {exc}"},
+                )
+    elif record_event_fn is not None:
+        record_event_fn(
+            "strategy_action_unconfirmed",
+            url=page.url,
+            details={"strategy": "ScienceDirect", "action": "click_view_pdf"},
+        )
 
 
 async def follow_candidates(
@@ -144,6 +179,7 @@ async def follow_candidates(
     pdf_captured_fn: Callable[[], bool],
     inspect_challenge_fn: Callable[..., Any],
     report_warning_fn: Callable[[str], None],
+    record_event_fn: Callable[..., None] | None = None,
 ) -> None:
     """Extract PDF candidate URLs from a ScienceDirect landing page and follow them.
 
@@ -182,6 +218,12 @@ async def follow_candidates(
         attempted_urls.add(url)
         new_page = await context.new_page()
         track_page_fn(new_page)
+        if record_event_fn is not None:
+            record_event_fn(
+                "strategy_action",
+                url=url,
+                details={"strategy": "ScienceDirect", "action": "follow_candidate"},
+            )
         try:
             await new_page.goto(url, wait_until="domcontentloaded", timeout=20000)
         except Exception as exc:
@@ -189,6 +231,12 @@ async def follow_candidates(
                 f"ScienceDirect candidate navigation failed for {url}: "
                 f"{exc.__class__.__name__}: {exc}"
             )
+            if record_event_fn is not None:
+                record_event_fn(
+                    "strategy_action_failed",
+                    url=url,
+                    details={"strategy": "ScienceDirect", "error": f"{exc.__class__.__name__}: {exc}"},
+                )
             continue
 
         if pdf_captured_fn():
@@ -216,6 +264,12 @@ async def follow_candidates(
             attempted_urls.add(redirect_url)
             redirect_page = await context.new_page()
             track_page_fn(redirect_page)
+            if record_event_fn is not None:
+                record_event_fn(
+                    "strategy_action",
+                    url=redirect_url,
+                    details={"strategy": "ScienceDirect", "action": "follow_intermediate_redirect"},
+                )
             try:
                 await redirect_page.goto(redirect_url, wait_until="domcontentloaded", timeout=20000)
             except Exception as exc:
@@ -223,6 +277,12 @@ async def follow_candidates(
                     f"ScienceDirect redirect navigation failed for {redirect_url}: "
                     f"{exc.__class__.__name__}: {exc}"
                 )
+                if record_event_fn is not None:
+                    record_event_fn(
+                        "strategy_action_failed",
+                        url=redirect_url,
+                        details={"strategy": "ScienceDirect", "error": f"{exc.__class__.__name__}: {exc}"},
+                    )
                 continue
 
             if pdf_captured_fn():

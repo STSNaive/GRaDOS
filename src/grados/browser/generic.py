@@ -11,6 +11,7 @@ from grados._retry import (
     current_browser_networkidle_timeout_ms,
     current_browser_poll_bounds,
 )
+from grados.browser.constants import PDF_BROWSER_CHROME_FLAGS
 from grados.browser.fetch_runtime import (
     BrowserFetchState,
     BrowserListenerRegistry,
@@ -29,6 +30,10 @@ from grados.browser.manager import (
     launch_browser_session,
     random_viewport,
     resolve_browser_executable,
+)
+from grados.browser.pdf.session_store import (
+    create_pdf_browser_session,
+    update_pdf_browser_session,
 )
 from grados.browser.session_runtime import (
     acquire_browser_runtime,
@@ -54,6 +59,9 @@ class BrowserFetchResult:
     host: str = ""
     resume: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    session_id: str = ""
+    session_record_path: str = ""
+    capture: dict[str, object] = field(default_factory=dict)
 
 
 def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) -> float:
@@ -103,6 +111,41 @@ async def fetch_with_browser(
     """Fetch a paper PDF using browser automation."""
     runtime = None
     listeners = None
+    state: BrowserFetchState | None = None
+    start_url = (resume or {}).get("url", "") or target_url or f"https://doi.org/{doi}"
+    session_record = create_pdf_browser_session(
+        paths.browser_pdf_sessions,
+        doi=doi,
+        target_url=start_url,
+        resume=resume,
+    )
+
+    def update_session(
+        *,
+        status: str,
+        outcome: str,
+        source: str = "",
+        final_url: str = "",
+        host: str = "",
+        manual: bool = False,
+        warnings: list[str] | None = None,
+    ) -> None:
+        update_pdf_browser_session(
+            session_record,
+            status=status,
+            outcome=outcome,
+            source=source,
+            browser_label=getattr(runtime, "browser_label", "") if runtime is not None else "",
+            browser_source=getattr(runtime, "browser_source", "") if runtime is not None else "",
+            profile_dir=getattr(runtime, "profile_dir", "") if runtime is not None else "",
+            final_url=final_url,
+            host=host,
+            manual=manual,
+            capture=state.capture_payload() if state is not None else {},
+            warnings=list(warnings or []),
+            events=list(state.events) if state is not None else [],
+        )
+
     try:
         runtime = await acquire_browser_runtime(
             config,
@@ -112,17 +155,34 @@ async def fetch_with_browser(
             get_or_create_reusable_session=get_or_create_reusable_session,
             launch_browser_session=launch_browser_session,
             close_secondary_pages=close_secondary_pages,
+            purpose="pdf_acquisition",
+            session_id=session_record.session_id,
+            extra_args=PDF_BROWSER_CHROME_FLAGS,
         )
         if runtime is None:
+            warnings = ["No compatible browser executable found. Run 'grados setup'."]
+            update_session(status="error", outcome="no_browser", source="Browser", warnings=warnings)
             return BrowserFetchResult(
                 pdf_buffer=None,
                 source="Browser",
                 outcome="no_browser",
                 state="nobrowser",
-                warnings=["No compatible browser executable found. Run 'grados setup'."],
+                warnings=warnings,
+                session_id=session_record.session_id,
+                session_record_path=session_record.record_path,
             )
 
         state = BrowserFetchState(max_capture_bytes=max_capture_bytes)
+        state.record_event(
+            "session_start",
+            url=start_url,
+            details={
+                "doi": doi,
+                "target_url": target_url,
+                "resume": bool(resume),
+                "browser_label": runtime.browser_label,
+            },
+        )
         listeners = BrowserListenerRegistry(runtime.context, state)
         listeners.register(runtime.root_page)
 
@@ -154,12 +214,25 @@ async def fetch_with_browser(
                 close_secondary_pages=close_secondary_pages,
                 close_pdf_page_after_capture=config.close_pdf_page_after_capture,
             )
+            final_url = state.final_url or state.capture_url or _page_url(runtime.root_page)
+            source = f"Browser ({runtime.browser_label})"
+            update_session(
+                status="ok",
+                outcome="pdf_obtained",
+                source=source,
+                final_url=final_url,
+                host=_host_from_url(final_url),
+                warnings=state.warnings,
+            )
             return BrowserFetchResult(
                 pdf_buffer=state.pdf_buffer,
-                source=f"Browser ({runtime.browser_label})",
+                source=source,
                 outcome="pdf_obtained",
                 state="ok",
                 warnings=state.warnings,
+                session_id=session_record.session_id,
+                session_record_path=session_record.record_path,
+                capture=state.capture_payload(),
             )
 
         await finalize_browser_no_capture(runtime)
@@ -177,6 +250,16 @@ async def fetch_with_browser(
             if state.challenge_seen
             else {}
         )
+        warnings = state.warnings + [f"Browser automation: {outcome}"]
+        update_session(
+            status="manual" if state.challenge_seen else "timeout",
+            outcome=outcome,
+            source=f"Browser ({runtime.browser_label})",
+            final_url=final_url,
+            host=host,
+            manual=state.challenge_seen,
+            warnings=warnings,
+        )
         return BrowserFetchResult(
             pdf_buffer=None,
             source=f"Browser ({runtime.browser_label})",
@@ -185,7 +268,10 @@ async def fetch_with_browser(
             manual=state.challenge_seen,
             host=host,
             resume=resume,
-            warnings=state.warnings + [f"Browser automation: {outcome}"],
+            warnings=warnings,
+            session_id=session_record.session_id,
+            session_record_path=session_record.record_path,
+            capture=state.capture_payload(),
         )
     except Exception as exc:
         if runtime is not None:
@@ -193,12 +279,25 @@ async def fetch_with_browser(
         source = "Browser"
         if runtime is not None:
             source = f"Browser ({runtime.browser_label})"
+        warnings = [str(exc)]
+        final_url = _page_url(runtime.root_page) if runtime is not None else ""
+        update_session(
+            status="error",
+            outcome="error",
+            source=source,
+            final_url=final_url,
+            host=_host_from_url(final_url),
+            warnings=warnings,
+        )
         return BrowserFetchResult(
             pdf_buffer=None,
             source=source,
             outcome="error",
             state="error",
-            warnings=[str(exc)],
+            warnings=warnings,
+            session_id=session_record.session_id,
+            session_record_path=session_record.record_path,
+            capture=state.capture_payload() if state is not None else {},
         )
     finally:
         if listeners is not None:

@@ -304,6 +304,8 @@ cp -R skills/grados "<skills-root>/"
 | `grados client doctor` | 对受支持客户端做轻量健康检查 |
 | `grados client remove claude|codex|all` | 从一个或多个客户端移除 GRaDOS 的 MCP 注册和内置 skills |
 | `grados auth set/status/migrate/clear` | 在系统 keychain 中管理各 provider 的 API Key |
+| `grados browser status --json` | 检查 publisher PDF browser runtime、托管可执行文件、profile 状态、lock 和 session 目录 |
+| `grados browser doctor [--live --doi DOI]` | 检查 publisher browser 前置条件；`--live` 会跑一次 PDF acquisition probe，但不会保存 `papers/*.md` |
 | `grados external-synthesis is-enabled --quiet` | 可选外部综合协议的 predicate gate；exit 0 表示启用，exit 1 表示关闭 |
 | `grados external-synthesis status --json` | 以结构化诊断形式显示同一个外部综合 gate 和 config 路径细节 |
 | `grados external-synthesis setup-browser` | 打开 GRaDOS 私有 ChatGPT profile，用于首次登录 ChatGPT |
@@ -342,6 +344,7 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 ├── browser/
 │   ├── chromium/
 │   ├── profile/
+│   ├── pdf-sessions/
 │   ├── chatgpt-profile/
 │   ├── chatgpt-sessions/
 │   └── extensions/
@@ -413,7 +416,7 @@ Unpaywall 是可选的 DOI 到 OA location resolver，不是下载路径。`extr
 
 旧的抓取策略别名 `TDM`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。当前 `scihub` 运行时使用 `extract.sci_hub.endpoints` 作为有序访问列表：第一个 endpoint 优先尝试，后续 endpoint 作为 fallback。旧的 `extract.sci_hub.fallback_mirror` 在 `endpoints` 省略或为空时仍然兼容。
 
-`browser` 是机构权限访问 publisher 全文的一等路径。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
+`browser` 是机构权限访问 publisher 全文的一等路径。它使用 GRaDOS 托管的 publisher profile（`browser/profile`）、profile lock、`browser/pdf-sessions` 下的 operational PDF browser session records，以及 network/download/backfill PDF capture。browser acquisition 不会直接写 `papers/*.md`：它只返回 PDF bytes 或 challenge，随后由 `extract_paper_full_text` 继续走原始 PDF 归档、parser、QA 和 canonical Markdown persistence 管线。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
 
 `codex` 默认关闭。启用并放入 `extract.fetch_strategy.order` 后，它会在该顺序位置作为 Codex Chrome extension host-agent handoff：`extract_paper_full_text` 返回 Chrome 下载 receipt，外层 agent 通过 Chrome 中的 [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) 下载 PDF，再调用 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")` 回到 GRaDOS 入库。若 Unpaywall 找到 OA URL，receipt 会优先从该 URL 开始，而不是 `https://doi.org/{doi}`。
 
