@@ -339,6 +339,8 @@ def _setup_browser(paths: GRaDOSPaths) -> None:
     console.print("  下载 Chrome for Testing...", end=" ")
     paths.browser_chromium.mkdir(parents=True, exist_ok=True)
     paths.browser_profile.mkdir(parents=True, exist_ok=True)
+    paths.chatgpt_browser_profile.mkdir(parents=True, exist_ok=True)
+    paths.chatgpt_browser_sessions.mkdir(parents=True, exist_ok=True)
     paths.browser_extensions.mkdir(parents=True, exist_ok=True)
     try:
         import subprocess
@@ -625,15 +627,26 @@ def external_synthesis_group() -> None:
 
 
 def _external_synthesis_status_payload() -> dict[str, object]:
+    from grados.browser.chatgpt.profile import (
+        chatgpt_profile_status,
+        format_chatgpt_profile_setup_command,
+    )
+
     paths = GRaDOSPaths()
     config = load_config(paths)
     enabled = bool(config.research.external_synthesis.enabled)
+    profile_status = chatgpt_profile_status(paths.chatgpt_browser_profile)
     return {
         "enabled": enabled,
         "status": "enabled" if enabled else "disabled",
         "config_file": str(paths.config_file),
         "config_exists": paths.config_file.is_file(),
-        "protocol": "external_synthesis",
+        "protocol": "external_synthesis_browser_v1",
+        "browser_profile": str(paths.chatgpt_browser_profile),
+        "browser_profile_initialized": bool(profile_status["initialized"]),
+        "browser_profile_status": profile_status,
+        "browser_sessions": str(paths.chatgpt_browser_sessions),
+        "setup_command": format_chatgpt_profile_setup_command(paths.chatgpt_browser_profile),
     }
 
 
@@ -663,8 +676,72 @@ def external_synthesis_status(as_json: bool) -> None:
     status_text = "[green]enabled[/green]" if enabled else "[dim]disabled[/dim]"
     console.print(f"External synthesis: {status_text}")
     console.print(f"Config file: {payload['config_file']}")
+    console.print(f"ChatGPT profile: {payload['browser_profile']}")
+    profile_status = (
+        "[green]initialized[/green]"
+        if payload["browser_profile_initialized"]
+        else "[yellow]needs setup[/yellow]"
+    )
+    console.print(f"ChatGPT profile status: {profile_status}")
     if not payload["config_exists"]:
         console.print("[dim]No config file found; using default disabled state.[/dim]")
+    if not payload["browser_profile_initialized"]:
+        console.print(f"[dim]First-time setup: {payload['setup_command']}[/dim]")
+
+
+@external_synthesis_group.command("doctor")
+@click.option("--live", is_flag=True, help="Also verify the signed-in ChatGPT session.")
+def external_synthesis_doctor(live: bool) -> None:
+    """Check local external synthesis browser prerequisites."""
+    from grados.browser.chatgpt.profile import chatgpt_profile_status
+    from grados.browser.manager import resolve_browser_executable
+
+    paths = GRaDOSPaths()
+    config = load_config(paths)
+    resolution = resolve_browser_executable(config.extract.headless_browser, paths)
+    profile = chatgpt_profile_status(paths.chatgpt_browser_profile)
+
+    console.print()
+    console.print("[bold]External synthesis doctor[/bold]")
+    console.print(f"  Enabled: {'yes' if config.research.external_synthesis.enabled else 'no'}")
+    console.print(f"  Browser executable: {resolution.executable_path if resolution else 'not found'}")
+    console.print(f"  ChatGPT profile: {paths.chatgpt_browser_profile}")
+    console.print(f"  Profile initialized: {'yes' if profile['initialized'] else 'no'}")
+    if not profile["initialized"]:
+        console.print(f"  Setup: {profile['setup_command']}")
+    if live:
+        try:
+            from grados.browser.chatgpt.runtime import check_chatgpt_login
+
+            result = asyncio.run(check_chatgpt_login(paths, config.extract.headless_browser))
+            console.print(f"  Live ChatGPT login: {'ok' if result.get('ok') else result.get('error', 'failed')}")
+        except Exception as exc:
+            console.print(f"  Live ChatGPT login: failed ({exc})")
+    console.print()
+
+
+@external_synthesis_group.command("setup-browser")
+@click.option("--timeout", default=600.0, show_default=True, help="Seconds to wait for login.")
+@click.option("--close-after-login", is_flag=True, help="Close the setup browser after login is detected.")
+def external_synthesis_setup_browser(timeout: float, close_after_login: bool) -> None:
+    """Open the private ChatGPT browser profile for first-time login."""
+    from grados.browser.chatgpt.runtime import open_chatgpt_login_setup
+
+    paths = GRaDOSPaths()
+    config = load_config(paths)
+    result = asyncio.run(
+        open_chatgpt_login_setup(
+            paths,
+            config.extract.headless_browser,
+            timeout_seconds=timeout,
+            keep_open=not close_after_login,
+        )
+    )
+    if result.get("ok"):
+        console.print("[green]ChatGPT login detected in GRaDOS private profile.[/green]")
+    else:
+        console.print(f"[yellow]ChatGPT login setup incomplete:[/yellow] {result.get('error')}")
+    console.print(f"Profile: {paths.chatgpt_browser_profile}")
 
 
 @main.command()

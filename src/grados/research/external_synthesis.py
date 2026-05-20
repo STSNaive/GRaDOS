@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 from grados.research.draft_audit import (
     VERDICT_MAJOR_DISTORTION,
     VERDICT_UNVERIFIABLE,
@@ -32,6 +33,7 @@ __all__ = [
     "prepare_external_synthesis_from_topic",
     "prepare_external_synthesis_packet",
     "preview_external_synthesis_packet",
+    "run_external_synthesis",
     "save_external_synthesis_result",
 ]
 
@@ -156,17 +158,27 @@ def _packet_prompt_body(packet_without_prompt: dict[str, Any]) -> str:
     packet_json = json.dumps(packet_without_prompt, ensure_ascii=False, indent=2, sort_keys=True)
     mode = str(packet_without_prompt.get("mode", "review"))
     return (
-        "You are a host-side ChatGPT Pro reviewer/synthesizer for a GRaDOS evidence packet.\n\n"
+        "You are ChatGPT Pro acting as an external reviewer/synthesizer for a GRaDOS "
+        "evidence packet.\n\n"
+        "Outcome:\n"
+        "Return advisory claims and evidence gaps that GRaDOS can audit. Do not produce "
+        "final citation evidence.\n\n"
         f"Mode: {mode}\n\n"
-        "Hard rules:\n"
+        "Evidence rules:\n"
         "- Use only the provided evidence anchors and anchor_ids.\n"
         "- Do not add papers, DOIs, facts, citations, or web evidence that are not in the packet.\n"
         "- If evidence is missing, report it under missing_evidence instead of filling the gap.\n"
-        "- Treat every excerpt as advisory until the host rereads canonical paragraphs in GRaDOS.\n\n"
-        "Return structured Markdown or JSON-like text with:\n"
-        "- claims: each item must include text, anchor_ids, confidence, and caveat.\n"
-        "- missing_evidence: gaps or unsupported claims.\n"
-        "- forbidden_or_outside_content: any temptation to use pack-external material.\n\n"
+        "- Treat every excerpt as advisory until GRaDOS rereads canonical paragraphs.\n"
+        "- Every claim must cite packet anchor_ids.\n\n"
+        "Return Markdown with one JSON block containing:\n"
+        "{\n"
+        '  "claims": [\n'
+        '    {"text": "...", "anchor_ids": ["anchor_001"], "confidence": "low|medium|high", "caveat": "..."}\n'
+        "  ],\n"
+        '  "missing_evidence": [],\n'
+        '  "forbidden_or_outside_content": [],\n'
+        '  "notes_for_grados_audit": []\n'
+        "}\n\n"
         "Evidence packet:\n"
         "```json\n"
         f"{packet_json}\n"
@@ -419,6 +431,183 @@ def prepare_external_synthesis_from_topic(
     }
 
 
+async def run_external_synthesis(
+    chroma_dir: Path,
+    db_path: Path,
+    papers_dir: Path,
+    paths: GRaDOSPaths,
+    *,
+    topic: str = "",
+    pack_id: str = "",
+    subquestions: list[str] | None = None,
+    scoped_dois: list[str] | None = None,
+    evidence_max_windows: int = 8,
+    mode: str = "review",
+    max_items: int = 25,
+    max_excerpt_chars: int = 700,
+    metadata: dict[str, Any] | None = None,
+    recover_session_id: str = "",
+    browser_config: HeadlessBrowserConfig | None = None,
+) -> dict[str, Any]:
+    """Run the default GRaDOS-native ChatGPT Pro browser synthesis route."""
+    from grados.browser.chatgpt.runtime import run_chatgpt_browser_session
+
+    resolved_mode = _normalize_mode(mode)
+    packet: dict[str, Any] = {}
+    host_prompt = ""
+    source_pack_id = pack_id.strip()
+    packet_artifact_id = ""
+    prompt_hash = ""
+
+    if recover_session_id:
+        browser_result = await run_chatgpt_browser_session(
+            paths,
+            browser_config or HeadlessBrowserConfig(),
+            prompt="",
+            pack_id=source_pack_id,
+            packet_artifact_id="",
+            prompt_hash="",
+            mode=resolved_mode,
+            metadata=metadata,
+            recover_session_id=recover_session_id,
+        )
+    else:
+        if bool(topic.strip()) == bool(source_pack_id):
+            return {
+                "ok": False,
+                "sendable": False,
+                "saved": False,
+                "error": "invalid_external_synthesis_input",
+                "message": "Provide exactly one of topic or pack_id.",
+            }
+        if topic.strip():
+            packet = prepare_external_synthesis_from_topic(
+                chroma_dir,
+                db_path,
+                papers_dir,
+                topic=topic,
+                subquestions=subquestions,
+                scoped_dois=scoped_dois,
+                evidence_max_windows=evidence_max_windows,
+                mode=resolved_mode,
+                max_items=max_items,
+                max_excerpt_chars=max_excerpt_chars,
+                metadata=metadata,
+            )
+        else:
+            packet = prepare_external_synthesis_packet(
+                db_path,
+                papers_dir,
+                pack_id=source_pack_id,
+                mode=resolved_mode,
+                max_items=max_items,
+                max_excerpt_chars=max_excerpt_chars,
+                metadata=metadata,
+            )
+        if not packet.get("sendable"):
+            return packet
+        source_pack_id = str(packet.get("pack_id") or source_pack_id)
+        packet_artifact_id = str(packet.get("artifact_id") or "")
+        prompt_hash = str(packet.get("prompt_hash") or "")
+        host_prompt = str(packet.get("host_prompt") or "")
+        browser_result = await run_chatgpt_browser_session(
+            paths,
+            browser_config or HeadlessBrowserConfig(),
+            prompt=host_prompt,
+            pack_id=source_pack_id,
+            packet_artifact_id=packet_artifact_id,
+            prompt_hash=prompt_hash,
+            mode=resolved_mode,
+            metadata={
+                **(metadata or {}),
+                "packet_artifact_id": packet_artifact_id,
+                "prompt_hash": prompt_hash,
+            },
+        )
+
+    browser_payload = browser_result.to_dict()
+    if not browser_result.ok:
+        return {
+            "ok": False,
+            "sendable": False,
+            "saved": False,
+            "error": browser_result.error_code or "chatgpt_browser_failed",
+            "message": browser_result.error,
+            "browser": browser_payload,
+            "packet": packet,
+        }
+
+    source_pack_id = str(browser_result.metadata.get("pack_id") or source_pack_id)
+    packet_artifact_id = str(browser_result.metadata.get("packet_artifact_id") or packet_artifact_id)
+    prompt_hash = str(browser_result.metadata.get("prompt_hash") or prompt_hash)
+    if not source_pack_id:
+        return {
+            "ok": False,
+            "sendable": False,
+            "saved": False,
+            "error": "browser_session_pack_missing",
+            "message": "Captured ChatGPT browser session has no linked evidence pack id.",
+            "browser": browser_payload,
+        }
+
+    save_metadata = {
+        **(metadata or {}),
+        "runtime": "grados_chatgpt_browser",
+        "browser_mode_version": browser_payload.get("browser_mode_version"),
+        "browser_session_id": browser_result.session_id,
+        "browser_session_record": browser_result.session_record_path,
+        "model_selection": browser_payload.get("model"),
+        "thinking_selection": browser_payload.get("thinking"),
+        "capture": browser_payload.get("capture"),
+    }
+    structured_response = _structured_response_from_text(browser_result.response_text)
+    structured_claims = None
+    structured_gaps = None
+    if isinstance(structured_response, dict):
+        raw_claims = structured_response.get("claims")
+        if isinstance(raw_claims, list):
+            structured_claims = [dict(item) for item in raw_claims if isinstance(item, dict)]
+        structured_gaps = _coerce_string_list(
+            structured_response.get("missing_evidence") or structured_response.get("gaps")
+        )
+    saved = save_external_synthesis_result(
+        db_path,
+        papers_dir,
+        pack_id=source_pack_id,
+        response=browser_result.response_text,
+        packet_artifact_id=packet_artifact_id,
+        prompt_hash=prompt_hash,
+        conversation_url=browser_result.conversation_url,
+        model_label=browser_result.model_label,
+        thinking_label=browser_result.thinking_label,
+        mode=resolved_mode,
+        claims=structured_claims,
+        gaps=structured_gaps,
+        metadata=save_metadata,
+        audit=True,
+    )
+    return {
+        "ok": bool(saved.get("ok")),
+        "sendable": True,
+        "saved": bool(saved.get("saved")),
+        "audited": bool(saved.get("audited")),
+        "artifact_id": saved.get("artifact_id", ""),
+        "pack_id": source_pack_id,
+        "packet_artifact_id": packet_artifact_id,
+        "prompt_hash": prompt_hash,
+        "browser_session_id": browser_result.session_id,
+        "conversation_url": browser_result.conversation_url,
+        "model_label": browser_result.model_label,
+        "thinking_label": browser_result.thinking_label,
+        "browser": browser_payload,
+        "packet": packet,
+        "result": saved,
+        "audit": saved.get("audit"),
+        "ready_for_canonical_reread": bool(saved.get("ready_for_canonical_reread")),
+        "next_action": saved.get("next_action", "audit_external_synthesis_result"),
+    }
+
+
 def _read_artifact(db_path: Path, artifact_id: str) -> dict[str, Any] | None:
     result = query_research_artifacts(db_path, artifact_id=artifact_id, detail=True, limit=1)
     items = result.get("items", [])
@@ -432,6 +621,25 @@ def _response_text(raw_response: str | dict[str, Any]) -> str:
     if isinstance(raw_response, str):
         return raw_response
     return json.dumps(raw_response, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _structured_response_from_text(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    candidates = [stripped]
+    candidates.extend(
+        match.group(1).strip()
+        for match in re.finditer(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+    )
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 def _coerce_string_list(value: Any) -> list[str]:

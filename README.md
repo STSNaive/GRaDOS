@@ -63,6 +63,7 @@ For evidence-grounded writing, the bundled skill includes `references/paper_writ
 | GRaDOS | `preview_external_synthesis_packet` | Dry-run a compact external-synthesis packet from one current-valid evidence pack without saving artifacts or contacting external services. |
 | GRaDOS | `prepare_external_synthesis_packet` | Persist an `external_synthesis_packet` artifact with verified anchor ids, canonical paragraph coordinates, excerpts, candidate claims, limitations, and prompt hash, returning the host prompt as a regenerable view. |
 | GRaDOS | `prepare_external_synthesis_from_topic` | Prepare a fresh evidence pack from a topic and persist a verified external-synthesis packet in one route, returning both pack and packet ids plus the host prompt. |
+| GRaDOS | `run_external_synthesis` | Run the default GRaDOS-native ChatGPT Pro browser route: prepare or verify a packet, use the private ChatGPT profile, confirm Oracle's current Pro model and Pro Extended thinking route, capture the advisory response, save it, and audit it before canonical reread. |
 | GRaDOS | `save_external_synthesis_result` | Save a host-provided ChatGPT Pro response as advisory `external_synthesis_result` state linked to its source pack, optional packet, prompt hash, and session metadata. Defaults to `audit=true`. |
 | GRaDOS | `audit_external_synthesis_result` | Audit a saved external synthesis result against its linked packet when available, otherwise its source pack, using structured `claims[].anchor_ids` as the primary handoff contract while still reporting prose risks. |
 | GRaDOS | `audit_answer_against_pack` | Audit draft claims using only evidence items inside one verified pack. It returns `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts and does not search the full library to fill gaps. Optional `include_suggestions=true` attaches follow-up planning. |
@@ -100,7 +101,7 @@ After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 | `database/research.sqlite3` | Research artifacts and failure memory | Evidence packs, run manifests, checkpoints, extraction receipts, and recoverable failure records |
 | `research_checkpoints/` | `checkpoint.json` and rendered `checkpoint.md` files | Recoverable indepth research workflow state |
 | `paper_summaries/` | Query-independent derived paper summaries | Navigation and context recovery, never citation evidence |
-| `browser/` | Managed Chromium, profile, extensions | Browser strategy assets for publisher PDF access |
+| `browser/` | Managed Chromium, publisher/ChatGPT profiles, session records | Browser strategy assets for publisher PDF access and gated ChatGPT external synthesis |
 | `models/` | Embedding and OCR model caches | Runtime assets warmed by setup |
 
 ### Repository Map 🗺️
@@ -275,7 +276,7 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 ### Research Workflow Knobs
 
 - `research.indepth`: disabled by default; controls whether remote search immediately materializes returned candidates for checkpointed full-text review.
-- `research.external_synthesis`: disabled by default; a host-side ChatGPT Pro reviewer/synthesizer protocol with only `enabled`. Gate automation with `grados external-synthesis is-enabled --quiet`; inspect details with `grados external-synthesis status --json`. When enabled, GRaDOS can prepare verified external-synthesis packets, save returned advisory responses, and audit them against the linked packet or source pack. GRaDOS still does not call ChatGPT, open Chrome, or change evidence reading when this is off.
+- `research.external_synthesis`: disabled by default; a GRaDOS-native ChatGPT Pro browser reviewer/synthesizer with only `enabled`. Gate automation with `grados external-synthesis is-enabled --quiet`; inspect details with `grados external-synthesis status --json`; initialize the private profile with `grados external-synthesis setup-browser`. When enabled, GRaDOS can prepare verified external-synthesis packets, use its private ChatGPT browser profile, save returned advisory responses, and audit them against the linked packet or source pack. When this is off, GRaDOS does not call ChatGPT, open Chrome, or change evidence reading.
 
 ### Timeout / Retry Knobs
 
@@ -305,6 +306,8 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 | `grados auth set/status/migrate/clear` | Manage provider API keys in the OS keychain |
 | `grados external-synthesis is-enabled --quiet` | Predicate gate for the optional external synthesis protocol; exit 0 means enabled, exit 1 means disabled |
 | `grados external-synthesis status --json` | Show the same external synthesis gate plus config path details as structured diagnostics |
+| `grados external-synthesis setup-browser` | Open the private GRaDOS ChatGPT profile for first-time ChatGPT login |
+| `grados external-synthesis doctor [--live]` | Check external synthesis browser prerequisites; `--live` also probes ChatGPT login |
 | `grados import-pdfs --from /path/to/papers --recursive` | Import an existing local PDF library into the canonical paper store |
 | `grados eval-retrieval --fixture cases.jsonl` | Evaluate saved-paper retrieval against local golden cases using dense, FTS/BM25, exact lookup, and RRF unless `--dense-only` is set |
 | `grados status` | Show config, dependency, runtime-asset, and API-key health |
@@ -339,6 +342,8 @@ By default, GRaDOS keeps everything in a visible directory:
 ├── browser/
 │   ├── chromium/
 │   ├── profile/
+│   ├── chatgpt-profile/
+│   ├── chatgpt-sessions/
 │   └── extensions/
 ├── models/
 ├── database/
@@ -412,7 +417,7 @@ The browser strategy is a first-class path for institutional publisher access. I
 
 `codex` is disabled by default. When enabled and placed in `extract.fetch_strategy.order`, it acts as a Codex Chrome extension host-agent handoff at that exact point in the order: `extract_paper_full_text` returns a Chrome download receipt, then the host agent downloads the PDF in Chrome with the [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) and calls `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`. If Unpaywall finds an OA URL, the receipt starts from that URL instead of `https://doi.org/{doi}`.
 
-If `research.external_synthesis.enabled=true`, the same host agent may use ChatGPT Pro only after GRaDOS has prepared and verified an evidence pack. When starting from a topic, `prepare_external_synthesis_from_topic` prepares the pack and packet in one route; when a pack id already exists, use `prepare_external_synthesis_packet`. The host can dry-run with `preview_external_synthesis_packet`, save the returned response with `save_external_synthesis_result(audit=true)`, and rerun `audit_external_synthesis_result` only when needed. When a packet id is linked, audit accepts only anchors, DOIs, block ids, and canonical URIs from that saved packet; structured `claims[].anchor_ids` are the primary claim contract, and prose audit output is retained as a risk scan. The host must select the latest/highest-capability Pro model visible in the ChatGPT UI and the highest available thinking-time option; these choices are fixed by protocol, not configurable GRaDOS keys. In localized ChatGPT UIs, the host should choose options by semantic meaning rather than requiring exact English strings. When `codex` downloads and ChatGPT Pro synthesis are both enabled, the host must treat Chrome as one shared resource: finish `chrome_acquisition` first when possible, keep publisher/PDF tabs separate from the ChatGPT conversation tab, resume the same ChatGPT conversation URL for later synthesis turns, and stop with a report if Chrome extension state, tabs, or the conversation cannot be recovered.
+If `research.external_synthesis.enabled=true`, GRaDOS may use ChatGPT Pro only after it has prepared and verified an evidence pack. The default tool is `run_external_synthesis`: from a topic it prepares the evidence pack and packet, from an existing pack id it verifies and packets that pack, then it opens the dedicated GRaDOS ChatGPT profile, verifies Oracle's current Pro model route (`gpt-5.5-pro`) and Pro Extended thinking route before sending, captures the response, saves it with `save_external_synthesis_result(audit=true)`, and returns the audit and canonical reread next action. `preview_external_synthesis_packet`, `prepare_external_synthesis_from_topic`, `prepare_external_synthesis_packet`, `save_external_synthesis_result`, and `audit_external_synthesis_result` remain available for dry runs, recovery, and explicit reruns. When a packet id is linked, audit accepts only anchors, DOIs, block ids, and canonical URIs from that saved packet; structured `claims[].anchor_ids` are the primary claim contract, and prose audit output is retained as a risk scan. Model and thinking choices are fixed protocol defaults, not configurable GRaDOS keys. In localized ChatGPT UIs, GRaDOS records the raw labels it confirmed. This does not remove the separate `extract.fetch_strategy.codex` PDF acquisition route.
 
 PDF parsing priority:
 

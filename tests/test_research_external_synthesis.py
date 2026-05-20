@@ -3,6 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import grados.research.evidence_pack as evidence_pack_module
+from grados.browser.chatgpt.types import (
+    ChatGPTBrowserResult,
+    ChatGPTCapture,
+    ChatGPTModelSelection,
+    ChatGPTThinkingSelection,
+)
+from grados.config import GRaDOSPaths
 from grados.publisher.common import safe_doi_filename
 from grados.research.evidence_pack import prepare_evidence_pack
 from grados.research.external_synthesis import (
@@ -12,6 +19,7 @@ from grados.research.external_synthesis import (
     prepare_external_synthesis_from_topic,
     prepare_external_synthesis_packet,
     preview_external_synthesis_packet,
+    run_external_synthesis,
     save_external_synthesis_result,
 )
 from grados.research_state import query_research_artifacts
@@ -283,6 +291,83 @@ def test_external_synthesis_result_round_trip_and_audit(monkeypatch, tmp_path: P
     assert audit["pack_outside_dois"] == []
     assert audit["ready_for_canonical_reread"] is True
     assert audit["audit"]["verdict_counts"] == {"verified": 1}
+
+
+def test_run_external_synthesis_uses_browser_and_audits(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    receipt = _prepare_pack(monkeypatch, tmp_path)
+    paths = GRaDOSPaths(tmp_path)
+    seen: dict[str, object] = {}
+
+    async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
+        seen.update(kwargs)
+        response = {
+            "claims": [
+                {
+                    "text": "Composite damping improved vibration attenuation by 18%.",
+                    "anchor_ids": ["anchor_001"],
+                    "confidence": "high",
+                    "caveat": "Fixture evidence only.",
+                }
+            ],
+            "missing_evidence": [],
+            "forbidden_or_outside_content": [],
+        }
+        return ChatGPTBrowserResult(
+            ok=True,
+            status="captured",
+            session_id="chatgpt-test",
+            response_text="```json\n"
+            + __import__("json").dumps(response)
+            + "\n```",
+            conversation_url="https://chatgpt.com/c/test",
+            model=ChatGPTModelSelection(
+                requested="gpt-5.5-pro",
+                resolved_label="Pro",
+                available_labels=["Instant", "Pro"],
+                strategy="oracle_model_picker",
+                verified=True,
+            ),
+            thinking=ChatGPTThinkingSelection(
+                requested="pro_extended",
+                resolved_label="Extended",
+                available_labels=["Standard", "Extended"],
+                rank=50,
+                verified=True,
+            ),
+            capture=ChatGPTCapture(response_text="", method="dom_text"),
+            session_record_path=str(tmp_path / "session.json"),
+            metadata={
+                "pack_id": str(receipt["pack_id"]),
+                "packet_artifact_id": str(kwargs["packet_artifact_id"]),
+                "prompt_hash": str(kwargs["prompt_hash"]),
+            },
+        )
+
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fake_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        run_external_synthesis(
+            _chroma_dir(tmp_path),
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            pack_id=str(receipt["pack_id"]),
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["audited"] is True
+    assert result["ready_for_canonical_reread"] is True
+    assert result["browser_session_id"] == "chatgpt-test"
+    assert result["model_label"] == "Pro"
+    assert "GRaDOS evidence packet" in str(seen["prompt"])
+    assert seen["packet_artifact_id"]
 
 
 def test_external_synthesis_audit_uses_packet_reference_scope(

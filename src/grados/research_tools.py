@@ -40,6 +40,7 @@ from grados.research.external_synthesis import (
     prepare_external_synthesis_from_topic,
     prepare_external_synthesis_packet,
     preview_external_synthesis_packet,
+    run_external_synthesis,
     save_external_synthesis_result,
 )
 from grados.research.pack_audit import (
@@ -81,6 +82,7 @@ __all__ = [
     "prepare_external_synthesis_packet",
     "preview_external_synthesis_packet",
     "read_evidence_pack",
+    "run_external_synthesis",
     "save_external_synthesis_result",
     "suggest_missing_evidence",
     "verify_evidence_pack",

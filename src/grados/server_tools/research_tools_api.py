@@ -25,6 +25,7 @@ __all__ = [
     "query_research_artifacts",
     "read_evidence_pack",
     "register_research_tools_api",
+    "run_external_synthesis",
     "save_external_synthesis_result",
     "save_research_artifact",
     "suggest_missing_evidence",
@@ -42,7 +43,8 @@ def _external_synthesis_disabled_response() -> dict[str, object]:
         "error": "external_synthesis_disabled",
         "next_action": (
             "Set research.external_synthesis.enabled=true and verify with "
-            "`grados external-synthesis is-enabled --quiet` before using this protocol."
+            "`grados external-synthesis is-enabled --quiet` before using the "
+            "GRaDOS-native ChatGPT browser synthesis route."
         ),
     }
 
@@ -187,6 +189,73 @@ async def verify_evidence_pack(
 
     paths, _ = get_paths_and_config()
     return run_verify(paths.database_state, paths.papers, pack_id=pack_id)
+
+
+async def run_external_synthesis(
+    topic: Annotated[
+        str | None,
+        Field(description="Research topic to prepare into a fresh evidence pack and browser synthesis packet."),
+    ] = None,
+    pack_id: Annotated[
+        str | None,
+        Field(description="Existing current-valid evidence pack id to send through browser synthesis."),
+    ] = None,
+    subquestions: Annotated[
+        list[str] | None,
+        Field(description="Optional focused subquestions when topic is provided."),
+    ] = None,
+    scoped_dois: Annotated[
+        list[str] | None,
+        Field(description="Optional saved-paper DOI scope when topic is provided."),
+    ] = None,
+    evidence_max_windows: Annotated[
+        int,
+        Field(ge=1, le=25, description="Maximum candidate windows per evidence subquestion."),
+    ] = 8,
+    mode: Annotated[
+        Literal["review", "synthesize"],
+        Field(description="External synthesis mode."),
+    ] = "review",
+    max_items: Annotated[
+        int,
+        Field(ge=1, le=50, description="Maximum verified evidence anchors to include."),
+    ] = 25,
+    max_excerpt_chars: Annotated[
+        int,
+        Field(ge=120, le=2000, description="Maximum characters per canonical excerpt."),
+    ] = 700,
+    metadata: Annotated[
+        dict[str, object] | None,
+        Field(description="Optional metadata such as research_run_id for manifest linking."),
+    ] = None,
+    recover_session_id: Annotated[
+        str | None,
+        Field(description="Optional saved ChatGPT browser session id to recover without resending."),
+    ] = None,
+) -> dict[str, object]:
+    """Run the default GRaDOS-native ChatGPT Pro browser synthesis route."""
+    from grados.research_tools import run_external_synthesis as run_browser_synthesis
+
+    paths, config = get_paths_and_config()
+    if not config.research.external_synthesis.enabled:
+        return _external_synthesis_disabled_response()
+    return await run_browser_synthesis(
+        paths.database_chroma,
+        paths.database_state,
+        paths.papers,
+        paths,
+        topic=topic or "",
+        pack_id=pack_id or "",
+        subquestions=subquestions,
+        scoped_dois=scoped_dois,
+        evidence_max_windows=evidence_max_windows,
+        mode=mode,
+        max_items=max_items,
+        max_excerpt_chars=max_excerpt_chars,
+        metadata=metadata,
+        recover_session_id=recover_session_id or "",
+        browser_config=config.extract.headless_browser,
+    )
 
 
 async def preview_external_synthesis_packet(
@@ -812,6 +881,17 @@ def register_research_tools_api(mcp: FastMCP) -> None:
 
     mcp.tool(
         description=(
+            "Run the default GRaDOS-native ChatGPT Pro browser synthesis route. "
+            "When external synthesis is enabled, this prepares or verifies a current-valid "
+            "evidence pack, creates a packet, uses the private GRaDOS ChatGPT Chrome profile, "
+            "verifies Oracle's current Pro model and Pro Extended thinking route before sending, "
+            "captures the response, saves it as advisory output, and audits it before "
+            "returning the canonical reread next action."
+        )
+    )(run_external_synthesis)
+
+    mcp.tool(
+        description=(
             "Preview the compact host-side ChatGPT Pro packet for a current-valid evidence pack. "
             "This never opens Chrome, calls ChatGPT, or saves an artifact."
         )
@@ -820,16 +900,17 @@ def register_research_tools_api(mcp: FastMCP) -> None:
     mcp.tool(
         description=(
             "Persist a compact external_synthesis_packet built only from current-valid evidence pack "
-            "anchors. The host may paste/send the returned prompt to ChatGPT Pro, but GRaDOS does "
-            "not call external models."
+            "anchors. This is a lower-level recovery route; the default enabled route is "
+            "run_external_synthesis, which sends the packet through GRaDOS's private ChatGPT "
+            "browser mode."
         )
     )(prepare_external_synthesis_packet)
 
     mcp.tool(
         description=(
             "Prepare a fresh evidence pack from a topic and persist a verified external_synthesis_packet "
-            "in one deterministic route. This is the default external synthesis setup when no pack id "
-            "already exists; GRaDOS still does not call external models."
+            "in one deterministic lower-level route. Use run_external_synthesis for the default "
+            "browser send/save/audit workflow when no pack id already exists."
         )
     )(prepare_external_synthesis_from_topic)
 

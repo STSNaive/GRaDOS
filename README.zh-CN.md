@@ -63,6 +63,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `preview_external_synthesis_packet` | 从 current-valid evidence pack dry-run 紧凑 external-synthesis packet，不保存 artifact，也不调用外部服务。 |
 | GRaDOS | `prepare_external_synthesis_packet` | 持久化 `external_synthesis_packet` artifact，包含 verified anchor id、canonical 段落坐标、excerpt、candidate claim、limitations 和 prompt hash，并把 host prompt 作为可再生成视图返回。 |
 | GRaDOS | `prepare_external_synthesis_from_topic` | 从 topic 准备 fresh evidence pack，并在同一路线中持久化 verified external-synthesis packet，返回 pack/packet id 和 host prompt。 |
+| GRaDOS | `run_external_synthesis` | 运行默认的 GRaDOS-native ChatGPT Pro browser 路线：准备或验证 packet，使用私有 ChatGPT profile，确认 Oracle 当前 Pro model 路线和 Pro Extended thinking 路线，捕获 advisory response，保存并审计后再进入 canonical reread。 |
 | GRaDOS | `save_external_synthesis_result` | 把 host 提供的 ChatGPT Pro 回复保存为 advisory `external_synthesis_result` 状态，并关联 source pack、可选 packet、prompt hash 和 session metadata；默认 `audit=true`。 |
 | GRaDOS | `audit_external_synthesis_result` | 优先按已关联 packet 审计 external synthesis 结果，没有 packet 时才退回 source pack；结构化 `claims[].anchor_ids` 是主要交接合同，正文 audit 作为风险扫描保留。 |
 | GRaDOS | `audit_answer_against_pack` | 只使用单个 pack 内的 evidence items 审计草稿 claims，返回 `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，不会全库搜索来填补缺口；可用 `include_suggestions=true` 附带后续补证建议。 |
@@ -100,7 +101,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | `database/research.sqlite3` | Research artifacts 与 failure memory | Evidence packs、run manifests、checkpoints、extraction receipts 和可恢复失败记录 |
 | `research_checkpoints/` | `checkpoint.json` 与渲染后的 `checkpoint.md` | 可恢复的 indepth 研究工作流状态 |
 | `paper_summaries/` | query-independent 的派生论文 summary | 导航与上下文恢复，不能作为引用依据 |
-| `browser/` | 托管 Chromium、profile、extensions | publisher PDF 访问所需的 `browser` 策略资产 |
+| `browser/` | 托管 Chromium、publisher/ChatGPT profiles、session records | publisher PDF 访问和 gated ChatGPT 外部综合所需的浏览器资产 |
 | `models/` | embedding 与 OCR 模型缓存 | setup 预热的运行时资产 |
 
 ### 仓库地图 🗺️
@@ -275,7 +276,7 @@ cp -R skills/grados "<skills-root>/"
 ### 研究工作流开关
 
 - `research.indepth`：默认关闭；控制远程检索是否立即 materialize 返回候选，用于 checkpoint 化的全文评审。
-- `research.external_synthesis`：默认关闭；只包含 `enabled`，表示 host-side ChatGPT Pro reviewer/synthesizer 协议。自动化 gate 用 `grados external-synthesis is-enabled --quiet`；诊断细节用 `grados external-synthesis status --json`。启用时 GRaDOS 可以准备 verified external-synthesis packet、保存返回的 advisory response，并按关联 packet 或 source pack 审计；关闭时 GRaDOS 不调用 ChatGPT、不打开 Chrome，也不改变证据读取流程。
+- `research.external_synthesis`：默认关闭；只包含 `enabled`，表示 GRaDOS-native ChatGPT Pro browser reviewer/synthesizer。自动化 gate 用 `grados external-synthesis is-enabled --quiet`；诊断细节用 `grados external-synthesis status --json`；首次登录私有 profile 用 `grados external-synthesis setup-browser`。启用时 GRaDOS 可以准备 verified external-synthesis packet、使用私有 ChatGPT browser profile、保存返回的 advisory response，并按关联 packet 或 source pack 审计；关闭时 GRaDOS 不调用 ChatGPT、不打开 Chrome，也不改变证据读取流程。
 
 ### 超时与重试
 
@@ -305,6 +306,8 @@ cp -R skills/grados "<skills-root>/"
 | `grados auth set/status/migrate/clear` | 在系统 keychain 中管理各 provider 的 API Key |
 | `grados external-synthesis is-enabled --quiet` | 可选外部综合协议的 predicate gate；exit 0 表示启用，exit 1 表示关闭 |
 | `grados external-synthesis status --json` | 以结构化诊断形式显示同一个外部综合 gate 和 config 路径细节 |
+| `grados external-synthesis setup-browser` | 打开 GRaDOS 私有 ChatGPT profile，用于首次登录 ChatGPT |
+| `grados external-synthesis doctor [--live]` | 检查 external synthesis 浏览器前置条件；`--live` 会额外探测 ChatGPT 登录状态 |
 | `grados import-pdfs --from /path/to/papers --recursive` | 把已有 PDF 文件夹导入 canonical 论文库 |
 | `grados eval-retrieval --fixture cases.jsonl` | 用本地 golden cases 评测 saved-paper retrieval；默认跑 dense、FTS/BM25、exact lookup 和 RRF，可用 `--dense-only` 调试旧模式 |
 | `grados status` | 查看配置、依赖、运行时资产和 API Key 状态 |
@@ -339,6 +342,8 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 ├── browser/
 │   ├── chromium/
 │   ├── profile/
+│   ├── chatgpt-profile/
+│   ├── chatgpt-sessions/
 │   └── extensions/
 ├── models/
 ├── database/
@@ -412,7 +417,7 @@ Unpaywall 是可选的 DOI 到 OA location resolver，不是下载路径。`extr
 
 `codex` 默认关闭。启用并放入 `extract.fetch_strategy.order` 后，它会在该顺序位置作为 Codex Chrome extension host-agent handoff：`extract_paper_full_text` 返回 Chrome 下载 receipt，外层 agent 通过 Chrome 中的 [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) 下载 PDF，再调用 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")` 回到 GRaDOS 入库。若 Unpaywall 找到 OA URL，receipt 会优先从该 URL 开始，而不是 `https://doi.org/{doi}`。
 
-若 `research.external_synthesis.enabled=true`，同一个 host agent 只能在 GRaDOS 准备并验证 evidence pack 后使用 ChatGPT Pro。从 topic 开始时，`prepare_external_synthesis_from_topic` 会在同一路线中准备 pack 和 packet；已有 pack id 时再用 `prepare_external_synthesis_packet`。host 可以用 `preview_external_synthesis_packet` dry-run，用 `save_external_synthesis_result(audit=true)` 保存并审计返回结果；只有需要重跑时才单独调用 `audit_external_synthesis_result`。结果关联 packet id 时，audit 只接受该 packet 中实际发送过的 anchor、DOI、block id 和 canonical URI；结构化 `claims[].anchor_ids` 是主要 claim 合同，正文 audit 作为风险扫描保留。host 必须在 ChatGPT UI 中选择当前可见的最新/最强 Pro 模型和最高可用 thinking-time 选项；这些选择由协议固定，不再通过 GRaDOS config 配置。遇到中文或其他本地化界面时，host 应选择语义等价的选项，而不是要求英文字符串逐字匹配。若 `codex` 下载和 ChatGPT Pro 综合同时启用，host 必须把 Chrome 当作一个共享 resource：尽量先完成 `chrome_acquisition`，再进入 `chrome_synthesis`；publisher/PDF tab 与 ChatGPT 对话 tab 要分离；后续综合轮次恢复同一个 ChatGPT conversation URL；如果 Chrome extension 状态、tab 或对话无法恢复，就停止并报告。
+若 `research.external_synthesis.enabled=true`，GRaDOS 只能在自己准备并验证 evidence pack 后使用 ChatGPT Pro。默认工具是 `run_external_synthesis`：从 topic 开始时准备 evidence pack 和 packet；已有 pack id 时验证并 packet 化该 pack；随后打开专用 GRaDOS ChatGPT profile，在发送前确认 Oracle 当前 Pro model 路线（`gpt-5.5-pro`）和 Pro Extended thinking 路线，捕获回复，用 `save_external_synthesis_result(audit=true)` 保存，并返回 audit 与 canonical reread next action。`preview_external_synthesis_packet`、`prepare_external_synthesis_from_topic`、`prepare_external_synthesis_packet`、`save_external_synthesis_result` 和 `audit_external_synthesis_result` 仍保留给 dry run、恢复和显式重跑。结果关联 packet id 时，audit 只接受该 packet 中实际发送过的 anchor、DOI、block id 和 canonical URI；结构化 `claims[].anchor_ids` 是主要 claim 合同，正文 audit 作为风险扫描保留。模型和 thinking 选择是协议默认值，不通过 GRaDOS config 配置；本地化界面下 GRaDOS 会记录实际确认到的原始标签。这个改动不移除单独的 `extract.fetch_strategy.codex` PDF acquisition 路线。
 
 PDF 解析优先级：
 

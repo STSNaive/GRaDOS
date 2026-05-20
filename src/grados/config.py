@@ -88,6 +88,14 @@ class GRaDOSPaths:
         return self.browser_root / "profile"
 
     @property
+    def chatgpt_browser_profile(self) -> Path:
+        return self.browser_root / "chatgpt-profile"
+
+    @property
+    def chatgpt_browser_sessions(self) -> Path:
+        return self.browser_root / "chatgpt-sessions"
+
+    @property
     def browser_extensions(self) -> Path:
         return self.browser_root / "extensions"
 
@@ -157,6 +165,8 @@ class GRaDOSPaths:
             ("论文 summary", self.paper_summaries),
             ("浏览器二进制", self.browser_chromium),
             ("浏览器配置", self.browser_profile),
+            ("ChatGPT 浏览器配置", self.chatgpt_browser_profile),
+            ("ChatGPT 浏览器会话", self.chatgpt_browser_sessions),
             ("浏览器扩展", self.browser_extensions),
             ("嵌入模型", self.models_embedding),
             ("远程元数据", self.database_remote_metadata),
@@ -495,8 +505,9 @@ class ExternalSynthesisConfig(BaseModel):
     enabled: bool = Field(
         default=False,
         description=(
-            "Enable the host-side ChatGPT Pro synthesis protocol. GRaDOS itself does not call "
-            "ChatGPT or open Chrome."
+            "Enable GRaDOS-native ChatGPT Pro browser synthesis after verified evidence "
+            "packet preparation. GRaDOS uses a private Chrome profile and still treats "
+            "the returned response as advisory until packet audit and canonical reread."
         ),
     )
 
@@ -628,12 +639,13 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
         "Generate query-independent paper_summary artifacts after successful full-text saves."
     )
     data["research"]["_comment_external_synthesis"] = (
-        "Default-off host-side ChatGPT Pro reviewer/synthesizer protocol. "
-        "GRaDOS still only prepares and verifies canonical evidence."
+        "Default-off GRaDOS-native ChatGPT Pro browser reviewer/synthesizer. "
+        "GRaDOS sends only verified evidence packets, saves advisory output, and audits it."
     )
     data["research"]["external_synthesis"]["_comment_enabled"] = (
-        "Default off. When true, the host may use Chrome/ChatGPT Pro only after GRaDOS "
-        "has prepared verified evidence; model and thinking level are fixed by protocol."
+        "Default off. When true, GRaDOS may open its private ChatGPT Chrome profile only "
+        "after verified evidence preparation; Oracle's current Pro model and Pro Extended thinking route "
+        "are protocol defaults recorded as metadata, not config keys."
     )
 
     # Timeout / retry surface (ADR-008)

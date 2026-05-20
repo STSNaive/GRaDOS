@@ -57,6 +57,11 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
     assert external_payload["status"] == "disabled"
     assert external_payload["config_file"] == str(home / "config.json")
     assert external_payload["config_exists"] is True
+    assert external_payload["protocol"] == "external_synthesis_browser_v1"
+    assert external_payload["browser_profile"] == str(home / "browser" / "chatgpt-profile")
+    assert external_payload["browser_sessions"] == str(home / "browser" / "chatgpt-sessions")
+    assert external_payload["browser_profile_initialized"] is False
+    assert external_payload["setup_command"] == "grados external-synthesis setup-browser"
 
     external_predicate_result = runner.invoke(main, ["external-synthesis", "is-enabled"], env=env)
     assert external_predicate_result.exit_code == 1

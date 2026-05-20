@@ -30,6 +30,7 @@ from grados.server_tools.research_tools_api import (
     preview_external_synthesis_packet,
     query_research_artifacts,
     register_research_tools_api,
+    run_external_synthesis,
     save_external_synthesis_result,
     save_research_artifact,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "read_paper_asset",
     "read_saved_paper",
     "run_server",
+    "run_external_synthesis",
     "save_external_synthesis_result",
     "save_paper_to_zotero",
     "save_research_artifact",

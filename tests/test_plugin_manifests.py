@@ -87,15 +87,16 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     assert "grados external-synthesis status --json" not in external_synthesis_reference
     assert "same `GRADOS_HOME` as the active server" in skill_text
     assert "exits with code 0" in external_synthesis_reference
-    assert "ChatGPT Pro" not in tools_reference
-    assert "latest/highest-capability Pro model" in external_synthesis_reference
-    assert "highest available thinking-time option" in external_synthesis_reference
-    assert "GRaDOS produces the verified evidence payload" in external_synthesis_reference
-    assert "sending the prompt, and reading the reply" in external_synthesis_reference
+    assert "`grados:run_external_synthesis`" in tools_reference
+    assert "Oracle's current Pro model route" in external_synthesis_reference
+    assert "Pro Extended thinking route" in external_synthesis_reference
+    assert "GRaDOS-native ChatGPT Pro browser mode" in external_synthesis_reference
+    assert "private ChatGPT profile" in external_synthesis_reference
     assert 'kind="external_synthesis_packet"' in external_synthesis_reference
+    assert "`run_external_synthesis`" in external_synthesis_reference
     assert "`save_external_synthesis_result`" in external_synthesis_reference
     assert "`audit_external_synthesis_result`" in external_synthesis_reference
-    assert "single shared Chrome resource" in external_synthesis_reference
+    assert "PDF acquisition" in external_synthesis_reference
     assert "writing_profiles/experimental_protocol.md" in paper_writing_reference
     assert "writing_profiles/literature_review.md" in paper_writing_reference
     assert "writing_profiles/experiment_report.md" in paper_writing_reference

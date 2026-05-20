@@ -59,6 +59,7 @@ def test_server_registers_expected_tools() -> None:
         "read_evidence_pack",
         "read_paper_asset",
         "read_saved_paper",
+        "run_external_synthesis",
         "save_external_synthesis_result",
         "save_paper_to_zotero",
         "save_research_artifact",

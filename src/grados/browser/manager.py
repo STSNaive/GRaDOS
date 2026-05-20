@@ -170,12 +170,15 @@ async def launch_browser_session(
     viewport: dict[str, int],
     user_data_dir: str | None = None,
     headless: bool = False,
+    extra_args: list[str] | None = None,
 ) -> BrowserSession:
     """Launch a Patchright browser session (persistent or ephemeral)."""
     from patchright.async_api import async_playwright
 
     pw = await async_playwright().start()
     args = ["--disable-blink-features=AutomationControlled", "--new-window"]
+    if extra_args:
+        args = list(dict.fromkeys([*args, *extra_args]))
 
     try:
         if user_data_dir:
