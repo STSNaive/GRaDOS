@@ -103,6 +103,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed CI and PyPI publishing preflight to enforce `mypy` strict-mode checks alongside Ruff, pytest, native-TLS package builds, and local wheel smoke installs before release publication.
 
 ### Fixed
+- Fixed Chroma chunk cleanup during paper reindexing to delete by `safe_doi` metadata through the timeout-guarded path and fail visibly instead of leaving stale chunks after a silent cleanup failure.
+- Fixed local PDF parse/import reads to enforce `extract.security.max_local_pdf_bytes` at the actual read boundary, preventing a file that changes after `stat()` from being buffered past the configured ceiling.
+- Fixed `grados external-synthesis setup-browser --keep-open` so the ChatGPT private profile lock is held until the kept-open setup browser closes, preventing live doctor/synthesis runs from racing the same browser profile.
 - Fixed Bandit high-severity findings for non-security SHA1 fingerprints by explicitly marking those digest uses as `usedforsecurity=False`.
 - Fixed saved-paper selector handling so caller-provided `safe_doi` values and `grados://papers/...` suffixes are treated as opaque IDs, validated against a filename-token allowlist, and resolved under the canonical `papers/` directory before reading.
 - Fixed Springer metadata-only fetches so a successful Meta API record is preserved as `metadata_only` with metadata and asset hints when JATS, HTML, and PDF full text are unavailable.
@@ -123,6 +126,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Removed unused `extract.sci_hub.auto_update_mirror` and `mirror_url_file` config fields; the current `scihub` runtime uses ordered `endpoints` with `fallback_mirror` retained for legacy configs.
 
 ### Tests
+- Added regression coverage for metadata-filtered Chroma chunk deletion, bounded local PDF reads, and `setup-browser --keep-open` lock lifetime.
 - Added plugin-manifest drift coverage for the evidence-grounded writing workflow reference, writing profiles, domain profile, and Codex plugin writing prompts.
 - Added regression coverage for idempotent extraction reuse with `force_refresh`, uncapped `indepth` materialization across more than eight candidates, topic-to-packet external synthesis preparation, default save-and-audit behavior, and optional pack-audit suggestions.
 - Added regression coverage for canonical block manifests, evidence-pack schema/hash verification, current-valid failures after canonical Markdown edits, block relocation detection, and pack-scoped audits.

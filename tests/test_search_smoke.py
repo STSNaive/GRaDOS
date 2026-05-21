@@ -828,7 +828,7 @@ def test_index_paper_writes_real_embeddings_and_section_metadata(tmp_path: Path,
         def get(self, where=None):  # noqa: ANN001
             return {"ids": []}
 
-        def delete(self, ids):  # noqa: ANN001
+        def delete(self, **kwargs):  # noqa: ANN003
             return None
 
         def upsert(self, **kwargs) -> None:
@@ -884,6 +884,50 @@ def test_index_paper_writes_real_embeddings_and_section_metadata(tmp_path: Path,
     stats = get_index_stats(tmp_path / "chroma", indexing_config=IndexingConfig())
     assert stats.index_manifest_present is True
     assert stats.embedding_model == "microsoft/harrier-oss-v1-270m"
+
+
+def test_index_paper_does_not_update_docs_when_chunk_cleanup_fails(tmp_path: Path, monkeypatch) -> None:
+    import grados.storage.vector as vector
+
+    class FakeBackend:
+        provider = "harrier"
+        model_id = "microsoft/harrier-oss-v1-270m"
+        query_prompt_mode = "prompt_name:web_search_query"
+        embedding_dim = 4
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0] * 4 for _ in texts]
+
+    class FakeDocs:
+        def __init__(self) -> None:
+            self.upsert_called = False
+
+        def upsert(self, **kwargs) -> None:
+            _ = kwargs
+            self.upsert_called = True
+
+    class FakeChunks:
+        def delete(self, **kwargs):  # noqa: ANN003
+            raise RuntimeError("cleanup failed")
+
+    fake_docs = FakeDocs()
+
+    monkeypatch.setattr(vector, "_get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(vector, "_get_docs_collection", lambda client: fake_docs)
+    monkeypatch.setattr(vector, "_get_chunks_collection", lambda client: FakeChunks())
+    monkeypatch.setattr(vector, "load_embedding_backend", lambda config=None: FakeBackend())
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        index_paper(
+            chroma_dir=tmp_path / "chroma",
+            doi="10.1234/demo",
+            safe_doi="10_1234_demo",
+            title="Demo Paper",
+            markdown="## Abstract\n\nComposite vibration damping evidence.",
+            indexing_config=IndexingConfig(),
+        )
+
+    assert fake_docs.upsert_called is False
 
 
 def test_index_all_papers_preserves_frontmatter_corpus_metadata(tmp_path: Path, monkeypatch) -> None:
@@ -1119,13 +1163,29 @@ def test_resolve_papers_dir_handles_standard_and_fallback_layouts(tmp_path: Path
     assert resolve_papers_dir(fallback) == tmp_path / "custom" / "papers"
 
 
-def test_delete_paper_chunks_logs_failures(caplog) -> None:
+def test_delete_paper_chunks_deletes_by_metadata_filter() -> None:
     class FakeCollection:
-        def get(self, **kwargs):  # noqa: ANN003
+        def __init__(self) -> None:
+            self.deleted_where: dict[str, str] | None = None
+
+        def delete(self, **kwargs):  # noqa: ANN003
+            self.deleted_where = kwargs.get("where")
+
+    collection = FakeCollection()
+
+    delete_paper_chunks(collection, "10_1234_demo")
+
+    assert collection.deleted_where == {"safe_doi": "10_1234_demo"}
+
+
+def test_delete_paper_chunks_logs_and_raises_failures(caplog) -> None:
+    class FakeCollection:
+        def delete(self, **kwargs):  # noqa: ANN003
             raise RuntimeError("db unavailable")
 
     with caplog.at_level(logging.ERROR):
-        delete_paper_chunks(FakeCollection(), "10_1234_demo")
+        with pytest.raises(RuntimeError, match="db unavailable"):
+            delete_paper_chunks(FakeCollection(), "10_1234_demo")
 
     assert "Failed to delete Chroma chunks for 10_1234_demo" in caplog.text
 
@@ -1320,7 +1380,7 @@ def test_index_and_search_share_cached_embedding_backend(tmp_path: Path, monkeyp
         def get(self, where=None):  # noqa: ANN001
             return {"ids": []}
 
-        def delete(self, ids):  # noqa: ANN001
+        def delete(self, **kwargs):  # noqa: ANN003
             return None
 
         def upsert(self, **kwargs) -> None:

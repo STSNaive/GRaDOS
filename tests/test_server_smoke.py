@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1288,6 +1289,40 @@ def test_parse_pdf_file_rejects_oversized_local_pdf(tmp_path: Path, monkeypatch)
 
     pdf_path = tmp_path / "too-large.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n" + b"x" * 32)
+
+    result = asyncio.run(parse_pdf_file(file_path=str(pdf_path)))
+
+    assert "PDF file is too large" in result
+    assert "Local PDF" in result
+
+
+def test_parse_pdf_file_rejects_local_pdf_that_exceeds_limit_during_read(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    config = generate_default_config(paths)
+    config["extract"]["security"]["max_local_pdf_bytes"] = 12
+    paths.config_file.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+
+    pdf_path = tmp_path / "grows-during-read.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n" + b"x" * 32)
+    resolved_pdf_path = pdf_path.resolve()
+    original_stat = Path.stat
+
+    def fake_stat(self: Path, *args, **kwargs) -> os.stat_result:  # noqa: ANN002, ANN003
+        file_stat = original_stat(self, *args, **kwargs)
+        if self == resolved_pdf_path:
+            values = list(file_stat)
+            values[6] = 8
+            return os.stat_result(values)
+        return file_stat
+
+    def forbidden_read_bytes(self: Path) -> bytes:
+        raise AssertionError("parse_pdf_file should use bounded stream reads")
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(Path, "read_bytes", forbidden_read_bytes)
 
     result = asyncio.run(parse_pdf_file(file_path=str(pdf_path)))
 

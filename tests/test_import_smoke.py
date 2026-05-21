@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from grados.config import GRaDOSPaths, IndexingConfig, generate_default_config
@@ -139,6 +140,54 @@ def test_import_local_pdf_library_rejects_oversized_pdf(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     (source / "too-large.pdf").write_bytes(b"%PDF-1.4\n" + b"x" * 32)
+
+    result = asyncio.run(
+        import_local_pdf_library(
+            source_path=source,
+            paths=paths,
+            copy_to_library=False,
+        )
+    )
+
+    assert result.scanned == 1
+    assert result.imported == 0
+    assert result.failed == 1
+    assert result.items[0].status == "failed"
+    assert result.items[0].detail == "file_too_large"
+    assert "Local PDF" in result.items[0].warnings[0]
+
+
+def test_import_local_pdf_library_rejects_pdf_that_exceeds_limit_during_read(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    config = generate_default_config(paths)
+    config["extract"]["security"]["max_local_pdf_bytes"] = 12
+    paths.config_file.write_text(json.dumps(config), encoding="utf-8")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    pdf_path = source / "grows-during-read.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n" + b"x" * 32)
+    resolved_pdf_path = pdf_path.resolve()
+    original_stat = Path.stat
+
+    def fake_stat(self: Path, *args, **kwargs) -> os.stat_result:  # noqa: ANN002, ANN003
+        file_stat = original_stat(self, *args, **kwargs)
+        if self == resolved_pdf_path:
+            values = list(file_stat)
+            values[6] = 8
+            return os.stat_result(values)
+        return file_stat
+
+    def forbidden_read_bytes(self: Path) -> bytes:
+        raise AssertionError("import_local_pdf_library should use bounded stream reads")
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(Path, "read_bytes", forbidden_read_bytes)
 
     result = asyncio.run(
         import_local_pdf_library(

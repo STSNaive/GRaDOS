@@ -19,6 +19,7 @@ from pydantic import Field
 
 from grados.config import IndexingConfig
 from grados.http_limits import SizeLimitError, ensure_byte_limit
+from grados.local_files import LocalFileReadError, read_bounded_local_file
 from grados.publisher.common import PublisherMetadata, normalize_publisher_metadata, safe_doi_filename
 from grados.server_tools.shared import (
     format_paper_index_resource,
@@ -1621,15 +1622,16 @@ async def parse_pdf_file(
 
     paths, config = get_paths_and_config()
     try:
-        ensure_byte_limit(
-            path.stat().st_size,
+        pdf_buffer = read_bounded_local_file(
+            path,
             max_bytes=config.extract.security.max_local_pdf_bytes,
             label=f"Local PDF {path}",
         )
     except SizeLimitError as exc:
         return f"PDF file is too large: {exc}"
+    except LocalFileReadError as exc:
+        return f"Could not read PDF file: {exc}"
 
-    pdf_buffer = path.read_bytes()
     if pdf_buffer[:5] != b"%PDF-":
         return f"Not a valid PDF file: {file_path}"
     pdf_hash = hashlib.sha256(pdf_buffer).hexdigest()

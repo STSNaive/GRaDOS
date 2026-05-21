@@ -324,6 +324,8 @@ def index_paper(
     doc_embedding = backend.embed_documents([doc_summary or body[:DOC_SUMMARY_MAX_CHARS]])[0]
     embedding_dim = len(doc_embedding)
 
+    delete_paper_chunks(chunks_collection, safe_doi)
+
     docs_collection.upsert(
         ids=[safe_doi],
         documents=[body],
@@ -357,8 +359,6 @@ def index_paper(
         ],
         embeddings=[doc_embedding],
     )
-
-    delete_paper_chunks(chunks_collection, safe_doi)
 
     chunks = _chunk_text(body, config, fallback_title=title)
     if chunks:

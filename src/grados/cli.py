@@ -842,6 +842,11 @@ def external_synthesis_setup_browser(timeout: float, keep_open: bool) -> None:
 
     paths = GRaDOSPaths()
     config = load_config(paths)
+    if keep_open:
+        console.print(
+            "[yellow]Setup browser will keep this command running until you close the browser; "
+            "the private profile lock stays active while it is open.[/yellow]"
+        )
     result = asyncio.run(
         open_chatgpt_login_setup(
             paths,
@@ -855,10 +860,7 @@ def external_synthesis_setup_browser(timeout: float, keep_open: bool) -> None:
     else:
         console.print(f"[yellow]ChatGPT login setup incomplete:[/yellow] {result.get('error')}")
     if keep_open:
-        console.print(
-            "[yellow]Close the setup browser before running external synthesis; "
-            "it uses the same private profile.[/yellow]"
-        )
+        console.print("[green]Setup browser closed; ChatGPT private profile lock released.[/green]")
     console.print(f"Profile: {paths.chatgpt_browser_profile}")
 
 

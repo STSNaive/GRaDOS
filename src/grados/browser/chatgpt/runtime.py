@@ -250,13 +250,14 @@ async def open_chatgpt_login_setup(
             page = browser_session.root_page
             await page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=60_000)
             result = await wait_for_chatgpt_login(page, timeout_seconds=timeout_seconds)
+            if keep_open:
+                await _wait_for_browser_session_close(browser_session)
             return {**result, "profile": str(paths.chatgpt_browser_profile)}
         finally:
-            if not keep_open:
-                try:
-                    await browser_session.cleanup()
-                except Exception:
-                    pass
+            try:
+                await browser_session.cleanup()
+            except Exception:
+                pass
 
 
 async def check_chatgpt_login(
@@ -277,6 +278,19 @@ async def check_chatgpt_login(
             return {**result, "profile": str(paths.chatgpt_browser_profile)}
         finally:
             await browser_session.cleanup()
+
+
+async def _wait_for_browser_session_close(browser_session: Any) -> None:
+    context = getattr(browser_session, "context", None)
+    wait_for_event = getattr(context, "wait_for_event", None)
+    if callable(wait_for_event):
+        await wait_for_event("close")
+        return
+
+    page = getattr(browser_session, "root_page", None)
+    wait_for_page_event = getattr(page, "wait_for_event", None)
+    if callable(wait_for_page_event):
+        await wait_for_page_event("close")
 
 
 async def _launch_private_profile(paths: GRaDOSPaths, browser_config: HeadlessBrowserConfig) -> Any:

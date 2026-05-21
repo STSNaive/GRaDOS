@@ -240,8 +240,7 @@ def filter_query_result(result: dict[str, Any], positions: list[int]) -> dict[st
 def delete_paper_chunks(collection: Any, safe_doi: str) -> None:
     """Remove all chunk rows for one paper."""
     try:
-        existing = collection.get(where={"safe_doi": safe_doi})
-        if existing and existing["ids"]:
-            collection.delete(ids=existing["ids"])
+        _run_with_timeout("delete()", lambda: collection.delete(where={"safe_doi": safe_doi}))
     except Exception:
         logger.exception("Failed to delete Chroma chunks for %s", safe_doi)
+        raise

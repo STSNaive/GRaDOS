@@ -10,7 +10,8 @@ from pathlib import Path
 from grados.config import GRaDOSPaths, load_config
 from grados.extract.parse import parse_pdf_with_diagnostics
 from grados.extract.qa import is_valid_paper_content
-from grados.http_limits import SizeLimitError, ensure_byte_limit
+from grados.http_limits import SizeLimitError
+from grados.local_files import LocalFileReadError, read_bounded_local_file
 from grados.publisher.common import normalize_doi, safe_doi_filename
 from grados.storage.assets import AssetLimits
 from grados.storage.papers import list_saved_papers
@@ -70,8 +71,8 @@ async def import_local_pdf_library(
     for pdf_file in pdf_files:
         result.scanned += 1
         try:
-            ensure_byte_limit(
-                pdf_file.stat().st_size,
+            pdf_bytes = read_bounded_local_file(
+                pdf_file,
                 max_bytes=config.extract.security.max_local_pdf_bytes,
                 label=f"Local PDF {pdf_file}",
             )
@@ -87,8 +88,18 @@ async def import_local_pdf_library(
             )
             result.warnings.append(f"{pdf_file.name}: {exc}")
             continue
-
-        pdf_bytes = pdf_file.read_bytes()
+        except LocalFileReadError as exc:
+            result.failed += 1
+            result.items.append(
+                ImportItemResult(
+                    source_path=str(pdf_file),
+                    status="failed",
+                    detail=exc.code,
+                    warnings=[str(exc)],
+                )
+            )
+            result.warnings.append(f"{pdf_file.name}: {exc}")
+            continue
 
         if pdf_bytes[:5] != b"%PDF-":
             result.failed += 1

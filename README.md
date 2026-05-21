@@ -308,7 +308,7 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 | `grados browser doctor [--live --doi DOI]` | Check publisher browser prerequisites; `--live` runs a PDF-acquisition probe without saving `papers/*.md` |
 | `grados external-synthesis is-enabled --quiet` | Predicate gate for the optional external synthesis protocol; exit 0 means enabled, exit 1 means disabled |
 | `grados external-synthesis status --json` | Show the same external synthesis gate plus config path details as structured diagnostics |
-| `grados external-synthesis setup-browser [--keep-open]` | Open the private GRaDOS ChatGPT profile for first-time ChatGPT login; closes after login by default |
+| `grados external-synthesis setup-browser [--keep-open]` | Open the private GRaDOS ChatGPT profile for first-time ChatGPT login; closes after login by default, while `--keep-open` keeps the command and profile lock alive until the setup browser closes |
 | `grados external-synthesis doctor [--live]` | Check external synthesis browser prerequisites; `--live` also probes ChatGPT login |
 | `grados import-pdfs --from /path/to/papers --recursive` | Import an existing local PDF library into the canonical paper store |
 | `grados eval-retrieval --fixture cases.jsonl` | Evaluate saved-paper retrieval against local golden cases using dense, FTS/BM25, exact lookup, and RRF unless `--dense-only` is set |
@@ -361,7 +361,7 @@ Root selection priority:
 1. `GRADOS_HOME`
 2. `~/GRaDOS`
 
-Local PDF tools such as `parse_pdf_file` and `import_local_pdf_library` read host file paths from a trusted local MCP/CLI session and enforce `extract.security.max_local_pdf_bytes` before loading the file.
+Local PDF tools such as `parse_pdf_file` and `import_local_pdf_library` read host file paths from a trusted local MCP/CLI session and enforce `extract.security.max_local_pdf_bytes` before and while loading the file.
 
 ### API Keys 🔑
 

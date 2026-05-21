@@ -308,7 +308,7 @@ cp -R skills/grados "<skills-root>/"
 | `grados browser doctor [--live --doi DOI]` | 检查 publisher browser 前置条件；`--live` 会跑一次 PDF acquisition probe，但不会保存 `papers/*.md` |
 | `grados external-synthesis is-enabled --quiet` | 可选外部综合协议的 predicate gate；exit 0 表示启用，exit 1 表示关闭 |
 | `grados external-synthesis status --json` | 以结构化诊断形式显示同一个外部综合 gate 和 config 路径细节 |
-| `grados external-synthesis setup-browser [--keep-open]` | 打开 GRaDOS 私有 ChatGPT profile，用于首次登录 ChatGPT；默认检测到登录后关闭 |
+| `grados external-synthesis setup-browser [--keep-open]` | 打开 GRaDOS 私有 ChatGPT profile，用于首次登录 ChatGPT；默认检测到登录后关闭，`--keep-open` 会让命令和 profile lock 保持到 setup browser 关闭 |
 | `grados external-synthesis doctor [--live]` | 检查 external synthesis 浏览器前置条件；`--live` 会额外探测 ChatGPT 登录状态 |
 | `grados import-pdfs --from /path/to/papers --recursive` | 把已有 PDF 文件夹导入 canonical 论文库 |
 | `grados eval-retrieval --fixture cases.jsonl` | 用本地 golden cases 评测 saved-paper retrieval；默认跑 dense、FTS/BM25、exact lookup 和 RRF，可用 `--dense-only` 调试旧模式 |
@@ -361,7 +361,7 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 1. `GRADOS_HOME`
 2. `~/GRaDOS`
 
-`parse_pdf_file` 和 `import_local_pdf_library` 这类本地 PDF 工具会从可信本地 MCP/CLI 会话读取主机文件路径，并在真正加载文件前先检查 `extract.security.max_local_pdf_bytes`。
+`parse_pdf_file` 和 `import_local_pdf_library` 这类本地 PDF 工具会从可信本地 MCP/CLI 会话读取主机文件路径，并在加载前和加载过程中执行 `extract.security.max_local_pdf_bytes` 限制。
 
 ### API Keys 🔑
 
