@@ -25,10 +25,20 @@ class FakeEmbeddingBackend:
         return [float(len(query))]
 
 
+class CountingEmbeddingBackend(FakeEmbeddingBackend):
+    def __init__(self) -> None:
+        self.embedded_documents: list[list[str]] = []
+
+    def embed_documents(self, documents):  # noqa: ANN001
+        self.embedded_documents.append(list(documents))
+        return super().embed_documents(documents)
+
+
 class FakeRemoteMetadataCollection:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, object]] = {}
         self.get_id_calls: list[list[str]] = []
+        self.update_calls: list[list[str]] = []
 
     def upsert(self, *, ids, documents, metadatas, embeddings) -> None:  # noqa: ANN001, ANN003
         for row_id, document, metadata, embedding in zip(ids, documents, metadatas, embeddings, strict=False):
@@ -37,6 +47,17 @@ class FakeRemoteMetadataCollection:
                 "metadata": metadata,
                 "embedding": embedding,
             }
+
+    def update(self, *, ids, metadatas=None, documents=None, embeddings=None) -> None:  # noqa: ANN001, ANN003
+        self.update_calls.append([str(row_id) for row_id in ids])
+        for index, row_id in enumerate(ids):
+            row = self.rows[str(row_id)]
+            if metadatas is not None:
+                row["metadata"] = metadatas[index]
+            if documents is not None:
+                row["document"] = documents[index]
+            if embeddings is not None:
+                row["embedding"] = embeddings[index]
 
     def get(self, *, ids=None, limit=None, where=None, include=None):  # noqa: ANN001, ANN003
         items = list(self.rows.items())
@@ -213,12 +234,13 @@ def test_upsert_remote_metadata_deduplicates_lookup_ids_before_fetch(tmp_path: P
     import grados.storage.remote_metadata as remote_metadata
 
     collection = FakeRemoteMetadataCollection()
+    backend = CountingEmbeddingBackend()
 
     monkeypatch.setattr(remote_metadata, "get_client", lambda chroma_dir: object())
     monkeypatch.setattr(remote_metadata, "get_remote_metadata_collection", lambda client: collection)
-    monkeypatch.setattr(remote_metadata, "load_embedding_backend", lambda config=None: FakeEmbeddingBackend())
+    monkeypatch.setattr(remote_metadata, "load_embedding_backend", lambda config=None: backend)
 
-    upsert_remote_metadata(
+    inserted = upsert_remote_metadata(
         tmp_path / "chroma",
         [
             PaperMetadata(
@@ -242,6 +264,47 @@ def test_upsert_remote_metadata_deduplicates_lookup_ids_before_fetch(tmp_path: P
     lookup_ids = collection.get_id_calls[0]
     assert lookup_ids == list(dict.fromkeys(lookup_ids))
     assert lookup_ids.count(safe_doi_filename("10.1234/demo")) == 1
+    assert inserted == 1
+    assert len(collection.rows) == 1
+    assert len(backend.embedded_documents) == 1
+    assert len(backend.embedded_documents[0]) == 1
+
+
+def test_upsert_remote_metadata_updates_last_seen_without_reembedding(tmp_path: Path, monkeypatch) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+
+    collection = FakeRemoteMetadataCollection()
+    backend = CountingEmbeddingBackend()
+    times = iter(["2026-01-01T00:00:00+00:00", "2026-01-02T00:00:00+00:00"])
+
+    monkeypatch.setattr(remote_metadata, "get_client", lambda chroma_dir: object())
+    monkeypatch.setattr(remote_metadata, "get_remote_metadata_collection", lambda client: collection)
+    monkeypatch.setattr(remote_metadata, "load_embedding_backend", lambda config=None: backend)
+    monkeypatch.setattr(remote_metadata, "_now_iso", lambda: next(times))
+
+    record = PaperMetadata(
+        title="Composite Damping Study",
+        abstract="Stable abstract.",
+        doi="10.1234/demo",
+        year="2026",
+        source="Crossref",
+    )
+
+    inserted = upsert_remote_metadata(tmp_path / "chroma", [record])
+    original = get_remote_metadata_by_doi(tmp_path / "chroma", "10.1234/demo")
+    rediscovered = upsert_remote_metadata(tmp_path / "chroma", [record])
+    refreshed = get_remote_metadata_by_doi(tmp_path / "chroma", "10.1234/demo")
+
+    assert inserted == 1
+    assert rediscovered == 1
+    assert original is not None
+    assert refreshed is not None
+    assert refreshed.first_seen_at == original.first_seen_at
+    assert refreshed.last_seen_at == "2026-01-02T00:00:00+00:00"
+    assert refreshed.updated_at == original.updated_at
+    assert len(collection.rows) == 1
+    assert len(collection.update_calls) == 1
+    assert len(backend.embedded_documents) == 1
 
 
 def test_remote_metadata_doi_lookup_rejects_legacy_id_collision(tmp_path: Path, monkeypatch) -> None:

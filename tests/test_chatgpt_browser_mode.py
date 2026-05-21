@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -47,6 +48,7 @@ from grados.browser.chatgpt.thinking import (
     _oracle_thinking_expression,
     rank_thinking_label,
 )
+from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 
 
 def test_chatgpt_profile_initialization_uses_private_profile_markers(tmp_path: Path) -> None:
@@ -76,6 +78,137 @@ def test_profile_lock_uses_oracle_lock_file(tmp_path: Path) -> None:
     asyncio.run(run())
 
     assert not (profile / ORACLE_PROFILE_LOCK_FILENAME).exists()
+
+
+def test_login_setup_uses_profile_lock_and_closes_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from grados.browser.chatgpt import runtime
+
+    paths = GRaDOSPaths(tmp_path)
+    events: list[str] = []
+
+    class FakeLock:
+        def __init__(self, purpose: str, session_id: str) -> None:
+            self.purpose = purpose
+            self.session_id = session_id
+
+        async def __aenter__(self) -> FakeLock:
+            events.append(f"enter:{self.purpose}:{bool(self.session_id)}")
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            events.append(f"exit:{self.purpose}")
+
+    class FakePage:
+        async def goto(self, url: str, **kwargs: Any) -> None:
+            events.append(f"goto:{url}")
+
+    class FakeSession:
+        root_page = FakePage()
+
+        async def cleanup(self) -> None:
+            events.append("cleanup")
+
+    def fake_lock(profile_dir: Path, *, purpose: str, session_id: str) -> FakeLock:
+        assert profile_dir == paths.chatgpt_browser_profile
+        return FakeLock(purpose, session_id)
+
+    async def fake_launch(paths_arg: GRaDOSPaths, browser_config: HeadlessBrowserConfig) -> FakeSession:
+        assert paths_arg == paths
+        assert isinstance(browser_config, HeadlessBrowserConfig)
+        events.append("launch")
+        return FakeSession()
+
+    async def fake_wait(page: Any, *, timeout_seconds: float) -> dict[str, object]:
+        assert isinstance(page, FakePage)
+        assert timeout_seconds == 1.0
+        events.append("wait")
+        return {"ok": True}
+
+    monkeypatch.setattr(runtime, "chatgpt_profile_lock", fake_lock)
+    monkeypatch.setattr(runtime, "_launch_private_profile", fake_launch)
+    monkeypatch.setattr(runtime, "wait_for_chatgpt_login", fake_wait)
+
+    result = asyncio.run(
+        runtime.open_chatgpt_login_setup(
+            paths,
+            HeadlessBrowserConfig(),
+            timeout_seconds=1.0,
+            keep_open=False,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["profile"] == str(paths.chatgpt_browser_profile)
+    assert events == [
+        "enter:external_synthesis_setup:True",
+        "launch",
+        "goto:https://chatgpt.com/",
+        "wait",
+        "cleanup",
+        "exit:external_synthesis_setup",
+    ]
+
+
+def test_live_login_check_uses_profile_lock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from grados.browser.chatgpt import runtime
+
+    paths = GRaDOSPaths(tmp_path)
+    (paths.chatgpt_browser_profile / "Default").mkdir(parents=True)
+    events: list[str] = []
+
+    class FakeLock:
+        def __init__(self, purpose: str, session_id: str) -> None:
+            self.purpose = purpose
+            self.session_id = session_id
+
+        async def __aenter__(self) -> FakeLock:
+            events.append(f"enter:{self.purpose}:{bool(self.session_id)}")
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            events.append(f"exit:{self.purpose}")
+
+    class FakePage:
+        async def goto(self, url: str, **kwargs: Any) -> None:
+            events.append(f"goto:{url}")
+
+    class FakeSession:
+        root_page = FakePage()
+
+        async def cleanup(self) -> None:
+            events.append("cleanup")
+
+    def fake_lock(profile_dir: Path, *, purpose: str, session_id: str) -> FakeLock:
+        assert profile_dir == paths.chatgpt_browser_profile
+        return FakeLock(purpose, session_id)
+
+    async def fake_launch(paths_arg: GRaDOSPaths, browser_config: HeadlessBrowserConfig) -> FakeSession:
+        assert paths_arg == paths
+        assert isinstance(browser_config, HeadlessBrowserConfig)
+        events.append("launch")
+        return FakeSession()
+
+    async def fake_probe(page: Any) -> dict[str, object]:
+        assert isinstance(page, FakePage)
+        events.append("probe")
+        return {"ok": True}
+
+    monkeypatch.setattr(runtime, "chatgpt_profile_lock", fake_lock)
+    monkeypatch.setattr(runtime, "_launch_private_profile", fake_launch)
+    monkeypatch.setattr(runtime, "probe_chatgpt_login", fake_probe)
+
+    result = asyncio.run(runtime.check_chatgpt_login(paths, HeadlessBrowserConfig()))
+
+    assert result["ok"] is True
+    assert result["profile"] == str(paths.chatgpt_browser_profile)
+    assert events == [
+        "enter:external_synthesis_doctor:True",
+        "launch",
+        "goto:https://chatgpt.com/",
+        "probe",
+        "cleanup",
+        "exit:external_synthesis_doctor",
+    ]
 
 
 def test_session_store_rejects_path_escape_ids(tmp_path: Path) -> None:

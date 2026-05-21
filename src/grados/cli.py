@@ -830,8 +830,13 @@ def external_synthesis_doctor(live: bool) -> None:
 
 @external_synthesis_group.command("setup-browser")
 @click.option("--timeout", default=600.0, show_default=True, help="Seconds to wait for login.")
-@click.option("--close-after-login", is_flag=True, help="Close the setup browser after login is detected.")
-def external_synthesis_setup_browser(timeout: float, close_after_login: bool) -> None:
+@click.option(
+    "--keep-open/--close-after-login",
+    default=False,
+    show_default=True,
+    help="Keep or close the setup browser after login is detected.",
+)
+def external_synthesis_setup_browser(timeout: float, keep_open: bool) -> None:
     """Open the private ChatGPT browser profile for first-time login."""
     from grados.browser.chatgpt.runtime import open_chatgpt_login_setup
 
@@ -842,13 +847,18 @@ def external_synthesis_setup_browser(timeout: float, close_after_login: bool) ->
             paths,
             config.extract.headless_browser,
             timeout_seconds=timeout,
-            keep_open=not close_after_login,
+            keep_open=keep_open,
         )
     )
     if result.get("ok"):
         console.print("[green]ChatGPT login detected in GRaDOS private profile.[/green]")
     else:
         console.print(f"[yellow]ChatGPT login setup incomplete:[/yellow] {result.get('error')}")
+    if keep_open:
+        console.print(
+            "[yellow]Close the setup browser before running external synthesis; "
+            "it uses the same private profile.[/yellow]"
+        )
     console.print(f"Profile: {paths.chatgpt_browser_profile}")
 
 

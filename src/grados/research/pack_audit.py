@@ -6,6 +6,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import asdict
+from heapq import nlargest
 from pathlib import Path
 from typing import Any
 
@@ -55,13 +56,15 @@ def _tokens(text: str) -> set[str]:
     }
 
 
-def _overlap_score(claim_text: str, evidence_text: str) -> float:
-    claim_tokens = _tokens(claim_text)
-    evidence_tokens = _tokens(evidence_text)
+def _overlap_score_tokens(claim_tokens: set[str], evidence_tokens: set[str]) -> float:
     if not claim_tokens or not evidence_tokens:
         return 0.0
     overlap = len(claim_tokens & evidence_tokens)
     return overlap / math.sqrt(len(claim_tokens) * len(evidence_tokens))
+
+
+def _overlap_score(claim_text: str, evidence_text: str) -> float:
+    return _overlap_score_tokens(_tokens(claim_text), _tokens(evidence_text))
 
 
 def _citation_matches_item(marker: Any, item: EvidencePackItem) -> bool:
@@ -167,9 +170,21 @@ def _access_verdict(reason: str) -> dict[str, Any]:
     }
 
 
-def _rank_evidence(claim_text: str, items: list[EvidencePackItem]) -> list[tuple[EvidencePackItem, float]]:
-    ranked = [(item, _overlap_score(claim_text, item.text)) for item in items]
-    return [(item, score) for item, score in sorted(ranked, key=lambda pair: pair[1], reverse=True) if score > 0]
+def _rank_evidence(
+    claim_text: str,
+    items: list[EvidencePackItem],
+    item_tokens: list[set[str]] | None = None,
+    *,
+    limit: int = 5,
+) -> list[tuple[EvidencePackItem, float]]:
+    claim_tokens = _tokens(claim_text)
+    tokens_by_item = item_tokens or [_tokens(item.text) for item in items]
+    scored = [
+        (_overlap_score_tokens(claim_tokens, tokens), -index, item)
+        for index, (item, tokens) in enumerate(zip(items, tokens_by_item, strict=False))
+    ]
+    top = nlargest(max(1, limit), scored, key=lambda entry: (entry[0], entry[1]))
+    return [(item, score) for score, _index, item in top if score > 0]
 
 
 def _load_pack(db_path: Path, pack_id: str) -> tuple[EvidencePack | None, dict[str, Any]]:
@@ -213,11 +228,12 @@ def audit_answer_against_pack(
     claims = _split_claims(draft)
     audited_claims: list[dict[str, Any]] = []
     verdict_counts: Counter[str] = Counter()
+    item_tokens = [_tokens(item.text) for item in pack.evidence_items]
 
     for index, claim in enumerate(claims, 1):
         query_text = _strip_citations(claim)
         markers = _extract_citation_markers(claim, citation_style)
-        ranked = _rank_evidence(query_text, pack.evidence_items)
+        ranked = _rank_evidence(query_text, pack.evidence_items, item_tokens)
         if strict and not pack_is_current:
             verdict_payload = _access_verdict("stale_pack")
         else:

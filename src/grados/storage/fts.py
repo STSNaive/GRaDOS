@@ -65,11 +65,12 @@ def ensure_fts_index(
 ) -> FTSIndexStats:
     db_path = fts_index_path(chroma_dir)
     snapshot = _papers_snapshot(papers_dir)
-    if not force:
-        existing = get_fts_index_stats(db_path=db_path, papers_dir=papers_dir)
-        if existing.current and existing.snapshot == snapshot:
-            return existing
-    return rebuild_fts_index(papers_dir=papers_dir, db_path=db_path)
+    if force:
+        return rebuild_fts_index(papers_dir=papers_dir, db_path=db_path)
+    existing = get_fts_index_stats(db_path=db_path, papers_dir=papers_dir)
+    if existing.current and existing.snapshot == snapshot:
+        return existing
+    return refresh_fts_index(papers_dir=papers_dir, db_path=db_path, snapshot=snapshot)
 
 
 def get_fts_index_stats(*, db_path: Path, papers_dir: Path | None = None) -> FTSIndexStats:
@@ -121,6 +122,52 @@ def rebuild_fts_index(*, papers_dir: Path, db_path: Path) -> FTSIndexStats:
         _set_meta(conn, "block_count", str(block_count))
         _set_meta(conn, "indexed_at", datetime.now(UTC).isoformat())
         conn.commit()
+
+    return FTSIndexStats(
+        paper_count=paper_count,
+        block_count=block_count,
+        db_path=db_path,
+        current=True,
+        snapshot=snapshot,
+    )
+
+
+def refresh_fts_index(*, papers_dir: Path, db_path: Path, snapshot: str | None = None) -> FTSIndexStats:
+    """Incrementally refresh stale FTS rows for changed canonical markdown files."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = snapshot or _papers_snapshot(papers_dir)
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            _create_schema(conn)
+
+            current_files = _paper_files_by_safe_doi(papers_dir)
+            indexed_stats = _indexed_file_stats(conn)
+
+            for safe_doi in sorted(set(indexed_stats) - set(current_files)):
+                _delete_indexed_paper(conn, safe_doi)
+
+            for safe_doi, md_file in sorted(current_files.items()):
+                try:
+                    stat = md_file.stat()
+                except OSError:
+                    continue
+                if indexed_stats.get(safe_doi) == (stat.st_mtime_ns, stat.st_size):
+                    continue
+                _delete_indexed_paper(conn, safe_doi)
+                _index_markdown_file(conn, md_file)
+
+            paper_count = _count_papers(conn)
+            block_count = _count_blocks(conn)
+            _set_meta(conn, "snapshot", snapshot)
+            _set_meta(conn, "paper_count", str(paper_count))
+            _set_meta(conn, "block_count", str(block_count))
+            _set_meta(conn, "indexed_at", datetime.now(UTC).isoformat())
+            conn.commit()
+    except sqlite3.Error:
+        return rebuild_fts_index(papers_dir=papers_dir, db_path=db_path)
 
     return FTSIndexStats(
         paper_count=paper_count,
@@ -593,6 +640,37 @@ def _papers_snapshot(papers_dir: Path | None) -> str:
             continue
         rows.append(f"{md_file.name}:{stat.st_mtime_ns}:{stat.st_size}")
     return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
+
+
+def _paper_files_by_safe_doi(papers_dir: Path | None) -> dict[str, Path]:
+    if papers_dir is None or not papers_dir.is_dir():
+        return {}
+    return {md_file.stem: md_file for md_file in papers_dir.glob("*.md")}
+
+
+def _indexed_file_stats(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
+    rows = conn.execute("SELECT safe_doi, file_mtime_ns, file_size FROM papers").fetchall()
+    return {str(row[0]): (int(row[1]), int(row[2])) for row in rows}
+
+
+def _delete_indexed_paper(conn: sqlite3.Connection, safe_doi: str) -> None:
+    rowids = [
+        int(row[0])
+        for row in conn.execute("SELECT id FROM blocks WHERE safe_doi = ?", (safe_doi,)).fetchall()
+    ]
+    conn.executemany("DELETE FROM block_fts WHERE rowid = ?", [(rowid,) for rowid in rowids])
+    conn.execute("DELETE FROM blocks WHERE safe_doi = ?", (safe_doi,))
+    conn.execute("DELETE FROM papers WHERE safe_doi = ?", (safe_doi,))
+
+
+def _count_papers(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM papers").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _count_blocks(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM blocks").fetchone()
+    return int(row[0]) if row else 0
 
 
 def _get_meta(conn: sqlite3.Connection, key: str) -> str:

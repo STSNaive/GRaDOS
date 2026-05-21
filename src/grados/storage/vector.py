@@ -11,11 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from grados.config import IndexingConfig
+from grados.publisher.common import safe_doi_filename_candidates
 from grados.storage.chroma_client import (
     delete_paper_chunks,
     get_chunks_collection,
     get_client,
     get_docs_collection,
+    query_collection,
 )
 from grados.storage.chunking import (
     DOC_SUMMARY_MAX_CHARS,
@@ -41,6 +43,7 @@ from grados.storage.hydration import (
     PaperDocument,
     PaperDocumentSummary,
     canonical_excerpt,
+    document_record_from_metadata,
     get_paper_document_record,
     get_paper_documents_by_ids,
     hydrate_canonical_documents,
@@ -73,6 +76,70 @@ _get_chunks_collection = get_chunks_collection
 _hydrate_canonical_documents = hydrate_canonical_documents
 _chunk_text = chunk_text
 logger = logging.getLogger(__name__)
+
+
+def _doi_candidate_ids(values: list[str]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        raw = value.strip()
+        if not raw:
+            continue
+        for candidate in safe_doi_filename_candidates(raw):
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                ids.append(candidate)
+    return ids
+
+
+def _query_doc_candidate_scores(
+    *,
+    docs_collection: Any,
+    query_embedding: list[float],
+    anchor_phrase: str,
+    limit: int,
+    total_docs: int,
+    candidate_ids: list[str],
+    doi: str,
+    scoped_dois: set[str],
+) -> dict[str, float]:
+    doc_limit = min(max(limit * 8, 30), len(candidate_ids) if candidate_ids else total_docs)
+    if doc_limit <= 0:
+        return {}
+
+    where = {"safe_doi": {"$in": candidate_ids}} if candidate_ids else None
+    result = query_collection(
+        collection=docs_collection,
+        query_embedding=query_embedding,
+        n_results=doc_limit,
+        where=where,
+        where_document={"$contains": anchor_phrase} if anchor_phrase else None,
+    )
+    if anchor_phrase and not result.get("documents", [[]])[0]:
+        result = query_collection(
+            collection=docs_collection,
+            query_embedding=query_embedding,
+            n_results=doc_limit,
+            where=where,
+        )
+
+    scores: dict[str, float] = {}
+    allowed = set(candidate_ids)
+    distances = result.get("distances", [[]])[0]
+    metadatas = result.get("metadatas", [[]])[0]
+    for dist, metadata in zip(distances, metadatas):
+        if not isinstance(metadata, dict):
+            continue
+        record = document_record_from_metadata(metadata)
+        safe_doi = record["safe_doi"]
+        if allowed and safe_doi not in allowed:
+            continue
+        if scoped_dois and str(record.get("doi", "")).lower() not in scoped_dois:
+            continue
+        if doi and str(record.get("doi", "")).lower() != doi.lower():
+            continue
+        scores[safe_doi] = max(scores.get(safe_doi, 0.0), dense_score(dist))
+    return scores
 
 
 @dataclass(frozen=True)
@@ -388,38 +455,79 @@ def search_papers(
     docs_collection = _get_docs_collection(client)
     chunks_collection = _get_chunks_collection(client)
 
-    if docs_collection.count() == 0:
+    total_docs = docs_collection.count()
+    if total_docs == 0:
         return []
 
-    index_documents = list_index_document_summaries(
-        docs_collection=docs_collection,
-        chroma_dir=chroma_dir,
-        fallback_list_paper_documents=list_paper_documents,
-    )
     scoped_dois = {value.strip().lower() for value in (dois or []) if value.strip()}
-    filtered_documents = [
-        doc
-        for doc in index_documents
-        if matches_filters(doc, doi, authors, year_from, year_to, journal, source)
-        and (not scoped_dois or str(doc.get("doi", "")).lower() in scoped_dois)
-    ]
-    if not filtered_documents:
-        return []
-
     query_term_list = query_terms(query)
     anchor_phrase = extract_anchor_phrase(query)
     backend = load_embedding_backend(config=config)
     query_embedding = backend.embed_query(query)
 
-    candidate_ids = {doc["safe_doi"] for doc in filtered_documents}
-    doc_scores = select_doc_candidates(
-        docs_collection=docs_collection,
-        filtered_documents=filtered_documents,
-        candidate_ids=candidate_ids,
-        query_embedding=query_embedding,
-        anchor_phrase=anchor_phrase,
-        limit=limit,
-    )
+    metadata_scan_required = bool(authors or year_from is not None or year_to is not None or journal or source)
+    identity_candidate_ids = _doi_candidate_ids([doi, *scoped_dois])
+    if metadata_scan_required:
+        index_documents = list_index_document_summaries(
+            docs_collection=docs_collection,
+            chroma_dir=chroma_dir,
+            fallback_list_paper_documents=list_paper_documents,
+        )
+        filtered_documents = [
+            doc
+            for doc in index_documents
+            if matches_filters(doc, doi, authors, year_from, year_to, journal, source)
+            and (not scoped_dois or str(doc.get("doi", "")).lower() in scoped_dois)
+        ]
+        if identity_candidate_ids:
+            allowed_ids = set(identity_candidate_ids)
+            filtered_documents = [doc for doc in filtered_documents if doc["safe_doi"] in allowed_ids]
+        if not filtered_documents:
+            return []
+        doc_scores = select_doc_candidates(
+            docs_collection=docs_collection,
+            filtered_documents=filtered_documents,
+            candidate_ids={doc["safe_doi"] for doc in filtered_documents},
+            query_embedding=query_embedding,
+            anchor_phrase=anchor_phrase,
+            limit=limit,
+        )
+    else:
+        doc_scores = _query_doc_candidate_scores(
+            docs_collection=docs_collection,
+            query_embedding=query_embedding,
+            anchor_phrase=anchor_phrase,
+            limit=limit,
+            total_docs=total_docs,
+            candidate_ids=identity_candidate_ids,
+            doi=doi,
+            scoped_dois=scoped_dois,
+        )
+        if not doc_scores:
+            index_documents = list_index_document_summaries(
+                docs_collection=docs_collection,
+                chroma_dir=chroma_dir,
+                fallback_list_paper_documents=list_paper_documents,
+            )
+            filtered_documents = [
+                doc
+                for doc in index_documents
+                if matches_filters(doc, doi, authors, year_from, year_to, journal, source)
+                and (not scoped_dois or str(doc.get("doi", "")).lower() in scoped_dois)
+            ]
+            if identity_candidate_ids:
+                allowed_ids = set(identity_candidate_ids)
+                filtered_documents = [doc for doc in filtered_documents if doc["safe_doi"] in allowed_ids]
+            if not filtered_documents:
+                return []
+            doc_scores = select_doc_candidates(
+                docs_collection=docs_collection,
+                filtered_documents=filtered_documents,
+                candidate_ids={doc["safe_doi"] for doc in filtered_documents},
+                query_embedding=query_embedding,
+                anchor_phrase=anchor_phrase,
+                limit=limit,
+            )
     ranked_candidate_ids = [
         safe_doi
         for safe_doi, _score in sorted(

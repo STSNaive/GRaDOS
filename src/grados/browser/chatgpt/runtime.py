@@ -240,20 +240,23 @@ async def open_chatgpt_login_setup(
 ) -> dict[str, object]:
     """Open the private profile so the user can sign in once."""
     paths.chatgpt_browser_profile.mkdir(parents=True, exist_ok=True)
-    browser_session = await _launch_private_profile(paths, browser_config)
-    try:
-        page = browser_session.root_page
-        await page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=60_000)
-        result = await wait_for_chatgpt_login(page, timeout_seconds=timeout_seconds)
-        if keep_open:
+    async with chatgpt_profile_lock(
+        paths.chatgpt_browser_profile,
+        purpose="external_synthesis_setup",
+        session_id=new_session_id(),
+    ):
+        browser_session = await _launch_private_profile(paths, browser_config)
+        try:
+            page = browser_session.root_page
+            await page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=60_000)
+            result = await wait_for_chatgpt_login(page, timeout_seconds=timeout_seconds)
             return {**result, "profile": str(paths.chatgpt_browser_profile)}
-        return {**result, "profile": str(paths.chatgpt_browser_profile)}
-    finally:
-        if not keep_open:
-            try:
-                await browser_session.cleanup()
-            except Exception:
-                pass
+        finally:
+            if not keep_open:
+                try:
+                    await browser_session.cleanup()
+                except Exception:
+                    pass
 
 
 async def check_chatgpt_login(
@@ -261,14 +264,19 @@ async def check_chatgpt_login(
     browser_config: HeadlessBrowserConfig,
 ) -> dict[str, object]:
     ensure_chatgpt_profile_ready(paths.chatgpt_browser_profile, setup_mode=False)
-    browser_session = await _launch_private_profile(paths, browser_config)
-    try:
-        page = browser_session.root_page
-        await page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=60_000)
-        result = await probe_chatgpt_login(page)
-        return {**result, "profile": str(paths.chatgpt_browser_profile)}
-    finally:
-        await browser_session.cleanup()
+    async with chatgpt_profile_lock(
+        paths.chatgpt_browser_profile,
+        purpose="external_synthesis_doctor",
+        session_id=new_session_id(),
+    ):
+        browser_session = await _launch_private_profile(paths, browser_config)
+        try:
+            page = browser_session.root_page
+            await page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=60_000)
+            result = await probe_chatgpt_login(page)
+            return {**result, "profile": str(paths.chatgpt_browser_profile)}
+        finally:
+            await browser_session.cleanup()
 
 
 async def _launch_private_profile(paths: GRaDOSPaths, browser_config: HeadlessBrowserConfig) -> Any:

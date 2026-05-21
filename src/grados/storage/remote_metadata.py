@@ -121,6 +121,22 @@ def _existing_record_for(
     return None
 
 
+def _coalesce_remote_records(records: list[RemoteMetadataRecord]) -> list[RemoteMetadataRecord]:
+    merged_by_id: dict[str, RemoteMetadataRecord] = {}
+    order: list[str] = []
+    for record in records:
+        lookup_ids = _remote_record_lookup_ids(record)
+        record_id = lookup_ids[0] if lookup_ids else record.paper_id
+        if not record_id:
+            continue
+        if record_id not in merged_by_id:
+            merged_by_id[record_id] = record
+            order.append(record_id)
+            continue
+        merged_by_id[record_id] = _merge_records(merged_by_id[record_id], record)
+    return [merged_by_id[record_id] for record_id in order]
+
+
 def _build_document(title: str, abstract: str) -> str:
     title = title.strip()
     abstract = abstract.strip()
@@ -338,9 +354,11 @@ def _merge_records(existing: RemoteMetadataRecord | None, incoming: RemoteMetada
         "fetch_trace": _merge_fetch_trace(existing.fetch_trace, incoming.fetch_trace),
         "first_seen_at": existing.first_seen_at or incoming.first_seen_at or now,
         "last_seen_at": now,
-        "updated_at": now,
+        "updated_at": existing.updated_at or incoming.updated_at,
         "abstract": merged_abstract,
     })
+    if _record_content_changed(existing, merged):
+        merged = merged.model_copy(update={"updated_at": now})
     return merged
 
 
@@ -357,6 +375,35 @@ def _merge_fetch_status(existing: str, incoming: str) -> str:
         "": 0,
     }
     return incoming if priority.get(incoming, 0) >= priority.get(existing, 0) else existing
+
+
+def _record_change_payload(record: RemoteMetadataRecord) -> dict[str, Any]:
+    return record.model_dump(exclude={"first_seen_at", "last_seen_at", "updated_at"})
+
+
+def _record_content_changed(existing: RemoteMetadataRecord, merged: RemoteMetadataRecord) -> bool:
+    return _record_change_payload(existing) != _record_change_payload(merged)
+
+
+def _record_document_changed(existing: RemoteMetadataRecord | None, merged: RemoteMetadataRecord) -> bool:
+    return existing is None or _build_document(existing.title, existing.abstract) != _build_document(
+        merged.title,
+        merged.abstract,
+    )
+
+
+def _record_metadata_changed(existing: RemoteMetadataRecord, merged: RemoteMetadataRecord) -> bool:
+    return existing.model_dump(exclude={"abstract"}) != merged.model_dump(exclude={"abstract"})
+
+
+def _update_remote_metadata_rows(collection: Any, records: list[RemoteMetadataRecord]) -> int:
+    if not records:
+        return 0
+    collection.update(
+        ids=[record.paper_id for record in records],
+        metadatas=[record.model_dump(exclude={"abstract"}) for record in records],
+    )
+    return len(records)
 
 
 def _existing_records_by_id(collection: Any, ids: list[str]) -> dict[str, RemoteMetadataRecord]:
@@ -427,7 +474,9 @@ def upsert_remote_metadata(
     indexing_config: IndexingConfig | None = None,
 ) -> int:
     """Upsert one row per paper into the remote metadata store."""
-    normalized = [record for item in records if (record := _coerce_remote_record(item)) is not None]
+    normalized = _coalesce_remote_records(
+        [record for item in records if (record := _coerce_remote_record(item)) is not None]
+    )
     if not normalized:
         return 0
 
@@ -443,20 +492,32 @@ def upsert_remote_metadata(
                 lookup_ids.append(lookup_id)
     existing = _existing_records_by_id(collection, lookup_ids)
 
-    merged_records = [_merge_records(_existing_record_for(existing, record), record) for record in normalized]
-    documents = [_build_document(record.title, record.abstract) for record in merged_records]
-    backend = load_embedding_backend(config=config)
-    embeddings = backend.embed_documents(documents)
-    metadatas = [record.model_dump(exclude={"abstract"}) for record in merged_records]
-    ids = [record.paper_id for record in merged_records]
+    upsert_records = []
+    metadata_update_records = []
+    for record in normalized:
+        existing_record = _existing_record_for(existing, record)
+        merged = _merge_records(existing_record, record)
+        if _record_document_changed(existing_record, merged):
+            upsert_records.append(merged)
+            continue
+        if existing_record is not None and _record_metadata_changed(existing_record, merged):
+            metadata_update_records.append(merged)
 
-    collection.upsert(
-        ids=ids,
-        documents=documents,
-        metadatas=metadatas,
-        embeddings=embeddings,
-    )
-    return len(ids)
+    if upsert_records:
+        documents = [_build_document(record.title, record.abstract) for record in upsert_records]
+        backend = load_embedding_backend(config=config)
+        embeddings = backend.embed_documents(documents)
+        metadatas = [record.model_dump(exclude={"abstract"}) for record in upsert_records]
+        ids = [record.paper_id for record in upsert_records]
+
+        collection.upsert(
+            ids=ids,
+            documents=documents,
+            metadatas=metadatas,
+            embeddings=embeddings,
+        )
+    updated_count = _update_remote_metadata_rows(collection, metadata_update_records)
+    return len(upsert_records) + updated_count
 
 
 def get_remote_metadata_by_doi(

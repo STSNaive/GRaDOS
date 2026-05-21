@@ -599,7 +599,7 @@ async def search_saved_papers(
     ] = True,
 ) -> str:
     """Search previously saved papers by keyword or semantic similarity."""
-    from grados.storage.papers import list_saved_papers, read_paper
+    from grados.storage.papers import read_paper
     from grados.storage.search_pipeline import search_saved_library
     from grados.storage.vector import get_index_stats
 
@@ -607,11 +607,9 @@ async def search_saved_papers(
         return "Invalid year range: year_from must be less than or equal to year_to."
 
     paths, config = get_paths_and_config()
-    papers = list_saved_papers(paths.papers, chroma_dir=paths.database_chroma)
-    if not papers:
-        return "No saved papers found. Use extract_paper_full_text to save papers first."
-
     stats = get_index_stats(paths.database_chroma, indexing_config=config.indexing)
+    if stats.unique_papers == 0 and not any(paths.papers.glob("*.md")):
+        return "No saved papers found. Use extract_paper_full_text to save papers first."
 
     pipeline_result = search_saved_library(
         chroma_dir=paths.database_chroma,
@@ -628,6 +626,7 @@ async def search_saved_papers(
         indexing_config=config.indexing,
     )
     results = pipeline_result.results
+    saved_count = max(stats.unique_papers, pipeline_result.fts_paper_count)
 
     filter_parts = []
     if doi:
@@ -647,7 +646,7 @@ async def search_saved_papers(
         warning_text = ""
         if pipeline_result.warnings:
             warning_text = "\n\nWarnings:\n" + "\n".join(f"- {warning}" for warning in pipeline_result.warnings)
-        return f"No papers matching '{query}' found among {len(papers)} saved papers.{hint}{warning_text}"
+        return f"No papers matching '{query}' found among {saved_count} saved papers.{hint}{warning_text}"
 
     mode_labels = {
         "hybrid_rrf": "hybrid reranked / hybrid_rrf",

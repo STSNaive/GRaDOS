@@ -308,7 +308,7 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 | `grados browser doctor [--live --doi DOI]` | Check publisher browser prerequisites; `--live` runs a PDF-acquisition probe without saving `papers/*.md` |
 | `grados external-synthesis is-enabled --quiet` | Predicate gate for the optional external synthesis protocol; exit 0 means enabled, exit 1 means disabled |
 | `grados external-synthesis status --json` | Show the same external synthesis gate plus config path details as structured diagnostics |
-| `grados external-synthesis setup-browser` | Open the private GRaDOS ChatGPT profile for first-time ChatGPT login |
+| `grados external-synthesis setup-browser [--keep-open]` | Open the private GRaDOS ChatGPT profile for first-time ChatGPT login; closes after login by default |
 | `grados external-synthesis doctor [--live]` | Check external synthesis browser prerequisites; `--live` also probes ChatGPT login |
 | `grados import-pdfs --from /path/to/papers --recursive` | Import an existing local PDF library into the canonical paper store |
 | `grados eval-retrieval --fixture cases.jsonl` | Evaluate saved-paper retrieval against local golden cases using dense, FTS/BM25, exact lookup, and RRF unless `--dense-only` is set |

@@ -544,7 +544,24 @@ def _item_ref(item: EvidencePackItem) -> dict[str, Any]:
     }
 
 
-def _verify_item(papers_dir: Path, item: EvidencePackItem) -> dict[str, Any]:
+_ManifestCache = dict[tuple[str, str], CanonicalBlockManifest | None]
+
+
+def _cached_manifest(papers_dir: Path, item: EvidencePackItem, cache: _ManifestCache) -> CanonicalBlockManifest | None:
+    key = (item.doi or "", item.safe_doi or item.paper_id or "")
+    if key not in cache:
+        manifest = build_canonical_block_manifest(
+            papers_dir,
+            doi=item.doi or None,
+            safe_doi=item.safe_doi or item.paper_id or None,
+        )
+        if manifest is None and item.doi:
+            manifest = build_canonical_block_manifest(papers_dir, doi=item.doi)
+        cache[key] = manifest
+    return cache[key]
+
+
+def _verify_item(papers_dir: Path, item: EvidencePackItem, manifest_cache: _ManifestCache) -> dict[str, Any]:
     result: dict[str, Any] = {
         "item": _item_ref(item),
         "snapshot_valid": bool(item.text and item.text_sha256),
@@ -556,13 +573,7 @@ def _verify_item(papers_dir: Path, item: EvidencePackItem) -> dict[str, Any]:
         "hash_mismatch": False,
         "ambiguous_relocation": False,
     }
-    manifest = build_canonical_block_manifest(
-        papers_dir,
-        doi=item.doi or None,
-        safe_doi=item.safe_doi or item.paper_id or None,
-    )
-    if manifest is None and item.doi:
-        manifest = build_canonical_block_manifest(papers_dir, doi=item.doi)
+    manifest = _cached_manifest(papers_dir, item, manifest_cache)
     if manifest is None:
         result["missing_paper"] = True
         return result
@@ -620,7 +631,8 @@ def verify_evidence_pack(db_path: Path, papers_dir: Path, *, pack_id: str) -> di
     expected_hash = compute_pack_sha256(pack_payload)
     snapshot_valid = bool(pack.pack_sha256) and expected_hash == pack.pack_sha256
 
-    item_results = [_verify_item(papers_dir, item) for item in pack.evidence_items]
+    manifest_cache: _ManifestCache = {}
+    item_results = [_verify_item(papers_dir, item, manifest_cache) for item in pack.evidence_items]
     buckets: dict[str, list[dict[str, Any]]] = {
         "missing_paper": [],
         "doc_changed": [],

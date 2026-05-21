@@ -9,6 +9,7 @@ from grados.research.evidence_pack import (
     compute_pack_sha256,
     prepare_evidence_pack,
     read_evidence_pack,
+    save_evidence_pack,
     verify_evidence_pack,
 )
 from grados.research.pack_audit import audit_answer_against_pack, suggest_missing_evidence
@@ -129,6 +130,38 @@ def test_prepare_read_verify_pack_round_trip_and_hash_invariance(monkeypatch, tm
     assert verified["ok"] is True
     assert verified["snapshot_valid"] is True
     assert verified["current_valid"] is True
+
+
+def test_verify_evidence_pack_reuses_manifest_for_same_paper(monkeypatch, tmp_path: Path) -> None:
+    _save_demo_paper(tmp_path)
+    _patch_search(monkeypatch)
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="composite damping",
+        scoped_dois=["10.1234/demo"],
+    )
+    loaded = read_evidence_pack(_db_path(tmp_path), pack_id=str(receipt["pack_id"]))
+    pack = dict(loaded["pack"])
+    pack["pack_id"] = "pack_duplicate_manifest_fixture"
+    first_item = dict(pack["evidence_items"][0])
+    second_item = {**first_item, "subquestion": "Which paper reports the same result?"}
+    pack["evidence_items"] = [first_item, second_item]
+    saved = save_evidence_pack(_db_path(tmp_path), pack)
+
+    calls: list[tuple[str | None, str | None]] = []
+
+    def spy_manifest(papers_dir, *, doi=None, safe_doi=None):  # noqa: ANN001
+        calls.append((doi, safe_doi))
+        return build_canonical_block_manifest(papers_dir, doi=doi, safe_doi=safe_doi)
+
+    monkeypatch.setattr(evidence_pack_module, "build_canonical_block_manifest", spy_manifest)
+
+    verified = verify_evidence_pack(_db_path(tmp_path), _papers_dir(tmp_path), pack_id=str(saved["pack_id"]))
+
+    assert verified["ok"] is True
+    assert verified["evidence_count"] == 2
+    assert len(calls) == 1
 
 
 def test_prepare_pack_counts_reused_block_as_subquestion_coverage(monkeypatch, tmp_path: Path) -> None:

@@ -76,6 +76,67 @@ def test_fts_index_searches_canonical_markdown_blocks(tmp_path: Path) -> None:
     assert "laminate treatment" in results[0].text
 
 
+def test_ensure_fts_index_refreshes_only_changed_markdown(tmp_path: Path, monkeypatch) -> None:
+    import grados.storage.fts as fts
+
+    papers_dir = tmp_path / "papers"
+    chroma_dir = tmp_path / "database" / "chroma"
+    _write_paper(
+        papers_dir,
+        "10_1234_alpha",
+        doi="10.1234/alpha",
+        title="Alpha Study",
+        body="# Alpha Study\n\n## Results\n\nOriginal alpha marker.\n",
+    )
+    _write_paper(
+        papers_dir,
+        "10_1234_beta",
+        doi="10.1234/beta",
+        title="Beta Study",
+        body="# Beta Study\n\n## Results\n\nBeta marker should be removed.\n",
+    )
+    fts.ensure_fts_index(papers_dir=papers_dir, chroma_dir=chroma_dir, force=True)
+
+    def forbidden_rebuild(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("stale query path should use incremental FTS refresh")
+
+    indexed_files: list[str] = []
+    original_index_markdown_file = fts._index_markdown_file
+
+    def spy_index_markdown_file(conn, md_file):  # noqa: ANN001
+        indexed_files.append(md_file.name)
+        return original_index_markdown_file(conn, md_file)
+
+    monkeypatch.setattr(fts, "rebuild_fts_index", forbidden_rebuild)
+    monkeypatch.setattr(fts, "_index_markdown_file", spy_index_markdown_file)
+
+    _write_paper(
+        papers_dir,
+        "10_1234_alpha",
+        doi="10.1234/alpha",
+        title="Alpha Study",
+        body="# Alpha Study\n\n## Results\n\nUpdated alpha marker.\n",
+    )
+    (papers_dir / "10_1234_beta.md").unlink()
+
+    stats = fts.ensure_fts_index(papers_dir=papers_dir, chroma_dir=chroma_dir)
+    alpha_results = search_fts_blocks(
+        db_path=fts_index_path(chroma_dir),
+        query="updated alpha marker",
+        limit=5,
+    )
+    beta_results = search_fts_blocks(
+        db_path=fts_index_path(chroma_dir),
+        query="beta marker",
+        limit=5,
+    )
+
+    assert stats.paper_count == 1
+    assert indexed_files == ["10_1234_alpha.md"]
+    assert [result.safe_doi for result in alpha_results] == ["10_1234_alpha"]
+    assert beta_results == []
+
+
 def test_search_pipeline_falls_back_to_fts_when_dense_unavailable(
     tmp_path: Path,
     monkeypatch,

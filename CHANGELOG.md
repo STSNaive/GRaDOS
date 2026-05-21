@@ -47,6 +47,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Changed
 - Changed external synthesis from a host/manual ChatGPT handoff into the default GRaDOS-native browser workflow behind the existing `research.external_synthesis.enabled` switch, while keeping lower-level packet/save/audit tools for recovery and leaving the separate `extract.fetch_strategy.codex` PDF acquisition route intact.
+- Changed ChatGPT external-synthesis setup to close the setup browser after login by default, keep `--keep-open` for debugging, and share the private profile lock across the default setup flow, live doctor checks, and synthesis runs.
 - Changed the publisher `browser` fetch strategy to use Oracle-style browser runtime stability and recovery controls while keeping the existing acquisition contract: browser code captures PDF bytes or returns manual-resume challenge metadata, and only the downstream parser/QA/persist pipeline writes canonical `papers/*.md`.
 - Changed the bundled GRaDOS skill and Codex plugin metadata to route evidence-grounded writing tasks through the writing workflow reference while keeping writing profiles as skill documentation rather than new MCP tools.
 - Changed `extract_paper_full_text` to be idempotent by default for already saved DOIs, returning an already-saved receipt and `read_saved_paper` next action unless `force_refresh=true` is passed for explicit refetch/reparse/rebuild work.

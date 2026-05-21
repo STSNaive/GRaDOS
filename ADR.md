@@ -1,9 +1,9 @@
 # GRaDOS 架构决策记录
 
 ## 说明
-- 本文记录已经接受并落地的关键架构决策。
+- 本文记录项目关键架构决策及其演进，不是当前结构的完整说明书，也不是变更流水账。README / README.zh-CN 负责当前用户可见行为，CHANGELOG 记录对外行为变化，本文负责解释长期架构边界、取舍和为什么这样设计。
 - `TODO.md` 只保留未完成事项；不再重复维护已完成决策。
-- `CHANGELOG.md` 记录对外可见的行为变化；本文更关注“为什么这样设计”。
+- 更新方式：新增重要架构选择时追加新的 ADR；旧决策被替换时不要删除历史记录，而是把旧 ADR 状态改为 `Superseded by ADR-xxx` 或 `Amended by ADR-xxx`，并在新 ADR 中记录当前决策、保留/废弃的边界和迁移影响。
 
 ## ADR-001：`papers/*.md` 是唯一 canonical full-text source of truth
 
@@ -525,7 +525,7 @@
 
 ## ADR-020：ChatGPT Pro 外部综合是 host-side reviewer 协议
 
-- 状态：Accepted
+- 状态：Superseded by ADR-023（浏览器 orchestration / profile 所有权已被取代；evidence boundary 仍保留）
 - 日期：2026-05-12
 
 ### 背景
@@ -550,6 +550,7 @@
 - GRaDOS 可以公开一个 default-off 的 ChatGPT Pro 增强开关，同时维持 server/runtime 边界。
 - `codex` 下载和 ChatGPT Pro 综合共享 Chrome extension 时有明确的串行协调协议，避免两个 host-side 功能互相抢占 browser lifecycle。
 - 文档和 skill protocol 负责指导 host agent；后续若真实任务证明需要机器可读 session receipt，再另行设计而不是提前扩展配置面。
+- 后续 ADR-023 将 ChatGPT browser orchestration 迁入 GRaDOS-managed runtime，但继续保留本 ADR 的核心 evidence boundary：ChatGPT Pro 输出只是 advisory，最终引用必须回到 verified pack 或 canonical paragraph windows。
 
 ---
 
@@ -604,3 +605,30 @@
 - 写作 profile 能借鉴成熟项目的 workflow 结构，但不会把 ARIS wiki、ChatGPT Pro reviewer prose、helper snippet 或模型记忆当作证据来源。
 - Codex plugin mirror 与 manifest drift test 必须同步覆盖 `paper_writing.md`、writing profiles 和 domain profiles，避免 plugin 安装后缺少写作入口。
 - 后续是否实现 claim matrix 校验和 claim-to-pack materialization，应由真实写作任务中反复出现的确定性需求驱动，而不是提前扩张 public MCP surface。
+
+---
+
+## ADR-023：ChatGPT Pro 外部综合采用 GRaDOS-managed browser route
+
+- 状态：Accepted
+- 日期：2026-05-21
+
+### 背景
+- ADR-020 的 host-side reviewer 协议保住了证据边界，但把 ChatGPT prompt 发送、模型选择、UI 读取和恢复都留给 host agent，导致实际 workflow 难以稳定验证。
+- GRaDOS 已经有 verified evidence pack、external synthesis packet、audit、canonical reread 和 browser profile/session 基础设施，可以把可机械验证的 browser orchestration 收回到项目 runtime。
+- 用户仍需要 default-off 的 ChatGPT Pro advisory 能力；但 ChatGPT 输出不能变成新的证据源，也不能绕过 canonical `papers/*.md` 与 evidence pack。
+
+### 决策
+- `research.external_synthesis.enabled` 仍是唯一配置 gate，默认关闭。关闭时 GRaDOS 不打开 ChatGPT、不调用 ChatGPT、不改变 evidence reading 流程。
+- 启用后，默认入口是 `run_external_synthesis`。它从 topic 准备 evidence pack 和 packet，或从既有 pack id 验证并 packet 化该 pack，然后使用 GRaDOS 私有 ChatGPT profile 执行 browser flow。
+- ChatGPT browser runtime 由 GRaDOS 管理：使用 `browser/chatgpt-profile`、`browser/chatgpt-sessions`、profile readiness、login probe、model/thinking selector、response capture、session record 和 profile lock。
+- `grados external-synthesis setup-browser` 只负责首次登录私有 profile；`grados external-synthesis doctor [--live]` 负责诊断 profile 与登录状态；运行期 synthesis 与 live diagnosis 共享同一 private profile lock。
+- 模型和 thinking route 是协议默认值，不进入 GRaDOS config。运行时在 ChatGPT UI 中确认 Oracle 当前 Pro model route 与 Pro Extended thinking route，并记录实际确认到的原始标签。
+- `preview_external_synthesis_packet`、`prepare_external_synthesis_from_topic`、`prepare_external_synthesis_packet`、`save_external_synthesis_result` 和 `audit_external_synthesis_result` 保留给 dry run、恢复和显式 rerun。
+- ChatGPT Pro 输出仍只是 reviewer/synthesizer advisory。结果必须保存为 `external_synthesis_result` 并按关联 packet 或 source pack 审计；最终引用必须回到 verified evidence pack 或 canonical paragraph windows。
+- 该 route 不替换 `extract.fetch_strategy.codex` PDF acquisition；PDF acquisition 的 Chrome extension handoff 和 ChatGPT synthesis 是两个独立能力。
+
+### 结果与影响
+- GRaDOS 对外暴露一个更可验证的 native browser synthesis route，减少 host agent 手工拼装 prompt、读取 UI 和回传结果的漂移面。
+- ADR-020 的 host-side orchestration 部分被取代；其 evidence boundary、default-off gate、ChatGPT advisory-only 和 canonical reread 规则继续有效。
+- 共享 ChatGPT profile 是单一资源；setup、doctor live 和 synthesis 必须避免并发争用，并在 profile 被占用时显式失败或提示用户关闭现有窗口。

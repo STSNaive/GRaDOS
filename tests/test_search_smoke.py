@@ -654,12 +654,7 @@ def test_search_papers_uses_index_candidates_before_canonical_hydration(monkeypa
                     for safe_doi in ids
                 ]
                 return {"ids": ids, "metadatas": selected, "documents": docs}
-            assert include == ["metadatas"]
-            selected = summaries[:limit]
-            return {
-                "ids": [item["safe_doi"] for item in selected],
-                "metadatas": selected,
-            }
+            raise AssertionError("unfiltered search should not fetch all document metadata")
 
     class EmptyChunks:
         def count(self) -> int:
@@ -684,7 +679,7 @@ def test_search_papers_uses_index_candidates_before_canonical_hydration(monkeypa
 
     assert len(results) == 1
     assert results[0].doi == "10.1000/0"
-    assert hydrated_counts == [30]
+    assert hydrated_counts == [1]
 
 
 def test_search_papers_end_to_end_rereads_updated_canonical_markdown(monkeypatch, tmp_path: Path) -> None:
