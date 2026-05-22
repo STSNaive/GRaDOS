@@ -284,13 +284,13 @@ async def _wait_for_browser_session_close(browser_session: Any) -> None:
     context = getattr(browser_session, "context", None)
     wait_for_event = getattr(context, "wait_for_event", None)
     if callable(wait_for_event):
-        await wait_for_event("close")
+        await wait_for_event("close", timeout=0)
         return
 
     page = getattr(browser_session, "root_page", None)
     wait_for_page_event = getattr(page, "wait_for_event", None)
     if callable(wait_for_page_event):
-        await wait_for_page_event("close")
+        await wait_for_page_event("close", timeout=0)
 
 
 async def _launch_private_profile(paths: GRaDOSPaths, browser_config: HeadlessBrowserConfig) -> Any:

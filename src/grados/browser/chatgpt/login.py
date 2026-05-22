@@ -23,7 +23,7 @@ async def ensure_chatgpt_logged_in(page: Any, *, timeout_ms: int = 5000) -> dict
 
 async def probe_chatgpt_login(page: Any, *, timeout_ms: int = 5000) -> dict[str, object]:
     try:
-        if not str(page.url).startswith(CHATGPT_URL):
+        if _should_open_chatgpt_for_login_probe(str(getattr(page, "url", "") or "")):
             await page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=timeout_ms)
     except Exception:
         pass
@@ -46,28 +46,44 @@ async def probe_chatgpt_login(page: Any, *, timeout_ms: int = 5000) -> dict[str,
     }
 
 
+def _should_open_chatgpt_for_login_probe(page_url: str) -> bool:
+    normalized = page_url.strip().lower()
+    return normalized in {"", "about:blank", "about:newtab"}
+
+
 async def wait_for_chatgpt_login(page: Any, *, timeout_seconds: float) -> dict[str, object]:
     deadline = asyncio.get_running_loop().time() + max(1.0, timeout_seconds)
     last: dict[str, object] = {}
+    stable_successes = 0
     while asyncio.get_running_loop().time() < deadline:
         last = await probe_chatgpt_login(page, timeout_ms=5000)
         if last.get("ok"):
-            return last
+            stable_successes += 1
+            if stable_successes >= 2:
+                return {**last, "stable_successes": stable_successes}
+        else:
+            stable_successes = 0
         await asyncio.sleep(1.0)
     return {
         **last,
         "ok": False,
         "error": str(last.get("error") or "chatgpt_login_timeout"),
+        "stable_successes": stable_successes,
     }
 
 
 def _login_probe_expression(timeout_ms: int) -> str:
     return f"""(async () => {{
       const pageUrl = typeof location === 'object' && location?.href ? location.href : null;
+      const hostname = typeof location === 'object' ? location.hostname || '' : '';
+      const pathname = typeof location === 'object' ? location.pathname || '' : '';
       const onAuthPage =
-        typeof location === 'object' &&
-        typeof location.pathname === 'string' &&
-        /^\\/(auth|login|signin)/i.test(location.pathname);
+        /(^|\\.)auth\\.openai\\.com$/i.test(hostname) ||
+        /(^|\\.)accounts\\.google\\.com$/i.test(hostname) ||
+        /^\\/(auth|login|signin)/i.test(pathname);
+      const isChatGptHost =
+        /(^|\\.)chatgpt\\.com$/i.test(hostname) ||
+        /(^|\\.)chat\\.openai\\.com$/i.test(hostname);
 
       const hasLoginCta = () => {{
         const candidates = Array.from(
@@ -121,6 +137,14 @@ def _login_probe_expression(timeout_ms: int) -> str:
 
       const readBackendStatus = async () => {{
         try {{
+          if (!isChatGptHost) {{
+            return {{
+              status: 0,
+              error: 'not_on_chatgpt_domain',
+              authenticated: false,
+              auth_signal: null,
+            }};
+          }}
           if (typeof fetch === 'function') {{
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), {timeout_ms});
@@ -130,39 +154,82 @@ def _login_probe_expression(timeout_ms: int) -> str:
                 credentials: 'include',
                 signal: controller.signal,
               }});
-              return {{ status: response.status || 0, error: null }};
+              let authenticated = false;
+              let authSignal = null;
+              if (response.status === 200) {{
+                try {{
+                  const payload = await response.clone().json();
+                  const hasString = (value) => typeof value === 'string' && value.trim().length > 0;
+                  const hasObject = (value) =>
+                    value && typeof value === 'object' && Object.keys(value).length > 0;
+                  const hasAccountList = (value) =>
+                    Array.isArray(value) ? value.length > 0 : hasObject(value);
+                  if (payload && typeof payload === 'object') {{
+                    if (hasString(payload.id) || hasString(payload.email) || hasString(payload.account_id)) {{
+                      authenticated = true;
+                      authSignal = 'direct_identity';
+                    }} else if (
+                      hasObject(payload.user) &&
+                      (hasString(payload.user.id) || hasString(payload.user.email))
+                    ) {{
+                      authenticated = true;
+                      authSignal = 'user_identity';
+                    }} else if (hasAccountList(payload.accounts) || hasObject(payload.account)) {{
+                      authenticated = true;
+                      authSignal = 'account_identity';
+                    }}
+                  }}
+                }} catch (err) {{
+                  authSignal = 'unreadable_backend_body';
+                }}
+              }}
+              return {{
+                status: response.status || 0,
+                error: null,
+                authenticated,
+                auth_signal: authSignal,
+              }};
             }} finally {{
               clearTimeout(timeout);
             }}
           }}
         }} catch (err) {{
-          return {{ status: 0, error: err ? String(err) : 'unknown' }};
+          return {{
+            status: 0,
+            error: err ? String(err) : 'unknown',
+            authenticated: false,
+            auth_signal: null,
+          }};
         }}
-        return {{ status: 0, error: null }};
+        return {{ status: 0, error: null, authenticated: false, auth_signal: null }};
       }};
 
-      let {{ status, error }} = await readBackendStatus();
+      let {{ status, error, authenticated, auth_signal: authSignal }} = await readBackendStatus();
       let domLoginCta = hasLoginCta();
       const settleDeadline = Date.now() + Math.min({timeout_ms}, 2500);
-      while (!domLoginCta && Date.now() < settleDeadline) {{
+      while (!domLoginCta && !authenticated && Date.now() < settleDeadline) {{
         await new Promise((resolve) => setTimeout(resolve, 100));
         domLoginCta = hasLoginCta();
-        if (status === 0 || status === 401 || status === 403) {{
+        if (status === 0 || status === 401 || status === 403 || !authenticated) {{
           const next = await readBackendStatus();
           status = next.status;
           error = next.error;
+          authenticated = next.authenticated;
+          authSignal = next.auth_signal;
         }}
       }}
 
-      const loginSignals = domLoginCta || onAuthPage;
+      const loginSignals = domLoginCta || onAuthPage || status === 401 || status === 403;
       return {{
-        ok: !loginSignals && status === 200,
+        ok: authenticated && !loginSignals,
         status,
         redirected: false,
         url: pageUrl,
         page_url: pageUrl,
         dom_login_cta: domLoginCta,
         on_auth_page: onAuthPage,
+        backend_authenticated: authenticated,
+        backend_auth_signal: authSignal,
         error,
       }};
     }})()"""

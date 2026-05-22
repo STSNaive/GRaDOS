@@ -103,6 +103,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed CI and PyPI publishing preflight to enforce `mypy` strict-mode checks alongside Ruff, pytest, native-TLS package builds, and local wheel smoke installs before release publication.
 
 ### Fixed
+- Fixed first-time ChatGPT external-synthesis setup so login polling does not navigate away from active OpenAI/Google auth pages, login success requires two stable authenticated probes, `--keep-open` waits without Patchright's default 30s timeout, and `doctor --live` reports logged-out probe details instead of `None`.
 - Fixed Chroma chunk cleanup during paper reindexing to delete by `safe_doi` metadata through the timeout-guarded path and fail visibly instead of leaving stale chunks after a silent cleanup failure.
 - Fixed local PDF parse/import reads to enforce `extract.security.max_local_pdf_bytes` at the actual read boundary, preventing a file that changes after `stat()` from being buffered past the configured ceiling.
 - Fixed `grados external-synthesis setup-browser --keep-open` so the ChatGPT private profile lock is held until the kept-open setup browser closes, preventing live doctor/synthesis runs from racing the same browser profile.

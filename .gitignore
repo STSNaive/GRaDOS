@@ -54,6 +54,7 @@ Thumbs.db
 # Agent/project docs (local only)
 CLAUDE.md
 AGENTS.md
+BUG_REPORT_*.md
 
 # Plan docs (local only)
 *-plan.md

@@ -752,6 +752,7 @@ def _external_synthesis_status_payload() -> dict[str, object]:
         "protocol": "external_synthesis_browser_v1",
         "browser_profile": str(paths.chatgpt_browser_profile),
         "browser_profile_initialized": bool(profile_status["initialized"]),
+        "browser_profile_initialized_meaning": "chrome_profile_markers_only_not_login_readiness",
         "browser_profile_status": profile_status,
         "browser_sessions": str(paths.chatgpt_browser_sessions),
         "setup_command": format_chatgpt_profile_setup_command(paths.chatgpt_browser_profile),
@@ -797,6 +798,26 @@ def external_synthesis_status(as_json: bool) -> None:
         console.print(f"[dim]First-time setup: {payload['setup_command']}[/dim]")
 
 
+def _format_chatgpt_live_login_result(result: dict[str, object]) -> str:
+    if result.get("ok"):
+        return "ok"
+
+    status = result.get("status")
+    dom_login_cta = result.get("dom_login_cta")
+    on_auth_page = result.get("on_auth_page")
+    details = [
+        f"status={status if status is not None else 'unknown'}",
+        f"dom_login_cta={str(bool(dom_login_cta)).lower()}",
+        f"on_auth_page={str(bool(on_auth_page)).lower()}",
+    ]
+
+    if dom_login_cta or on_auth_page or status in {401, 403}:
+        return f"not signed in ({', '.join(details)})"
+
+    error = result.get("error") or "failed"
+    return f"{error} ({', '.join(details)})"
+
+
 @external_synthesis_group.command("doctor")
 @click.option("--live", is_flag=True, help="Also verify the signed-in ChatGPT session.")
 def external_synthesis_doctor(live: bool) -> None:
@@ -822,7 +843,7 @@ def external_synthesis_doctor(live: bool) -> None:
             from grados.browser.chatgpt.runtime import check_chatgpt_login
 
             result = asyncio.run(check_chatgpt_login(paths, config.extract.headless_browser))
-            console.print(f"  Live ChatGPT login: {'ok' if result.get('ok') else result.get('error', 'failed')}")
+            console.print(f"  Live ChatGPT login: {_format_chatgpt_live_login_result(result)}")
         except Exception as exc:
             console.print(f"  Live ChatGPT login: failed ({exc})")
     console.print()

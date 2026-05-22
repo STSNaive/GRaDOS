@@ -70,6 +70,7 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
     assert external_payload["browser_profile"] == str(home / "browser" / "chatgpt-profile")
     assert external_payload["browser_sessions"] == str(home / "browser" / "chatgpt-sessions")
     assert external_payload["browser_profile_initialized"] is False
+    assert external_payload["browser_profile_initialized_meaning"] == "chrome_profile_markers_only_not_login_readiness"
     assert external_payload["setup_command"] == "grados external-synthesis setup-browser"
 
     external_predicate_result = runner.invoke(main, ["external-synthesis", "is-enabled"], env=env)
@@ -101,6 +102,37 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
     )
     assert external_enabled_predicate_quiet_result.exit_code == 0
     assert external_enabled_predicate_quiet_result.output == ""
+
+
+def test_external_synthesis_doctor_live_formats_logged_out_probe(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "grados-home"
+    runner = CliRunner()
+    env = {"GRADOS_HOME": str(home)}
+
+    import grados.browser.chatgpt.runtime as runtime
+
+    async def fake_check_chatgpt_login(*args, **kwargs) -> dict[str, object]:
+        return {
+            "ok": False,
+            "status": 200,
+            "dom_login_cta": True,
+            "on_auth_page": False,
+            "error": None,
+        }
+
+    monkeypatch.setattr(runtime, "check_chatgpt_login", fake_check_chatgpt_login)
+
+    result = runner.invoke(main, ["external-synthesis", "doctor", "--live"], env=env, terminal_width=200)
+
+    assert result.exit_code == 0
+    assert "Live ChatGPT login: not signed in" in result.output
+    assert "status=200" in result.output
+    assert "dom_login_cta=true" in result.output
+    assert "on_auth_page=false" in result.output
+    assert "Live ChatGPT login: None" not in result.output
 
 
 def test_update_db_command_reports_index_summary(tmp_path: Path, monkeypatch) -> None:

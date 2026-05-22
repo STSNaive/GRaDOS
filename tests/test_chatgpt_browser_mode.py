@@ -17,6 +17,12 @@ from grados.browser.chatgpt.composer import (
 )
 from grados.browser.chatgpt.errors import ChatGPTBrowserError
 from grados.browser.chatgpt.lock import ORACLE_PROFILE_LOCK_FILENAME, chatgpt_profile_lock
+from grados.browser.chatgpt.login import (
+    _login_probe_expression,
+    _should_open_chatgpt_for_login_probe,
+    probe_chatgpt_login,
+    wait_for_chatgpt_login,
+)
 from grados.browser.chatgpt.model_selection import (
     _oracle_model_selection_expression,
     is_legacy_pro_label,
@@ -78,6 +84,80 @@ def test_profile_lock_uses_oracle_lock_file(tmp_path: Path) -> None:
     asyncio.run(run())
 
     assert not (profile / ORACLE_PROFILE_LOCK_FILENAME).exists()
+
+
+def test_login_probe_only_opens_chatgpt_from_blank_pages() -> None:
+    assert _should_open_chatgpt_for_login_probe("") is True
+    assert _should_open_chatgpt_for_login_probe("about:blank") is True
+    assert _should_open_chatgpt_for_login_probe("https://accounts.google.com/v3/signin/challenge/pwd") is False
+    assert _should_open_chatgpt_for_login_probe("https://auth.openai.com/login") is False
+    assert _should_open_chatgpt_for_login_probe("https://chatgpt.com/") is False
+
+
+def test_login_probe_does_not_interrupt_external_auth_flow() -> None:
+    events: list[str] = []
+
+    class FakePage:
+        url = "https://accounts.google.com/v3/signin/challenge/pwd"
+
+        async def goto(self, url: str, **kwargs: Any) -> None:
+            events.append(f"goto:{url}")
+
+        async def evaluate(self, expression: str) -> dict[str, object]:
+            assert "backend_authenticated" in expression
+            events.append("evaluate")
+            return {
+                "ok": False,
+                "status": 0,
+                "dom_login_cta": False,
+                "on_auth_page": True,
+                "backend_authenticated": False,
+                "error": "not_on_chatgpt_domain",
+            }
+
+    result = asyncio.run(probe_chatgpt_login(FakePage()))
+
+    assert result["ok"] is False
+    assert result["on_auth_page"] is True
+    assert events == ["evaluate"]
+
+
+def test_login_probe_expression_requires_backend_authentication() -> None:
+    expression = _login_probe_expression(5000)
+
+    assert "ok: authenticated && !loginSignals" in expression
+    assert "backend_authenticated: authenticated" in expression
+    assert "status === 401 || status === 403" in expression
+
+
+def test_wait_for_chatgpt_login_requires_two_stable_successes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from grados.browser.chatgpt import login
+
+    probes = [
+        {"ok": True, "status": 200},
+        {"ok": False, "status": 200, "dom_login_cta": True},
+        {"ok": True, "status": 200},
+        {"ok": True, "status": 200},
+    ]
+    events: list[str] = []
+
+    async def fake_probe(page: object, *, timeout_ms: int) -> dict[str, object]:
+        assert timeout_ms == 5000
+        events.append("probe")
+        return probes.pop(0)
+
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds == 1.0
+        events.append("sleep")
+
+    monkeypatch.setattr(login, "probe_chatgpt_login", fake_probe)
+    monkeypatch.setattr(login.asyncio, "sleep", fake_sleep)
+
+    result = asyncio.run(wait_for_chatgpt_login(object(), timeout_seconds=10.0))
+
+    assert result["ok"] is True
+    assert result["stable_successes"] == 2
+    assert events == ["probe", "sleep", "probe", "sleep", "probe", "sleep", "probe"]
 
 
 def test_login_setup_uses_profile_lock_and_closes_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -171,8 +251,9 @@ def test_login_setup_keep_open_holds_lock_until_browser_closes(
             events.append(f"exit:{self.purpose}")
 
     class FakeContext:
-        async def wait_for_event(self, event: str) -> None:
+        async def wait_for_event(self, event: str, **kwargs: object) -> None:
             assert event == "close"
+            assert kwargs == {"timeout": 0}
             events.append("wait_for_close")
 
     class FakePage:
