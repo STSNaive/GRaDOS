@@ -1,4 +1,4 @@
-"""ChatGPT DOM selectors aligned with Oracle's browser constants."""
+"""ChatGPT DOM selectors aligned with GRaDOS ChatGPT browser constants."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ FINISHED_ACTIONS_SELECTOR = (
     'button[aria-label="Share"]'
 )
 
-ORACLE_CHROME_FLAGS = [
+CHATGPT_BROWSER_CHROME_FLAGS = [
     "--disable-background-networking",
     "--disable-background-timer-throttling",
     "--disable-breakpad",

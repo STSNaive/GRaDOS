@@ -1,4 +1,4 @@
-"""Oracle-style profile locking for the private ChatGPT browser profile."""
+"""GRaDOS browser profile locking for the private ChatGPT browser profile."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any
 
 from grados.browser.chatgpt.errors import ChatGPTBrowserError
 
-ORACLE_PROFILE_LOCK_FILENAME = "oracle-automation.lock"
+CHATGPT_PROFILE_LOCK_FILENAME = "grados-chatgpt-browser.lock"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -108,7 +108,7 @@ class ChatGPTProfileLock:
 
 def chatgpt_profile_lock(profile_dir: Path, *, purpose: str, session_id: str) -> ChatGPTProfileLock:
     return ChatGPTProfileLock(
-        lock_path=profile_dir / ORACLE_PROFILE_LOCK_FILENAME,
+        lock_path=profile_dir / CHATGPT_PROFILE_LOCK_FILENAME,
         purpose=purpose,
         session_id=session_id,
     )

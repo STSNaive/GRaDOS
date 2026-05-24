@@ -1099,6 +1099,9 @@ def test_extract_paper_full_text_returns_codex_action(
                 "download_max_age_seconds": "900",
                 "action": "download_pdf_with_chrome_extension_then_call_ingest_codex_downloaded_pdf",
                 "next_action": "download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf",
+                "required_host_plugin": "@chrome",
+                "required_host_backend": "Codex Chrome plugin extension backend",
+                "requested_route": "codex_chrome_plugin_extension",
                 "documentation_url": "https://developers.openai.com/codex/app/chrome-extension",
             },
             warnings=["Codex Chrome extension host action required"],
@@ -1115,6 +1118,9 @@ def test_extract_paper_full_text_returns_codex_action(
 
     assert "Codex Chrome Extension Download" in result
     assert "Google Chrome" in result
+    assert "Required Host Plugin:** @chrome" in result
+    assert "Required Host Backend:** Codex Chrome plugin extension backend" in result
+    assert "Requested Route:** codex_chrome_plugin_extension" in result
     assert "https://developers.openai.com/codex/app/chrome-extension" in result
     assert "ingest_codex_downloaded_pdf(doi=...)" in result
     assert "parse_pdf_file(file_path=..., doi=..., copy_to_library=true" in result

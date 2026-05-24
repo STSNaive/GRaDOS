@@ -884,7 +884,7 @@ def register_research_tools_api(mcp: FastMCP) -> None:
             "Run the default GRaDOS-native ChatGPT Pro browser synthesis route. "
             "When external synthesis is enabled, this prepares or verifies a current-valid "
             "evidence pack, creates a packet, uses the private GRaDOS ChatGPT Chrome profile, "
-            "verifies Oracle's current Pro model and Pro Extended thinking route before sending, "
+            "verifies GRaDOS-validated Pro model and Pro Extended thinking route before sending, "
             "captures the response, saves it as advisory output, and audits it before "
             "returning the canonical reread next action."
         )

@@ -1,4 +1,4 @@
-"""Capture ChatGPT assistant responses via Oracle's copy-first route."""
+"""Capture ChatGPT assistant responses via the ChatGPT copy-first route."""
 
 from __future__ import annotations
 
@@ -32,6 +32,6 @@ async def capture_final_response(page: Any) -> ChatGPTCapture:
         )
     return ChatGPTCapture(
         response_text=text,
-        method="oracle_dom_snapshot",
+        method="chatgpt_dom_snapshot_fallback",
         warnings=["copy_button_unavailable"],
     )

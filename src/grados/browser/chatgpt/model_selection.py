@@ -8,14 +8,14 @@ from typing import Any
 
 from grados.browser.chatgpt.errors import ChatGPTBrowserError
 from grados.browser.chatgpt.protocol import (
-    ORACLE_CHATGPT_PRO_MODEL,
-    ORACLE_CURRENT_PRO_TEST_ID_TOKENS,
-    ORACLE_CURRENT_PRO_TEXT_TOKENS,
-    ORACLE_LEGACY_PRO_TOKENS,
-    ORACLE_MODEL_SELECTION_STRATEGY,
-    ORACLE_PRO_LABEL_TOKENS,
-    ORACLE_PRO_TEST_ID_TOKENS,
-    ORACLE_PRO_VISIBLE_ALIASES,
+    CHATGPT_CURRENT_PRO_TEST_ID_TOKENS,
+    CHATGPT_CURRENT_PRO_TEXT_TOKENS,
+    CHATGPT_LEGACY_PRO_TOKENS,
+    CHATGPT_PRO_LABEL_TOKENS,
+    CHATGPT_PRO_MODEL_SELECTION_STRATEGY,
+    CHATGPT_PRO_TARGET_MODEL,
+    CHATGPT_PRO_TEST_ID_TOKENS,
+    CHATGPT_PRO_VISIBLE_ALIASES,
 )
 from grados.browser.chatgpt.selectors import (
     COMPOSER_MODEL_SIGNAL_SELECTOR,
@@ -33,11 +33,11 @@ def normalize_model_label(label: str) -> str:
 def is_legacy_pro_label(label: str) -> bool:
     normalized = normalize_model_label(label)
     compact = normalized.replace(" ", "")
-    return any(token in normalized or token in compact for token in ORACLE_LEGACY_PRO_TOKENS)
+    return any(token in normalized or token in compact for token in CHATGPT_LEGACY_PRO_TOKENS)
 
 
 def rank_model_label(label: str) -> tuple[int, int, str]:
-    """Rank labels so Oracle's current Pro alias wins over legacy Pro labels."""
+    """Rank labels so the current Pro alias wins over legacy Pro labels."""
     normalized = normalize_model_label(label)
     words = normalized.split()
     if "pro" not in words and not normalized.endswith(" pro"):
@@ -46,7 +46,7 @@ def rank_model_label(label: str) -> tuple[int, int, str]:
         return (0, 0, normalized)
     if is_legacy_pro_label(label):
         return (1, 0, normalized)
-    if normalized in ORACLE_PRO_VISIBLE_ALIASES:
+    if normalized in CHATGPT_PRO_VISIBLE_ALIASES:
         return (3, 1, normalized)
     if words.count("5") >= 2:
         return (3, 1, normalized)
@@ -78,8 +78,8 @@ def select_latest_pro_label(labels: list[str]) -> str:
 
 
 async def ensure_latest_pro_model(page: Any) -> ChatGPTModelSelection:
-    """Select Oracle's current ChatGPT Pro target and verify the selected UI label."""
-    result = await page.evaluate(_oracle_model_selection_expression())
+    """Select the current ChatGPT Pro target and verify the selected UI label."""
+    result = await page.evaluate(_pro_model_selection_expression())
     if not isinstance(result, dict):
         raise ChatGPTBrowserError(
             code="model_picker_unavailable",
@@ -94,7 +94,7 @@ async def ensure_latest_pro_model(page: Any) -> ChatGPTModelSelection:
         raise ChatGPTBrowserError(
             code=code,
             stage="model-selection",
-            message=f'Unable to select Oracle ChatGPT Pro target "{ORACLE_CHATGPT_PRO_MODEL}".',
+            message=f'Unable to select ChatGPT Pro target "{CHATGPT_PRO_TARGET_MODEL}".',
             details={
                 "status": status,
                 "available_labels": available_labels,
@@ -102,14 +102,14 @@ async def ensure_latest_pro_model(page: Any) -> ChatGPTModelSelection:
             },
         )
 
-    resolved_label = str(result.get("label") or "").strip() or ORACLE_CHATGPT_PRO_MODEL
+    resolved_label = str(result.get("label") or "").strip() or CHATGPT_PRO_TARGET_MODEL
     if rank_model_label(resolved_label)[0] < 3:
         raise ChatGPTBrowserError(
             code="model_unconfirmed",
             stage="model-selection",
             message="ChatGPT model picker did not confirm the selected Pro model.",
             details={
-                "requested": ORACLE_CHATGPT_PRO_MODEL,
+                "requested": CHATGPT_PRO_TARGET_MODEL,
                 "resolved_label": resolved_label,
                 "available_labels": available_labels,
                 "status": status,
@@ -117,10 +117,10 @@ async def ensure_latest_pro_model(page: Any) -> ChatGPTModelSelection:
         )
 
     return ChatGPTModelSelection(
-        requested=ORACLE_CHATGPT_PRO_MODEL,
+        requested=CHATGPT_PRO_TARGET_MODEL,
         resolved_label=resolved_label,
         available_labels=available_labels,
-        strategy=ORACLE_MODEL_SELECTION_STRATEGY,
+        strategy=CHATGPT_PRO_MODEL_SELECTION_STRATEGY,
         verified=True,
     )
 
@@ -138,18 +138,18 @@ def _available_labels_from_result(result: dict[str, Any]) -> list[str]:
     return labels
 
 
-def _oracle_model_selection_expression() -> str:
+def _pro_model_selection_expression() -> str:
     replacements = {
         "__MODEL_BUTTON_SELECTOR__": json.dumps(MODEL_BUTTON_SELECTOR),
         "__COMPOSER_MODEL_SIGNAL_SELECTOR__": json.dumps(COMPOSER_MODEL_SIGNAL_SELECTOR),
         "__MENU_CONTAINER_SELECTOR__": json.dumps(MENU_CONTAINER_SELECTOR),
         "__MENU_ITEM_SELECTOR__": json.dumps(MENU_ITEM_SELECTOR),
-        "__PRIMARY_LABEL__": json.dumps(ORACLE_CHATGPT_PRO_MODEL),
-        "__LABEL_TOKENS__": json.dumps(ORACLE_PRO_LABEL_TOKENS),
-        "__TEST_ID_TOKENS__": json.dumps(ORACLE_PRO_TEST_ID_TOKENS),
-        "__LEGACY_PRO_TOKENS__": json.dumps(ORACLE_LEGACY_PRO_TOKENS),
-        "__CURRENT_PRO_TEXT_TOKENS__": json.dumps(ORACLE_CURRENT_PRO_TEXT_TOKENS),
-        "__CURRENT_PRO_TEST_ID_TOKENS__": json.dumps(ORACLE_CURRENT_PRO_TEST_ID_TOKENS),
+        "__PRIMARY_LABEL__": json.dumps(CHATGPT_PRO_TARGET_MODEL),
+        "__LABEL_TOKENS__": json.dumps(CHATGPT_PRO_LABEL_TOKENS),
+        "__TEST_ID_TOKENS__": json.dumps(CHATGPT_PRO_TEST_ID_TOKENS),
+        "__LEGACY_PRO_TOKENS__": json.dumps(CHATGPT_LEGACY_PRO_TOKENS),
+        "__CURRENT_PRO_TEXT_TOKENS__": json.dumps(CHATGPT_CURRENT_PRO_TEXT_TOKENS),
+        "__CURRENT_PRO_TEST_ID_TOKENS__": json.dumps(CHATGPT_CURRENT_PRO_TEST_ID_TOKENS),
     }
     expression = r"""
 (async () => {

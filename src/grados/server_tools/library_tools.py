@@ -179,9 +179,17 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
         download_watch_dir = str(resume.get("download_watch_dir", "") or "")
         download_max_age_seconds = str(resume.get("download_max_age_seconds", "") or "")
         next_action = str(resume.get("next_action", "") or _CODEX_HANDOFF_NEXT_ACTION)
+        required_host_plugin = str(resume.get("required_host_plugin", "") or "@chrome")
+        required_host_backend = str(
+            resume.get("required_host_backend", "") or "Codex Chrome plugin extension backend"
+        )
+        requested_route = str(resume.get("requested_route", "") or "codex_chrome_plugin_extension")
         documentation_url = str(resume.get("documentation_url", "") or "")
         result += "\n\n### Codex Chrome Extension Download\n"
         result += f"- **Browser:** {browser}\n"
+        result += f"- **Required Host Plugin:** {required_host_plugin}\n"
+        result += f"- **Required Host Backend:** {required_host_backend}\n"
+        result += f"- **Requested Route:** {requested_route}\n"
         if documentation_url:
             result += f"- **Setup:** {documentation_url}\n"
         if start_url:
@@ -197,7 +205,7 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
         if next_action:
             result += f"- **Next Action:** {next_action}\n"
         result += (
-            "- **Next:** use Chrome with the Codex extension to download the PDF, then call "
+            "- **Next:** use the Codex `@chrome` plugin / Chrome extension backend to download the PDF, then call "
             "`ingest_codex_downloaded_pdf(doi=...)`. If the absolute PDF path is already known, "
             "call `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, "
             "acquisition_via=\"codex\")` instead.\n"

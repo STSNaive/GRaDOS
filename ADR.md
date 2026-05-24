@@ -388,6 +388,7 @@
 - 现有 managed Chrome / Patchright 继续作为 GRaDOS 内部 browser strategy 的主路径。
 - Codex in-app browser 只可作为页面观察、调试或预览表面；不能被文档或代码描述为可稳定产出 PDF artifact 的获取后端。
 - Codex Chrome extension 可以作为 disabled-by-default 的 `codex` 配置项参与 `extract.fetch_strategy.order`，但语义是 host-agent handoff：GRaDOS 只在该顺序位置返回 Chrome extension 下载 receipt，由 host agent 在 GRaDOS 进程外拿到本地 PDF 路径，再调用 `parse_pdf_file` 回流入库；不得伪装成 server 内部下载 backend。
+- Host agent 应把 `codex` receipt 解释为使用 Codex `@chrome` 插件 / Chrome extension backend 作为 acquisition route；相关 operational provenance 应进入 acquisition / extraction record，不写入 canonical paper frontmatter。
 
 ### 结果与影响
 - GRaDOS 的 acquisition contract 继续围绕可由 Python runtime 控制和验证的后端组织。
@@ -623,7 +624,7 @@
 - 启用后，默认入口是 `run_external_synthesis`。它从 topic 准备 evidence pack 和 packet，或从既有 pack id 验证并 packet 化该 pack，然后使用 GRaDOS 私有 ChatGPT profile 执行 browser flow。
 - ChatGPT browser runtime 由 GRaDOS 管理：使用 `browser/chatgpt-profile`、`browser/chatgpt-sessions`、profile readiness、login probe、model/thinking selector、response capture、session record 和 profile lock。
 - `grados external-synthesis setup-browser` 只负责首次登录私有 profile；`grados external-synthesis doctor [--live]` 负责诊断 profile 与登录状态；运行期 synthesis 与 live diagnosis 共享同一 private profile lock。
-- 模型和 thinking route 是协议默认值，不进入 GRaDOS config。运行时在 ChatGPT UI 中确认 Oracle 当前 Pro model route 与 Pro Extended thinking route，并记录实际确认到的原始标签。
+- 模型和 thinking route 是协议默认值，不进入 GRaDOS config。运行时在 ChatGPT UI 中确认 GRaDOS-validated Pro model route 与 Pro Extended thinking route，并记录实际确认到的原始标签。
 - `preview_external_synthesis_packet`、`prepare_external_synthesis_from_topic`、`prepare_external_synthesis_packet`、`save_external_synthesis_result` 和 `audit_external_synthesis_result` 保留给 dry run、恢复和显式 rerun。
 - ChatGPT Pro 输出仍只是 reviewer/synthesizer advisory。结果必须保存为 `external_synthesis_result` 并按关联 packet 或 source pack 审计；最终引用必须回到 verified evidence pack 或 canonical paragraph windows。
 - 该 route 不替换 `extract.fetch_strategy.codex` PDF acquisition；PDF acquisition 的 Chrome extension handoff 和 ChatGPT synthesis 是两个独立能力。
@@ -632,3 +633,31 @@
 - GRaDOS 对外暴露一个更可验证的 native browser synthesis route，减少 host agent 手工拼装 prompt、读取 UI 和回传结果的漂移面。
 - ADR-020 的 host-side orchestration 部分被取代；其 evidence boundary、default-off gate、ChatGPT advisory-only 和 canonical reread 规则继续有效。
 - 共享 ChatGPT profile 是单一资源；setup、doctor live 和 synthesis 必须避免并发争用，并在 profile 被占用时显式失败或提示用户关闭现有窗口。
+
+---
+
+## ADR-024：Publisher PDF browser runtime 采用 GRaDOS-managed profile/session contract
+
+- 状态：Accepted
+- 日期：2026-05-24
+
+### 背景
+- `browser` strategy 是机构权限下获取 publisher PDF 的一等路径，但它不能成为第二条 canonical 写入管线。
+- 早期接手计划已把核心 runtime 能力落地：publisher profile readiness、profile lock、PDF browser session records、capture/event metadata、`grados browser status/doctor` 和回归测试。
+- ChatGPT 外部综合也使用 browser runtime，但它的 profile、session 和 model/thinking selector 都属于 advisory synthesis 层，不能污染 publisher PDF 下载路径。
+
+### 决策
+- `GRADOS_HOME/browser/profile` 只用于 publisher PDF acquisition；`GRADOS_HOME/browser/chatgpt-profile` 只用于 ChatGPT 外部综合。两者的 profile、lock、session record 和 DOM selector 不混用。
+- `fetch_with_browser(...)` 的合同保持为 acquisition-only：成功时返回 PDF bytes；遇到 publisher verification/challenge 时返回 `manual=true`、host、resume metadata、warnings 和 session/capture metadata；它不直接写 `papers/*.md`。
+- `extract_paper_full_text(...)` 继续负责后半段 canonical pipeline：把 browser 返回的 PDF bytes 归档到 `downloads/*.pdf`，再走 parser、QA、sidecar/index 和 canonical Markdown persistence。
+- Publisher browser runtime 使用 GRaDOS-managed Chromium/Patchright、persistent publisher profile、profile lock/stale recovery、`browser/pdf-sessions` operational records、response/download/backfill capture、structured event metadata 和 manual resume state。
+- `grados browser status --json` 与 `grados browser doctor [--live --doi DOI]` 是 publisher browser runtime 的诊断入口；live doctor 只能报告 capture/challenge/session record，不绕过 canonical extraction pipeline。
+- 不新增 browser transport config；继续使用 `extract.fetch_strategy.browser` 和 legacy-named `extract.headless_browser` 配置段。
+- `codex` 仍是 disabled-by-default host-action handoff，语义与 ADR-014/018 一致；它不替代 GRaDOS-managed `browser` strategy。
+- 跨进程 CDP attach/reuse 不作为当前合同的一部分。除非 live tests 证明稳定，否则跨进程并发保持 lock/wait/fail-safe 语义。
+
+### 结果与影响
+- Browser acquisition 的可观测性和恢复能力进入正式架构面，而不是继续保留在 TODO 接手文档里。
+- `browser/pdf-sessions`、capture metadata 和 challenge resume 是 operational/debug data，不是 citation evidence，也不是 `papers/*.md` 的替代来源。
+- 新增 publisher-specific browser strategy 时，应接入现有 strategy registry，并以 PDF response/download/backfill capture 作为成功判定，而不是以“点击了按钮”判定成功。
+- README、CHANGELOG、skill tool reference 和 tests 共同维护当前用户可见行为；TODO 只保留 CDP attach/reuse、`codex` 去留和 live DOI 样本这类未完成决策。

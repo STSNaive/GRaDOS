@@ -132,7 +132,7 @@ def test_external_synthesis_has_topic_to_packet_route_and_default_save_audit() -
 
     assert "GRaDOS-native ChatGPT Pro browser synthesis route" in run_description
     assert "private GRaDOS ChatGPT Chrome profile" in run_description
-    assert "Oracle's current Pro model and Pro Extended thinking route" in run_description
+    assert "GRaDOS-validated Pro model and Pro Extended thinking route" in run_description
     assert "fresh evidence pack from a topic" in prepare_description
     assert "run_external_synthesis" in prepare_description
     assert "By default, immediately audits" in save_description

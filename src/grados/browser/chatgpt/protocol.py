@@ -1,22 +1,22 @@
-"""Oracle-aligned ChatGPT browser protocol constants.
+"""GRaDOS ChatGPT browser protocol constants.
 
-Keep model and thinking choices here so future Oracle route updates are a
+Keep model and thinking choices here so future ChatGPT route updates are a
 small internal patch, not a config or workflow change.
 """
 
 from __future__ import annotations
 
-ORACLE_CHATGPT_PRO_MODEL = "gpt-5.5-pro"
-ORACLE_MODEL_SELECTION_STRATEGY = "oracle_model_picker"
+CHATGPT_PRO_TARGET_MODEL = "gpt-5.5-pro"
+CHATGPT_PRO_MODEL_SELECTION_STRATEGY = "chatgpt_pro_model_picker"
 
-ORACLE_PRO_VISIBLE_ALIASES = (
+CHATGPT_PRO_VISIBLE_ALIASES = (
     "pro",
     "chatgpt pro",
     "pro extended",
     "extended pro",
 )
 
-ORACLE_PRO_LABEL_TOKENS = (
+CHATGPT_PRO_LABEL_TOKENS = (
     "gpt-5.5-pro",
     "gpt 5.5 pro",
     "gpt-5-5-pro",
@@ -27,7 +27,7 @@ ORACLE_PRO_LABEL_TOKENS = (
     "chatgpt pro",
 )
 
-ORACLE_PRO_TEST_ID_TOKENS = (
+CHATGPT_PRO_TEST_ID_TOKENS = (
     "model-switcher-gpt-5.5-pro",
     "model-switcher-gpt-5-5-pro",
     "gpt-5.5-pro",
@@ -37,19 +37,19 @@ ORACLE_PRO_TEST_ID_TOKENS = (
     "proresearch",
 )
 
-ORACLE_CURRENT_PRO_TEXT_TOKENS = (
+CHATGPT_CURRENT_PRO_TEXT_TOKENS = (
     "5 5",
     "gpt55",
     "gpt 5 5",
 )
 
-ORACLE_CURRENT_PRO_TEST_ID_TOKENS = (
+CHATGPT_CURRENT_PRO_TEST_ID_TOKENS = (
     "5-5",
     "5.5",
     "gpt55",
 )
 
-ORACLE_LEGACY_PRO_TOKENS = (
+CHATGPT_LEGACY_PRO_TOKENS = (
     "gpt 5 pro",
     "gpt 5 4",
     "gpt 5 2",
@@ -61,10 +61,10 @@ ORACLE_LEGACY_PRO_TOKENS = (
     "gpt50",
 )
 
-ORACLE_PRO_THINKING_ALIAS = "pro_extended"
-ORACLE_PRO_THINKING_LEVEL = "extended"
+CHATGPT_PRO_THINKING_ALIAS = "pro_extended"
+CHATGPT_PRO_THINKING_LEVEL = "extended"
 
-ORACLE_THINKING_LEVEL_TOKENS = {
+CHATGPT_THINKING_LEVEL_TOKENS = {
     "light": ("light", "轻"),
     "standard": ("standard", "标准"),
     "extended": ("extended", "扩展", "深度", "加强"),

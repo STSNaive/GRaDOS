@@ -1,4 +1,4 @@
-"""Oracle-aligned ChatGPT composer operations."""
+"""GRaDOS ChatGPT composer operations."""
 
 from __future__ import annotations
 

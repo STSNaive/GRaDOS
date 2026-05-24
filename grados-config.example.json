@@ -170,7 +170,7 @@
         },
         "external_synthesis": {
             "enabled": false,
-            "_comment_enabled": "Default off. When true, GRaDOS may open its private ChatGPT Chrome profile only after verified evidence preparation; Oracle's current Pro model and Pro Extended thinking route are protocol defaults recorded as metadata, not config keys."
+            "_comment_enabled": "Default off. When true, GRaDOS may open its private ChatGPT Chrome profile only after verified evidence preparation; GRaDOS-validated Pro model and Pro Extended thinking route are protocol defaults recorded as metadata, not config keys."
         },
         "_comment_indepth": "Indepth mode is disabled by default. Enable per request with `--indepth` or set research.indepth.enabled=true to make search materialize returned candidates.",
         "_comment_external_synthesis": "Default-off GRaDOS-native ChatGPT Pro browser reviewer/synthesizer. GRaDOS sends only verified evidence packets, saves advisory output, and audits it."

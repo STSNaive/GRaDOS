@@ -40,6 +40,8 @@ from grados.publisher.elsevier import ElsevierFetchResult, fetch_elsevier_articl
 from grados.publisher.springer import SpringerFetchResult, fetch_springer_article
 
 CODEX_CHROME_EXTENSION_DOCS_URL = "https://developers.openai.com/codex/app/chrome-extension"
+CODEX_CHROME_REQUIRED_HOST_PLUGIN = "@chrome"
+CODEX_CHROME_REQUIRED_BACKEND = "Codex Chrome plugin extension backend"
 
 
 @dataclass
@@ -255,14 +257,17 @@ async def _run_codex_fetch_strategy(context: FetchStrategyContext) -> FetchResul
             "next_action": "download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf",
             "fallback_action": "call_parse_pdf_file_with_known_pdf_path",
             "extension": "Codex Chrome extension",
+            "required_host_plugin": CODEX_CHROME_REQUIRED_HOST_PLUGIN,
+            "required_host_backend": CODEX_CHROME_REQUIRED_BACKEND,
+            "requested_route": "codex_chrome_plugin_extension",
             "documentation_url": CODEX_CHROME_EXTENSION_DOCS_URL,
         },
         warnings=[
             (
-                "Codex Chrome extension is a host-agent step. Use Chrome with the Codex extension "
-                "to download the PDF, then call ingest_codex_downloaded_pdf. If the agent already "
-                "knows the absolute PDF path, call parse_pdf_file with the downloaded file path and "
-                "the same DOI."
+                "Codex Chrome extension is a host-agent step. Use the Codex @chrome plugin / "
+                "Chrome extension backend to download the PDF, then call ingest_codex_downloaded_pdf. "
+                "If the agent already knows the absolute PDF path, call parse_pdf_file with the "
+                "downloaded file path and the same DOI."
             )
         ],
     )

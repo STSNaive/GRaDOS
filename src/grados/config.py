@@ -649,7 +649,7 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     )
     data["research"]["external_synthesis"]["_comment_enabled"] = (
         "Default off. When true, GRaDOS may open its private ChatGPT Chrome profile only "
-        "after verified evidence preparation; Oracle's current Pro model and Pro Extended thinking route "
+        "after verified evidence preparation; GRaDOS-validated Pro model and Pro Extended thinking route "
         "are protocol defaults recorded as metadata, not config keys."
     )
 

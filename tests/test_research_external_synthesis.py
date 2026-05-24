@@ -327,7 +327,7 @@ def test_run_external_synthesis_uses_browser_and_audits(
                 requested="gpt-5.5-pro",
                 resolved_label="Pro",
                 available_labels=["Instant", "Pro"],
-                strategy="oracle_model_picker",
+                strategy="chatgpt_pro_model_picker",
                 verified=True,
             ),
             thinking=ChatGPTThinkingSelection(

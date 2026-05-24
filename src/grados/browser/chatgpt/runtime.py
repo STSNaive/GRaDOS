@@ -22,13 +22,13 @@ from grados.browser.chatgpt.login import (
 )
 from grados.browser.chatgpt.model_selection import ensure_latest_pro_model
 from grados.browser.chatgpt.profile import ensure_chatgpt_profile_ready
-from grados.browser.chatgpt.selectors import CHATGPT_URL, ORACLE_CHROME_FLAGS
+from grados.browser.chatgpt.selectors import CHATGPT_BROWSER_CHROME_FLAGS, CHATGPT_URL
 from grados.browser.chatgpt.session_store import (
     ChatGPTSessionStore,
     is_valid_chatgpt_session_id,
     new_session_id,
 )
-from grados.browser.chatgpt.thinking import ensure_oracle_pro_extended_thinking
+from grados.browser.chatgpt.thinking import ensure_pro_extended_thinking
 from grados.browser.chatgpt.types import (
     BROWSER_MODE_VERSION,
     DEFAULT_PROMPT_CHAR_LIMIT,
@@ -209,7 +209,7 @@ async def _run_page_flow(
         await ensure_chatgpt_logged_in(page)
         model = await ensure_latest_pro_model(page)
         store.update(session_id, model_selection=model.to_dict())
-        thinking = await ensure_oracle_pro_extended_thinking(page)
+        thinking = await ensure_pro_extended_thinking(page)
         store.update(session_id, thinking_selection=thinking.to_dict())
         await clear_prompt_composer(page)
         baseline_turns = await read_conversation_turn_count(page)
@@ -308,7 +308,7 @@ async def _launch_private_profile(paths: GRaDOSPaths, browser_config: HeadlessBr
         viewport=random_viewport(),
         user_data_dir=str(paths.chatgpt_browser_profile),
         headless=False,
-        extra_args=ORACLE_CHROME_FLAGS,
+        extra_args=CHATGPT_BROWSER_CHROME_FLAGS,
     )
 
 

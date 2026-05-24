@@ -27,13 +27,13 @@ The private profile is separate from the user's normal Chrome profile. GRaDOS do
 Default workflow:
 
 1. Prefer `run_external_synthesis` for enabled external synthesis. From a topic, it prepares a fresh evidence pack and packet; from a pack id, it verifies and packets that pack.
-2. GRaDOS opens the private ChatGPT profile, verifies that the page is signed in, opens a fresh conversation for the workflow, opens the model picker, confirms Oracle's current Pro model route (`gpt-5.5-pro`), confirms the Pro Extended thinking route, and only then sends the packet.
+2. GRaDOS opens the private ChatGPT profile, verifies that the page is signed in, opens a fresh conversation for the workflow, opens the model picker, confirms GRaDOS-validated Pro model route (`gpt-5.5-pro`), confirms the Pro Extended thinking route, and only then sends the packet.
 3. GRaDOS captures the final response, saves it with `save_external_synthesis_result(audit=true)`, and returns the audit result plus the canonical reread next action.
 4. Use `preview_external_synthesis_packet`, `prepare_external_synthesis_from_topic`, `prepare_external_synthesis_packet`, `save_external_synthesis_result`, and `audit_external_synthesis_result` only for dry runs, recovery, and explicit reruns. Lower-level packet preparation persists `research_artifacts(kind="external_synthesis_packet")`.
 
 `external_synthesis_packet` and `external_synthesis_result` artifacts are recovery and audit material only. They are not final citation evidence.
 
-Model selection and thinking strength are fixed by protocol: GRaDOS follows Oracle's browser route by confirming the visible Pro model route (`gpt-5.5-pro`) and Pro Extended thinking before sending evidence. In localized UIs, GRaDOS records the raw UI labels it confirmed. Stop and report if those choices cannot be confirmed before sending evidence.
+Model selection and thinking strength are fixed by protocol: GRaDOS follows the GRaDOS ChatGPT browser route by confirming the visible Pro model route (`gpt-5.5-pro`) and Pro Extended thinking before sending evidence. In localized UIs, GRaDOS records the raw UI labels it confirmed. Stop and report if those choices cannot be confirmed before sending evidence.
 
 Evidence sent to ChatGPT Pro should be minimal and verified. Each item should include `anchor_id`, DOI or `safe_doi`, `canonical_uri`, `paragraph_start`, `paragraph_count`, a short excerpt, candidate claim, and limitations. Do not send the full local paper library, unrelated full text, publisher/PDF pages, login state, download artifacts, or unverified web content.
 
@@ -41,4 +41,4 @@ Request structured output with `claims`, `anchor_ids`, `confidence`, `caveat`, a
 
 This browser route replaces the old Codex Chrome extension/manual ChatGPT path for `research.external_synthesis`. It does not remove the separate optional `codex` Chrome-extension download route for PDF acquisition.
 
-Stop and report rather than silently degrading when the private profile is not initialized, ChatGPT login is missing, the Oracle Pro model route cannot be confirmed, Pro Extended thinking cannot be confirmed, the conversation cannot be recovered, ChatGPT adds outside evidence, the evidence packet is too large, or `verify_evidence_pack` returns `current_valid=false`.
+Stop and report rather than silently degrading when the private profile is not initialized, ChatGPT login is missing, the GRaDOS-validated Pro model route cannot be confirmed, Pro Extended thinking cannot be confirmed, the conversation cannot be recovered, ChatGPT adds outside evidence, the evidence packet is too large, or `verify_evidence_pack` returns `current_valid=false`.

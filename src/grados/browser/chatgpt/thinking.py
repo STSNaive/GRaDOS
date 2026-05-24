@@ -8,9 +8,9 @@ from typing import Any
 
 from grados.browser.chatgpt.errors import ChatGPTBrowserError
 from grados.browser.chatgpt.protocol import (
-    ORACLE_PRO_THINKING_ALIAS,
-    ORACLE_PRO_THINKING_LEVEL,
-    ORACLE_THINKING_LEVEL_TOKENS,
+    CHATGPT_PRO_THINKING_ALIAS,
+    CHATGPT_PRO_THINKING_LEVEL,
+    CHATGPT_THINKING_LEVEL_TOKENS,
 )
 from grados.browser.chatgpt.selectors import (
     MENU_CONTAINER_SELECTOR,
@@ -20,12 +20,12 @@ from grados.browser.chatgpt.selectors import (
 from grados.browser.chatgpt.types import ChatGPTThinkingSelection
 
 _THINKING_RANKS: list[tuple[int, tuple[str, ...]]] = [
-    (60, ORACLE_THINKING_LEVEL_TOKENS["heavy"]),
-    (50, (*ORACLE_THINKING_LEVEL_TOKENS["extended"], "deep")),
+    (60, CHATGPT_THINKING_LEVEL_TOKENS["heavy"]),
+    (50, (*CHATGPT_THINKING_LEVEL_TOKENS["extended"], "deep")),
     (40, ("high", "高")),
-    (30, ORACLE_THINKING_LEVEL_TOKENS["standard"]),
+    (30, CHATGPT_THINKING_LEVEL_TOKENS["standard"]),
     (20, ("medium", "中")),
-    (10, (*ORACLE_THINKING_LEVEL_TOKENS["light"], "low", "低")),
+    (10, (*CHATGPT_THINKING_LEVEL_TOKENS["light"], "low", "低")),
 ]
 
 
@@ -45,9 +45,9 @@ def rank_thinking_label(label: str) -> int:
     return 0
 
 
-async def ensure_oracle_pro_extended_thinking(page: Any) -> ChatGPTThinkingSelection:
-    """Select Oracle's strict Pro Extended thinking effort."""
-    result = await page.evaluate(_oracle_thinking_expression())
+async def ensure_pro_extended_thinking(page: Any) -> ChatGPTThinkingSelection:
+    """Select Pro Extended thinking effort."""
+    result = await page.evaluate(_pro_thinking_expression())
     if not isinstance(result, dict):
         raise ChatGPTBrowserError(
             code="thinking_unconfirmed",
@@ -61,17 +61,17 @@ async def ensure_oracle_pro_extended_thinking(page: Any) -> ChatGPTThinkingSelec
         raise ChatGPTBrowserError(
             code="thinking_unconfirmed",
             stage="thinking-selection",
-            message="Unable to confirm Oracle Pro Extended thinking before submitting.",
+            message="Unable to confirm Pro Extended thinking before submitting.",
             details={
                 "status": status,
-                "requested": ORACLE_PRO_THINKING_LEVEL,
+                "requested": CHATGPT_PRO_THINKING_LEVEL,
                 "available_labels": available_labels,
                 "model_kind": result.get("modelKind"),
             },
         )
 
-    resolved_label = str(result.get("label") or "").strip() or ORACLE_PRO_THINKING_LEVEL.title()
-    resolved_rank = rank_thinking_label(resolved_label) or rank_thinking_label(ORACLE_PRO_THINKING_LEVEL)
+    resolved_label = str(result.get("label") or "").strip() or CHATGPT_PRO_THINKING_LEVEL.title()
+    resolved_rank = rank_thinking_label(resolved_label) or rank_thinking_label(CHATGPT_PRO_THINKING_LEVEL)
     if resolved_rank <= 0:
         raise ChatGPTBrowserError(
             code="thinking_unconfirmed",
@@ -83,7 +83,7 @@ async def ensure_oracle_pro_extended_thinking(page: Any) -> ChatGPTThinkingSelec
             },
         )
     return ChatGPTThinkingSelection(
-        requested=ORACLE_PRO_THINKING_ALIAS,
+        requested=CHATGPT_PRO_THINKING_ALIAS,
         resolved_label=resolved_label,
         available_labels=available_labels,
         rank=resolved_rank,
@@ -103,14 +103,14 @@ def _available_labels_from_result(result: dict[str, Any]) -> list[str]:
     return labels
 
 
-def _oracle_thinking_expression() -> str:
+def _pro_thinking_expression() -> str:
     replacements = {
         "__MENU_CONTAINER_SELECTOR__": json.dumps(MENU_CONTAINER_SELECTOR),
         "__MENU_ITEM_SELECTOR__": json.dumps(MENU_ITEM_SELECTOR),
         "__MODEL_BUTTON_SELECTOR__": json.dumps(MODEL_BUTTON_SELECTOR),
-        "__TARGET_LEVEL__": json.dumps(ORACLE_PRO_THINKING_LEVEL),
+        "__TARGET_LEVEL__": json.dumps(CHATGPT_PRO_THINKING_LEVEL),
         "__TARGET_MODEL_KIND__": json.dumps("pro"),
-        "__LEVEL_TOKENS__": json.dumps(ORACLE_THINKING_LEVEL_TOKENS),
+        "__LEVEL_TOKENS__": json.dumps(CHATGPT_THINKING_LEVEL_TOKENS),
     }
     expression = r"""
 (async () => {

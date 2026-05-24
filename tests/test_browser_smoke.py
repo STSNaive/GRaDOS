@@ -41,7 +41,7 @@ def test_random_viewport_uses_known_fingerprint_set() -> None:
     assert random_viewport() in VIEWPORTS
 
 
-def test_browser_profile_status_uses_oracle_style_markers(tmp_path: Path) -> None:
+def test_browser_profile_status_uses_grados_browser_markers(tmp_path: Path) -> None:
     profile = tmp_path / "profile"
 
     status = browser_profile_status(profile)

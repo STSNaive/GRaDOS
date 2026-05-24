@@ -1,4 +1,4 @@
-"""Oracle-aligned ChatGPT assistant response extraction helpers."""
+"""GRaDOS ChatGPT assistant response extraction helpers."""
 
 from __future__ import annotations
 

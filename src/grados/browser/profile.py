@@ -7,7 +7,7 @@ from typing import Any
 
 
 def browser_profile_status(profile_dir: Path) -> dict[str, Any]:
-    """Return Oracle-style readiness markers for a persistent browser profile."""
+    """Return GRaDOS browser readiness markers for a persistent browser profile."""
     profile_dir = profile_dir.expanduser()
     default_dir = profile_dir / "Default"
     local_state = profile_dir / "Local State"

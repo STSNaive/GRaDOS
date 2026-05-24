@@ -88,7 +88,7 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     assert "same `GRADOS_HOME` as the active server" in skill_text
     assert "exits with code 0" in external_synthesis_reference
     assert "`grados:run_external_synthesis`" in tools_reference
-    assert "Oracle's current Pro model route" in external_synthesis_reference
+    assert "GRaDOS-validated Pro model route" in external_synthesis_reference
     assert "Pro Extended thinking route" in external_synthesis_reference
     assert "GRaDOS-native ChatGPT Pro browser mode" in external_synthesis_reference
     assert "private ChatGPT profile" in external_synthesis_reference

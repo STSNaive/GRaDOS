@@ -16,7 +16,7 @@ from grados.browser.chatgpt.composer import (
     _send_button_expression,
 )
 from grados.browser.chatgpt.errors import ChatGPTBrowserError
-from grados.browser.chatgpt.lock import ORACLE_PROFILE_LOCK_FILENAME, chatgpt_profile_lock
+from grados.browser.chatgpt.lock import CHATGPT_PROFILE_LOCK_FILENAME, chatgpt_profile_lock
 from grados.browser.chatgpt.login import (
     _login_probe_expression,
     _should_open_chatgpt_for_login_probe,
@@ -24,7 +24,7 @@ from grados.browser.chatgpt.login import (
     wait_for_chatgpt_login,
 )
 from grados.browser.chatgpt.model_selection import (
-    _oracle_model_selection_expression,
+    _pro_model_selection_expression,
     is_legacy_pro_label,
     select_latest_pro_label,
 )
@@ -33,17 +33,17 @@ from grados.browser.chatgpt.profile import (
     is_chatgpt_profile_initialized,
 )
 from grados.browser.chatgpt.protocol import (
-    ORACLE_CHATGPT_PRO_MODEL,
-    ORACLE_PRO_LABEL_TOKENS,
-    ORACLE_PRO_TEST_ID_TOKENS,
-    ORACLE_PRO_THINKING_LEVEL,
+    CHATGPT_PRO_LABEL_TOKENS,
+    CHATGPT_PRO_TARGET_MODEL,
+    CHATGPT_PRO_TEST_ID_TOKENS,
+    CHATGPT_PRO_THINKING_LEVEL,
 )
 from grados.browser.chatgpt.selectors import (
+    CHATGPT_BROWSER_CHROME_FLAGS,
     COMPOSER_MODEL_SIGNAL_SELECTOR,
     MENU_CONTAINER_SELECTOR,
     MENU_ITEM_SELECTOR,
     MODEL_BUTTON_SELECTOR,
-    ORACLE_CHROME_FLAGS,
 )
 from grados.browser.chatgpt.session_store import (
     ChatGPTSessionStore,
@@ -51,7 +51,7 @@ from grados.browser.chatgpt.session_store import (
     new_session_id,
 )
 from grados.browser.chatgpt.thinking import (
-    _oracle_thinking_expression,
+    _pro_thinking_expression,
     rank_thinking_label,
 )
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
@@ -72,18 +72,18 @@ def test_chatgpt_profile_initialization_uses_private_profile_markers(tmp_path: P
     assert status["setup_command"] == "grados external-synthesis setup-browser"
 
 
-def test_profile_lock_uses_oracle_lock_file(tmp_path: Path) -> None:
+def test_profile_lock_uses_chatgpt_lock_file(tmp_path: Path) -> None:
     profile = tmp_path / "chatgpt-profile"
     profile.mkdir()
 
     async def run() -> None:
         async with chatgpt_profile_lock(profile, purpose="test", session_id="s1") as lock:
-            assert lock.lock_path == profile / ORACLE_PROFILE_LOCK_FILENAME
+            assert lock.lock_path == profile / CHATGPT_PROFILE_LOCK_FILENAME
             assert lock.lock_path.exists()
 
     asyncio.run(run())
 
-    assert not (profile / ORACLE_PROFILE_LOCK_FILENAME).exists()
+    assert not (profile / CHATGPT_PROFILE_LOCK_FILENAME).exists()
 
 
 def test_login_probe_only_opens_chatgpt_from_blank_pages() -> None:
@@ -399,13 +399,13 @@ def test_latest_pro_model_fails_without_current_pro() -> None:
         raise AssertionError("expected model_unavailable")
 
 
-def test_oracle_pro_extended_thinking_rank_preserves_localized_labels() -> None:
-    assert ORACLE_PRO_THINKING_LEVEL == "extended"
+def test_pro_extended_thinking_rank_preserves_localized_labels() -> None:
+    assert CHATGPT_PRO_THINKING_LEVEL == "extended"
     assert rank_thinking_label("Extended") == 50
     assert rank_thinking_label("深度思考") == 50
 
 
-def test_chatgpt_selectors_match_oracle_browser_contract() -> None:
+def test_chatgpt_selectors_match_browser_contract() -> None:
     assert MODEL_BUTTON_SELECTOR == (
         '[data-testid="model-switcher-dropdown-button"], button.__composer-pill[aria-haspopup="menu"]'
     )
@@ -414,30 +414,30 @@ def test_chatgpt_selectors_match_oracle_browser_contract() -> None:
         'button, [role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]'
     )
     assert COMPOSER_MODEL_SIGNAL_SELECTOR == '[data-testid="composer-footer-actions"]'
-    assert "--disable-background-networking" in ORACLE_CHROME_FLAGS
-    assert "--disable-features=TranslateUI,AutomationControlled" in ORACLE_CHROME_FLAGS
-    assert "--accept-lang=en-US,en" in ORACLE_CHROME_FLAGS
+    assert "--disable-background-networking" in CHATGPT_BROWSER_CHROME_FLAGS
+    assert "--disable-features=TranslateUI,AutomationControlled" in CHATGPT_BROWSER_CHROME_FLAGS
+    assert "--accept-lang=en-US,en" in CHATGPT_BROWSER_CHROME_FLAGS
 
 
-def test_model_expression_uses_oracle_picker_controls() -> None:
-    expression = _oracle_model_selection_expression()
+def test_model_expression_uses_pro_picker_controls() -> None:
+    expression = _pro_model_selection_expression()
 
     assert "model-switcher-dropdown-button" in expression
     assert "data-radix-collection-root" in expression
     assert "data-model-picker-thinking-effort-action" in expression
     assert "pro extended" in expression
-    assert ORACLE_CHATGPT_PRO_MODEL in expression
+    assert CHATGPT_PRO_TARGET_MODEL in expression
 
 
-def test_oracle_protocol_constants_centralize_model_route() -> None:
-    assert ORACLE_CHATGPT_PRO_MODEL == "gpt-5.5-pro"
-    assert ORACLE_CHATGPT_PRO_MODEL in ORACLE_PRO_LABEL_TOKENS
-    assert ORACLE_CHATGPT_PRO_MODEL in ORACLE_PRO_TEST_ID_TOKENS
-    assert ORACLE_PRO_THINKING_LEVEL == "extended"
+def test_chatgpt_protocol_constants_centralize_model_route() -> None:
+    assert CHATGPT_PRO_TARGET_MODEL == "gpt-5.5-pro"
+    assert CHATGPT_PRO_TARGET_MODEL in CHATGPT_PRO_LABEL_TOKENS
+    assert CHATGPT_PRO_TARGET_MODEL in CHATGPT_PRO_TEST_ID_TOKENS
+    assert CHATGPT_PRO_THINKING_LEVEL == "extended"
 
 
-def test_thinking_expression_uses_oracle_effort_controls() -> None:
-    expression = _oracle_thinking_expression()
+def test_thinking_expression_uses_pro_effort_controls() -> None:
+    expression = _pro_thinking_expression()
 
     assert "data-model-picker-thinking-effort-action" in expression
     assert "data-model-picker-thinking-effort-row" in expression
@@ -445,7 +445,7 @@ def test_thinking_expression_uses_oracle_effort_controls() -> None:
     assert "model-kind-not-found" in expression
 
 
-def test_composer_expressions_use_oracle_prompt_commit_route() -> None:
+def test_composer_expressions_use_chatgpt_prompt_commit_route() -> None:
     focus = _focus_composer_expression()
     send = _send_button_expression()
     commit = _prompt_commit_expression("hello", 0)
@@ -457,7 +457,7 @@ def test_composer_expressions_use_oracle_prompt_commit_route() -> None:
     assert "normalizedPromptPrefix" in commit
 
 
-def test_capture_expressions_use_oracle_snapshot_and_copy_route() -> None:
+def test_capture_expressions_use_chatgpt_snapshot_and_copy_route() -> None:
     snapshot = _assistant_snapshot_expression()
     copy = _copy_expression({"messageId": "m1", "turnId": "t1"})
 
