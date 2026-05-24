@@ -476,7 +476,7 @@
 
 ---
 
-## ADR-018：Codex Chrome extension 回流采用显式 watch-dir ingest
+## ADR-018：Codex Chrome extension 回流采用显式路径优先 ingest
 
 - 状态：Accepted
 - 日期：2026-05-11
@@ -488,15 +488,16 @@
 
 ### 决策
 - `extract_paper_full_text` 的 `codex` receipt 写入 `issued_at`、`download_watch_dir`、`download_max_age_seconds` 和 `next_action="download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf"`。
-- 新增 `ingest_codex_downloaded_pdf(doi, expected_title=None, file_name_hint=None, downloaded_at=None)` 作为唯一 watch-dir ingest 入口。
-- Watch dir 默认 `~/Downloads`，只表达 Chrome 常见用户下载目录语义；该配置不改变 Chrome 设置，也不影响 `api`、`browser`、`scihub`、`import_local_pdf_library` 或显式 `parse_pdf_file(file_path=...)`。
-- 入口只在该 DOI 有 pending `fetch_via="codex"` / host-action remote metadata 时运行；否则返回结构化失败。
+- `ingest_codex_downloaded_pdf(doi, expected_title=None, file_name_hint=None, downloaded_at=None, downloaded_file_path=None)` 是 Codex handoff ingest 入口；host 已知道 Chrome 实际 PDF 绝对路径时应传 `downloaded_file_path`。
+- Watch dir 默认 `~/Downloads`，只表达 scan-only ingest 目录语义；该配置不改变 Chrome 设置，也不影响 `api`、`browser`、`scihub`、`import_local_pdf_library` 或显式 `parse_pdf_file(file_path=...)`。
+- DOI 已有 canonical saved paper 时，`ingest_codex_downloaded_pdf` 先返回 `already_saved`，不再因 pending state 缺失而失败。
+- 未提供 `downloaded_file_path` 时，入口仍优先要求该 DOI 有 pending `fetch_via="codex"` / host-action remote metadata；watch-dir 空扫描只提示传真实路径或调用 `parse_pdf_file(file_path=...)`，不提示再次点击 publisher 下载按钮。
 - 候选校验保持保守：默认只扫根层，拒绝隐藏/临时文件、`.crdownload`、symlink、non-regular file、非 `.pdf`、过旧文件、过大文件、非 `%PDF-` 文件、不稳定下载和读取前后 hash 变化。
 - 0 候选、多候选和 parse 失败都写入 failure memory 或 `extraction_receipt` artifact；多候选只返回 disambiguation token，不猜 DOI。
 
 ### 结果与影响
 - Codex host agent 有了可恢复的“下载完成后回流”步骤，同时 GRaDOS 不假装控制 Chrome 下载目录。
-- 显式 PDF 路径仍可直接走 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`，不触发 watch-dir 扫描。
+- 显式 PDF 路径可走 `ingest_codex_downloaded_pdf(downloaded_file_path=...)` 以保留 Codex receipt/provenance，也可直接走 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`，不触发 watch-dir 扫描。
 - 失败记录继续复用现有 research state，不新增并行状态库。
 
 ---
@@ -512,9 +513,11 @@
 
 ### 决策
 - `papers/*.md` 仍是 canonical reading text；`downloads/*.pdf` 是原始 PDF 归档；`database/chroma/` 和 `database/fts.sqlite3` 是可重建索引。
+- 每篇 DOI 的受管原始 PDF 统一为 `downloads/{safe_doi}.pdf`。同 DOI 同 hash 的候选会复用、rename 或 copy 到该路径；同 DOI 不同 hash 返回 conflict receipt，不覆盖 canonical PDF，也不删除候选。
 - 新增 `papers/_parsed/{safe_doi}.json` 作为同一轮保存产生的 parser provenance sidecar。
-- Sidecar 最小字段包括 schema version、safe DOI、source PDF path/hash、canonical Markdown path/hash、parser、parser version、generated time、blocks 和 assets manifest pointer。
+- Sidecar 最小字段包括 schema version、safe DOI、input PDF path/name/hash、canonical PDF path/hash、materialization action/outcome、parse outcome、canonical Markdown path/hash、parser、parser version、generated time、blocks 和 assets manifest pointer。
 - Markdown frontmatter 保存轻量 `parsed_manifest_path` 指针；`get_saved_paper_structure` 可展示 parser、block count、page range、source PDF hash、canonical Markdown hash 和 asset manifest 状态。
+- 新保存的 Markdown frontmatter 不再写 `fetch_outcome`、`original_pdf_path`、`copied_pdf_path`、`source_pdf_hash` 或 `acquisition_via`；旧 frontmatter 仍按原字段兼容读取。
 - Sidecar 写入失败只产生 warning，不阻断 canonical Markdown 保存、PDF 归档或索引刷新。
 - `_parsed` 与 `_assets` 分层：前者记录 provenance / mapping，后者保存可读取 assets；二者都不是 citation content。
 

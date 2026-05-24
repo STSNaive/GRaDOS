@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from grados._retry import install_runtime_defaults
-from grados.browser.fetch_runtime import BrowserFetchState, try_backfill_from_url
+from grados.browser.fetch_runtime import (
+    BrowserFetchState,
+    BrowserListenerRegistry,
+    is_pdf_like_browser_response,
+    try_backfill_from_url,
+)
 from grados.browser.generic import build_browser_page_strategies
 from grados.browser.lock import BrowserProfileLockError, browser_profile_lock, read_browser_profile_lock
 from grados.browser.manager import (
@@ -204,6 +209,47 @@ def test_pdf_classification_and_bot_detection() -> None:
     assert classify_pdf_content(pdf_data, "application/pdf") == {"is_pdf": True, "reason": "ok"}
     assert classify_pdf_content(html_data, "text/html")["reason"] == "html_or_challenge_page"
     assert detect_bot_challenge("Just a moment...", "<html>captcha</html>", "https://example.com") is True
+
+
+def test_browser_pdf_like_response_detection_covers_publisher_patterns() -> None:
+    assert is_pdf_like_browser_response("https://example.com/article.pdfft")
+    assert is_pdf_like_browser_response("https://example.com/pdfdirect?id=1")
+    assert is_pdf_like_browser_response("https://example.com/content/pdf/10.1234/demo")
+    assert is_pdf_like_browser_response(
+        "https://example.com/download",
+        content_disposition='attachment; filename="paper.pdf"',
+    )
+    assert not is_pdf_like_browser_response("https://example.com/article", "text/html")
+
+
+def test_cdp_response_body_capture_records_source_metadata() -> None:
+    class FakeContext:
+        pass
+
+    class FakeCdp:
+        async def send(self, command: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+            assert command == "Network.getResponseBody"
+            assert payload == {"requestId": "request-1"}
+            return {"body": "JVBERi0xLjQKJWNkcA==", "base64Encoded": True}
+
+    state = BrowserFetchState(max_capture_bytes=1024)
+    registry = BrowserListenerRegistry(FakeContext(), state)
+    cdp = FakeCdp()
+    registry.cdp_pdf_candidates[registry._cdp_request_key(cdp, "request-1")] = {
+        "url": "https://example.com/content/pdf/10.1234/demo",
+        "content_type": "application/pdf",
+        "content_disposition": "",
+    }
+
+    asyncio.run(registry._capture_cdp_response_body(cdp, {"requestId": "request-1"}))
+
+    assert state.pdf_buffer == b"%PDF-1.4\n%cdp"
+    assert state.capture_payload() == {
+        "source": "cdp_response_body",
+        "url": "https://example.com/content/pdf/10.1234/demo",
+        "content_type": "application/pdf",
+        "bytes": len(b"%PDF-1.4\n%cdp"),
+    }
 
 
 def test_browser_fetch_state_rejects_oversized_pdf_capture() -> None:

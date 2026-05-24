@@ -8,7 +8,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from grados.config import GRaDOSPaths, generate_default_config
+from grados.publisher.common import safe_doi_filename
 from grados.server_tools import library_tools
+from grados.storage.frontmatter import read_frontmatter_metadata_from_file
+from grados.storage.papers import save_paper_markdown
 
 
 def _write_config(
@@ -117,6 +120,83 @@ def test_ingest_codex_downloaded_pdf_saves_unique_candidate(
     assert captured["remote_metadata"]["fetch_via"] == "codex"
 
 
+def test_ingest_codex_downloaded_pdf_returns_already_saved_without_pending(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    doi = "10.1234/already-saved"
+    home = tmp_path / "grados-home"
+    watch_dir = tmp_path / "Downloads"
+    watch_dir.mkdir()
+    _write_config(home, watch_dir)
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    paths = GRaDOSPaths(home)
+    save_paper_markdown(
+        doi,
+        "# Already Saved\n\n## Abstract\n\n" + ("saved content. " * 80),
+        paths.papers,
+        title="Already Saved",
+    )
+    _patch_pending_record(monkeypatch, None)
+
+    result = asyncio.run(library_tools.ingest_codex_downloaded_pdf(doi=doi))
+
+    assert result["status"] == "success"
+    assert result["outcome"] == "already_saved"
+    assert result["next_action"] == "read_saved_paper_or_get_saved_paper_structure"
+
+
+def test_ingest_codex_downloaded_pdf_accepts_known_downloaded_file_path(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    doi = "10.1234/known-path"
+    home = tmp_path / "grados-home"
+    watch_dir = tmp_path / "missing-watch-dir"
+    _write_config(home, watch_dir)
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    pdf_path = tmp_path / "Chrome Downloads" / "known.pdf"
+    pdf_path.parent.mkdir()
+    pdf_path.write_bytes(b"%PDF-1.4\n%known")
+
+    import grados.extract.parse as parse_module
+    import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    async def fake_parse_pdf(*args: Any, **kwargs: Any) -> Any:
+        return parse_module.ParsePipelineResult(
+            markdown="# Known Path\n\n## Abstract\n\n" + ("downloaded path content. " * 80),
+            parser_used="Docling",
+        )
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+    _patch_pending_record(monkeypatch, None)
+
+    result = asyncio.run(
+        library_tools.ingest_codex_downloaded_pdf(
+            doi=doi,
+            expected_title="Known Path",
+            downloaded_file_path=str(pdf_path),
+        )
+    )
+
+    assert result["status"] == "success"
+    assert result["source_path"] == str(pdf_path)
+    paper_path = home / "papers" / f"{safe_doi_filename(doi)}.md"
+    frontmatter = read_frontmatter_metadata_from_file(paper_path)
+    assert "original_pdf_path" not in frontmatter
+    assert "copied_pdf_path" not in frontmatter
+    assert "source_pdf_hash" not in frontmatter
+    assert "acquisition_via" not in frontmatter
+    parsed_manifest = json.loads((paper_path.parent / frontmatter["parsed_manifest_path"]).read_text())
+    assert parsed_manifest["input_pdf_path"] == str(pdf_path.resolve())
+    assert parsed_manifest["materialization_action"] == "copied"
+
+
 def test_ingest_codex_downloaded_pdf_requires_pending_codex_handoff(
     tmp_path: Path,
     monkeypatch: Any,
@@ -143,6 +223,7 @@ def test_ingest_codex_downloaded_pdf_requires_pending_codex_handoff(
 
     assert result["status"] == "failed"
     assert result["failure_reason"] == "no_pending_handoff"
+    assert "downloaded_file_path" in result["next_action"]
 
 
 def test_ingest_codex_downloaded_pdf_rejects_missing_watch_dir(
@@ -160,6 +241,70 @@ def test_ingest_codex_downloaded_pdf_rejects_missing_watch_dir(
 
     assert result["status"] == "failed"
     assert result["failure_reason"] == "watch_dir_missing"
+    assert "downloaded_file_path" in result["next_action"]
+
+
+def test_ingest_codex_downloaded_pdf_watch_dir_mismatch_uses_exact_path_next_action(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    doi = "10.1234/watch-mismatch"
+    home = tmp_path / "grados-home"
+    watch_dir = tmp_path / "Downloads"
+    watch_dir.mkdir()
+    _write_config(home, watch_dir)
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    _patch_pending_record(monkeypatch, _pending_codex_record(doi))
+
+    result = asyncio.run(library_tools.ingest_codex_downloaded_pdf(doi=doi))
+
+    assert result["status"] == "failed"
+    assert result["failure_reason"] == "no_candidate"
+    assert "downloaded_file_path" in result["next_action"]
+    assert "download_with_chrome_extension" not in result["next_action"]
+    assert result["download_watch_dir_semantics"] == "scan_only"
+
+
+def test_ingest_codex_downloaded_pdf_recovers_project_downloads_candidate(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    doi = "10.1234/project-download"
+    home = tmp_path / "grados-home"
+    watch_dir = tmp_path / "Downloads"
+    watch_dir.mkdir()
+    _write_config(home, watch_dir)
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    publisher_pdf = paths.downloads / "publisher-name.pdf"
+    publisher_pdf.write_bytes(b"%PDF-1.4\n%project")
+
+    import grados.extract.parse as parse_module
+    import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    async def fake_parse_pdf(*args: Any, **kwargs: Any) -> Any:
+        return parse_module.ParsePipelineResult(
+            markdown="# Project Download\n\n## Abstract\n\n" + ("project downloads content. " * 80),
+            parser_used="Docling",
+        )
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+    _patch_pending_record(monkeypatch, _pending_codex_record(doi))
+
+    result = asyncio.run(
+        library_tools.ingest_codex_downloaded_pdf(doi=doi, file_name_hint="publisher-name.pdf")
+    )
+
+    assert result["status"] == "success"
+    assert result["source_path"] == str(publisher_pdf)
+    assert Path(str(result["archived_pdf_path"])).is_file()
+    assert not publisher_pdf.exists()
 
 
 def test_ingest_codex_downloaded_pdf_rejects_unsafe_candidates(

@@ -12,6 +12,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Updated the locked Python dependency graph for vulnerable networking, XML, auth, multipart, and parser-adjacent packages, including `authlib`, `cryptography`, `lxml`, `python-multipart`, `urllib3`, and Docling parser dependencies.
 
 ### Added
+- Added `plan_library_pdf_cleanup`, a dry-run report for noncanonical `downloads/` PDFs that duplicate managed `downloads/{safe_doi}.pdf` artifacts by hash.
+- Added `downloaded_file_path` support to `ingest_codex_downloaded_pdf` so a host-known Chrome download path can be validated and ingested without relying on pending/watch-dir state.
 - Added `run_external_synthesis`, the default GRaDOS-native ChatGPT Pro browser route for enabled external synthesis. It prepares or verifies evidence packets, uses a private GRaDOS ChatGPT profile, confirms GRaDOS-validated Pro model and Pro Extended thinking route before sending, captures the advisory response, saves it, and audits it before canonical reread.
 - Added ChatGPT browser-mode runtime scaffolding for external synthesis, including private profile/session paths, first-time `grados external-synthesis setup-browser`, `grados external-synthesis doctor [--live]`, profile readiness checks, GRaDOS ChatGPT model/thinking selector helpers, response capture, and operational session records.
 - Added publisher PDF browser runtime diagnostics: `grados browser status --json`, `grados browser doctor [--live --doi DOI]`, persistent profile readiness checks, profile locking, PDF acquisition session records under `browser/pdf-sessions`, and capture metadata for response/download/backfill paths.
@@ -46,6 +48,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed PDF persistence for `parse_pdf_file(copy_to_library=true)`, `ingest_codex_downloaded_pdf`, browser/API PDF fetches, and `import_local_pdf_library` to share one materialization helper that writes the managed artifact as `downloads/{safe_doi}.pdf`, reuses same-hash candidates, and returns a conflict receipt for same-DOI different-hash PDFs without overwriting either file.
+- Changed new saved-paper frontmatter to keep PDF acquisition paths, hashes, and route labels out of `papers/*.md`; parser and PDF materialization provenance now lives in `papers/_parsed/{safe_doi}.json`, while route information remains in receipts and `remote_metadata.fetch_via`.
+- Changed browser PDF capture to recognize additional publisher PDF URL/response patterns and record CDP response-body captures in browser session metadata before the downstream materialization/persist boundary handles storage.
+- Changed `ingest_codex_downloaded_pdf` to return `already_saved` for existing canonical papers and to treat watch-dir misses as exact-path recovery prompts instead of nudging the host to redownload.
 - Changed external synthesis from a host/manual ChatGPT handoff into the default GRaDOS-native browser workflow behind the existing `research.external_synthesis.enabled` switch, while keeping lower-level packet/save/audit tools for recovery and leaving the separate `extract.fetch_strategy.codex` PDF acquisition route intact.
 - Changed Codex Chrome-extension acquisition receipts to name the required Codex `@chrome` plugin / extension backend and requested route.
 - Changed ChatGPT external-synthesis setup to close the setup browser after login by default, keep `--keep-open` for debugging, and share the private profile lock across the default setup flow, live doctor checks, and synthesis runs.

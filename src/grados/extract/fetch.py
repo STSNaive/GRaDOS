@@ -265,9 +265,9 @@ async def _run_codex_fetch_strategy(context: FetchStrategyContext) -> FetchResul
         warnings=[
             (
                 "Codex Chrome extension is a host-agent step. Use the Codex @chrome plugin / "
-                "Chrome extension backend to download the PDF, then call ingest_codex_downloaded_pdf. "
-                "If the agent already knows the absolute PDF path, call parse_pdf_file with the "
-                "downloaded file path and the same DOI."
+                "Chrome extension backend to download the PDF. If the agent already knows the absolute "
+                "PDF path, call ingest_codex_downloaded_pdf(downloaded_file_path=...) or parse_pdf_file "
+                "with that path and the same DOI."
             )
         ],
     )

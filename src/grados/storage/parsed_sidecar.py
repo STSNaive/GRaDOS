@@ -11,7 +11,7 @@ from typing import Any
 
 from grados.storage.chunking import split_paragraphs
 
-PARSED_SIDECAR_SCHEMA_VERSION = 1
+PARSED_SIDECAR_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,11 @@ class ParsedSidecarSummary:
     has_source_pdf_hash: bool = False
     has_canonical_markdown_hash: bool = False
     assets_manifest_path: str = ""
+    input_pdf_hash: str = ""
+    canonical_pdf_hash: str = ""
+    materialization_action: str = ""
+    materialization_outcome: str = ""
+    parse_outcome: str = ""
 
 
 @dataclass(frozen=True)
@@ -59,6 +64,8 @@ def build_parsed_manifest(
     source_pdf_hash: str = "",
     canonical_markdown: str = "",
     assets_manifest_path: str = "",
+    materialization: dict[str, Any] | None = None,
+    parse_outcome: str = "",
 ) -> dict[str, Any]:
     """Build the minimal parser provenance sidecar from canonical Markdown.
 
@@ -85,18 +92,43 @@ def build_parsed_manifest(
             }
         )
 
+    materialization_payload = dict(materialization or {})
+    input_pdf_path = str(materialization_payload.get("input_pdf_path") or source_pdf or "")
+    input_pdf_name = str(
+        materialization_payload.get("input_pdf_name") or (Path(input_pdf_path).name if input_pdf_path else "")
+    )
+    input_pdf_hash = str(materialization_payload.get("input_pdf_hash") or source_pdf_hash or "")
+    canonical_pdf_path = str(materialization_payload.get("canonical_pdf_path") or "")
+    canonical_pdf_hash = str(materialization_payload.get("canonical_pdf_hash") or "")
+    materialization_action = str(materialization_payload.get("materialization_action") or "")
+    materialization_outcome = str(materialization_payload.get("materialization_outcome") or "")
+    parse_outcome = str(materialization_payload.get("parse_outcome") or parse_outcome or "")
+
     return {
         "schema_version": PARSED_SIDECAR_SCHEMA_VERSION,
         "doi": doi,
         "safe_doi": safe_doi,
-        "source_pdf": source_pdf,
-        "source_pdf_hash": source_pdf_hash,
+        "source_pdf": input_pdf_path,
+        "source_pdf_hash": input_pdf_hash,
+        "input_pdf_path": input_pdf_path,
+        "input_pdf_name": input_pdf_name,
+        "input_pdf_hash": input_pdf_hash,
+        "canonical_pdf_path": canonical_pdf_path,
+        "canonical_pdf_hash": canonical_pdf_hash,
+        "materialization_action": materialization_action,
+        "materialization_outcome": materialization_outcome,
+        "parse_outcome": parse_outcome,
         "canonical_markdown": canonical_markdown or f"{safe_doi}.md",
         "canonical_markdown_hash": markdown_hash,
         "parser": parser,
         "parser_version": parser_version,
         "generated_at": datetime.now(UTC).isoformat(),
         "assets_manifest_path": assets_manifest_path,
+        "pdf_materialization": {
+            key: value
+            for key, value in materialization_payload.items()
+            if value not in ("", [], None)
+        },
         "blocks": blocks,
     }
 
@@ -113,6 +145,8 @@ def save_parsed_manifest(
     source_pdf_hash: str = "",
     canonical_markdown: str = "",
     assets_manifest_path: str = "",
+    materialization: dict[str, Any] | None = None,
+    parse_outcome: str = "",
 ) -> ParsedManifestSaveResult:
     """Persist `papers/_parsed/{safe_doi}.json` and return its relative path."""
 
@@ -131,6 +165,8 @@ def save_parsed_manifest(
             source_pdf_hash=source_pdf_hash,
             canonical_markdown=canonical_markdown,
             assets_manifest_path=assets_manifest_path,
+            materialization=materialization,
+            parse_outcome=parse_outcome,
         )
         manifest_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return ParsedManifestSaveResult(manifest_path=str(manifest_path.relative_to(papers_dir.resolve())))
@@ -179,7 +215,12 @@ def parsed_manifest_summary(papers_dir: Path, manifest_path: str) -> ParsedSidec
         parser_version=str(payload.get("parser_version") or ""),
         block_count=len(block_items),
         page_range=page_range,
-        has_source_pdf_hash=bool(payload.get("source_pdf_hash")),
+        has_source_pdf_hash=bool(payload.get("input_pdf_hash") or payload.get("source_pdf_hash")),
         has_canonical_markdown_hash=bool(payload.get("canonical_markdown_hash")),
         assets_manifest_path=str(payload.get("assets_manifest_path") or ""),
+        input_pdf_hash=str(payload.get("input_pdf_hash") or payload.get("source_pdf_hash") or ""),
+        canonical_pdf_hash=str(payload.get("canonical_pdf_hash") or ""),
+        materialization_action=str(payload.get("materialization_action") or ""),
+        materialization_outcome=str(payload.get("materialization_outcome") or ""),
+        parse_outcome=str(payload.get("parse_outcome") or ""),
     )

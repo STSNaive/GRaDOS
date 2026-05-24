@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,22 @@ from grados.http_limits import (
 from grados.publisher.common import classify_pdf_content, detect_bot_challenge
 
 logger = logging.getLogger(__name__)
+
+
+def is_pdf_like_browser_response(url: str, content_type: str = "", content_disposition: str = "") -> bool:
+    lowered_url = url.lower()
+    lowered_ct = content_type.lower()
+    lowered_cd = content_disposition.lower()
+    return (
+        "application/pdf" in lowered_ct
+        or ".pdf" in lowered_url
+        or "/pdfft" in lowered_url
+        or "pdfdirect" in lowered_url
+        or "/content/pdf/" in lowered_url
+        or ".pdf" in lowered_cd
+        or "application/pdf" in lowered_cd
+        or ("filename=" in lowered_cd and "pdf" in lowered_cd)
+    )
 
 
 def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) -> float:
@@ -175,6 +192,9 @@ class BrowserListenerRegistry:
     context: Any
     state: BrowserFetchState
     tracked_pages: set[Any] = field(default_factory=set)
+    cdp_pdf_candidates: dict[str, dict[str, str]] = field(default_factory=dict)
+    cdp_sessions: dict[Any, Any] = field(default_factory=dict)
+    cdp_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     on_response: Callable[[Any], Awaitable[None]] = field(init=False)
     on_download: Callable[[Any], Awaitable[None]] = field(init=False)
     on_new_page: Callable[[Any], None] = field(init=False)
@@ -191,13 +211,7 @@ class BrowserListenerRegistry:
         ct = str(headers.get("content-type", ""))
         cd = str(headers.get("content-disposition", ""))
         url = response.url
-        looks_pdf = (
-            "application/pdf" in ct
-            or "/pdfft" in url.lower()
-            or ".pdf" in url.lower()
-            or ".pdf" in cd.lower()
-        )
-        if not looks_pdf:
+        if not is_pdf_like_browser_response(url, ct, cd):
             return
         self.state.record_event(
             "response_pdf_candidate",
@@ -261,18 +275,107 @@ class BrowserListenerRegistry:
     def _on_new_page(self, page: Any) -> None:
         self.track_page(page)
 
+    def _schedule_cdp_task(self, coro: Coroutine[Any, Any, None]) -> None:
+        try:
+            task: asyncio.Task[None] = asyncio.create_task(coro)
+        except RuntimeError:
+            coro.close()
+            return
+        self.cdp_tasks.add(task)
+        task.add_done_callback(self.cdp_tasks.discard)
+
     def track_page(self, page: Any) -> None:
         if page in self.tracked_pages:
             return
         self.tracked_pages.add(page)
         page.on("response", self.on_response)
         page.on("download", self.on_download)
+        self._schedule_cdp_task(self._attach_cdp_response_capture(page))
+
+    async def _attach_cdp_response_capture(self, page: Any) -> None:
+        if not hasattr(self.context, "new_cdp_session"):
+            return
+        try:
+            cdp = await self.context.new_cdp_session(page)
+            await cdp.send("Network.enable")
+        except Exception as exc:
+            logger.debug("CDP response capture attach failed: %s", exc)
+            return
+        self.cdp_sessions[page] = cdp
+
+        def on_response_received(event: dict[str, Any]) -> None:
+            response = event.get("response") if isinstance(event, dict) else {}
+            if not isinstance(response, dict):
+                return
+            raw_headers = response.get("headers")
+            headers: dict[str, Any] = raw_headers if isinstance(raw_headers, dict) else {}
+            ct = str(headers.get("content-type") or headers.get("Content-Type") or response.get("mimeType") or "")
+            cd = str(headers.get("content-disposition") or headers.get("Content-Disposition") or "")
+            url = str(response.get("url") or "")
+            if not is_pdf_like_browser_response(url, ct, cd):
+                return
+            request_id = str(event.get("requestId") or "")
+            if not request_id:
+                return
+            key = self._cdp_request_key(cdp, request_id)
+            self.cdp_pdf_candidates[key] = {
+                "url": url,
+                "content_type": ct,
+                "content_disposition": cd,
+            }
+            self.state.record_event(
+                "cdp_response_pdf_candidate",
+                url=url,
+                details={"content_type": ct, "content_disposition": cd},
+            )
+
+        def on_loading_finished(event: dict[str, Any]) -> None:
+            self._schedule_cdp_task(self._capture_cdp_response_body(cdp, event))
+
+        try:
+            cdp.on("Network.responseReceived", on_response_received)
+            cdp.on("Network.loadingFinished", on_loading_finished)
+        except Exception as exc:
+            logger.debug("CDP response capture listener install failed: %s", exc)
+
+    def _cdp_request_key(self, cdp: Any, request_id: str) -> str:
+        return f"{id(cdp)}:{request_id}"
+
+    async def _capture_cdp_response_body(self, cdp: Any, event: dict[str, Any]) -> None:
+        if self.state.pdf_captured():
+            return
+        request_id = str(event.get("requestId") or "")
+        if not request_id:
+            return
+        candidate = self.cdp_pdf_candidates.pop(self._cdp_request_key(cdp, request_id), None)
+        if not candidate:
+            return
+        url = candidate.get("url", "")
+        ct = candidate.get("content_type", "")
+        try:
+            payload = await cdp.send("Network.getResponseBody", {"requestId": request_id})
+            raw_body = payload.get("body", "") if isinstance(payload, dict) else ""
+            if isinstance(payload, dict) and bool(payload.get("base64Encoded")):
+                body = base64.b64decode(str(raw_body), validate=False)
+            else:
+                body = str(raw_body).encode("utf-8", errors="replace")
+            self.state.try_capture(body, ct, url, source_kind="cdp_response_body")
+        except Exception as exc:
+            logger.debug("CDP response body capture failed for %s: %s", url, exc)
+            self.state.record_event(
+                "cdp_response_body_rejected",
+                url=url,
+                details={"reason": "body_unavailable", "message": f"{exc.__class__.__name__}: {exc}"},
+            )
 
     def register(self, root_page: Any) -> None:
         self.context.on("page", self.on_new_page)
         self.track_page(root_page)
 
     def detach(self) -> None:
+        for task in list(self.cdp_tasks):
+            if not task.done():
+                task.cancel()
         for page in list(self.tracked_pages):
             try:
                 page.remove_listener("response", self.on_response)
@@ -403,7 +506,7 @@ async def try_backfill_from_url(
     if pdf_captured() or page.is_closed():
         return
     url = page.url
-    if not re.search(r"\.pdf(?:$|[?#])", url, re.IGNORECASE):
+    if not is_pdf_like_browser_response(url):
         return
     if url in attempted_urls:
         return

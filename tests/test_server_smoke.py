@@ -52,6 +52,7 @@ def test_server_registers_expected_tools() -> None:
         "ingest_codex_downloaded_pdf",
         "manage_failure_cases",
         "parse_pdf_file",
+        "plan_library_pdf_cleanup",
         "prepare_evidence_pack",
         "prepare_external_synthesis_from_topic",
         "prepare_external_synthesis_packet",
@@ -1122,7 +1123,7 @@ def test_extract_paper_full_text_returns_codex_action(
     assert "Required Host Backend:** Codex Chrome plugin extension backend" in result
     assert "Requested Route:** codex_chrome_plugin_extension" in result
     assert "https://developers.openai.com/codex/app/chrome-extension" in result
-    assert "ingest_codex_downloaded_pdf(doi=...)" in result
+    assert "ingest_codex_downloaded_pdf(doi=..., downloaded_file_path=...)" in result
     assert "parse_pdf_file(file_path=..., doi=..., copy_to_library=true" in result
     assert "Manual Browser Resume" not in result
     assert len(calls) == 1
@@ -1336,6 +1337,35 @@ def test_parse_pdf_file_rejects_local_pdf_that_exceeds_limit_during_read(tmp_pat
     assert "Local PDF" in result
 
 
+def test_parse_pdf_file_does_not_materialize_when_parse_fails(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    doi = "10.1234/parse-fails"
+    pdf_path = paths.downloads / "publisher-name.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%parse-fails")
+
+    import grados.extract.parse as parse_module
+
+    async def fake_parse_pdf(*args, **kwargs):
+        return parse_module.ParsePipelineResult(
+            markdown="",
+            parser_used="Docling",
+            warnings=["parser failed"],
+            debug=["docling:failed"],
+        )
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
+
+    result = asyncio.run(parse_pdf_file(file_path=str(pdf_path), doi=doi, copy_to_library=True))
+
+    assert "All parsers failed" in result
+    assert "parser failed" in result
+    assert pdf_path.is_file()
+    assert not (paths.downloads / f"{safe_doi_filename(doi)}.pdf").exists()
+
+
 def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
     tmp_path: Path,
     monkeypatch,
@@ -1383,7 +1413,8 @@ def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
     )
 
     assert "PDF Parsed & Saved with Partial Success" in result
-    assert "Copied PDF:**" in result
+    assert "Canonical PDF:**" in result
+    assert "PDF Materialization:** copied" in result
     assert "Acquisition Via:** codex" in result
     assert "Index Status:** failed" in result
     assert "saved to papers/ only" in result
@@ -1399,7 +1430,19 @@ def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
     frontmatter = read_frontmatter_metadata_from_file(
         tmp_path / "grados-home" / "papers" / f"{record.safe_doi}.md"
     )
-    assert frontmatter["acquisition_via"] == "codex"
+    assert "acquisition_via" not in frontmatter
+    assert "original_pdf_path" not in frontmatter
+    assert "copied_pdf_path" not in frontmatter
+    assert "source_pdf_hash" not in frontmatter
+    assert "fetch_outcome" not in frontmatter
+    parsed_manifest_path = tmp_path / "grados-home" / "papers" / frontmatter["parsed_manifest_path"]
+    parsed_manifest = json.loads(parsed_manifest_path.read_text())
+    assert parsed_manifest["input_pdf_path"] == str(pdf_path.resolve())
+    assert parsed_manifest["input_pdf_hash"]
+    assert parsed_manifest["canonical_pdf_path"].endswith(f"{record.safe_doi}.pdf")
+    assert parsed_manifest["materialization_action"] == "copied"
+    assert parsed_manifest["materialization_outcome"] == "success"
+    assert parsed_manifest["parse_outcome"] == "success"
     assert (tmp_path / "grados-home" / "downloads" / f"{record.safe_doi}.pdf").is_file()
 
 

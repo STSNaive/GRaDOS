@@ -84,7 +84,7 @@ def save_paper_markdown(
             title,
             source,
             publisher,
-            fetch_outcome,
+            "",
             authors=authors,
             year=year,
             journal=journal,
@@ -316,6 +316,11 @@ class PaperParsedSummary:
     has_source_pdf_hash: bool = False
     has_canonical_markdown_hash: bool = False
     assets_manifest_path: str = ""
+    input_pdf_hash: str = ""
+    canonical_pdf_hash: str = ""
+    materialization_action: str = ""
+    materialization_outcome: str = ""
+    parse_outcome: str = ""
 
 
 def load_paper_record(
@@ -662,6 +667,11 @@ def _load_parsed_summary(papers_dir: Path, record: PaperRecord) -> PaperParsedSu
         has_source_pdf_hash=summary.has_source_pdf_hash,
         has_canonical_markdown_hash=summary.has_canonical_markdown_hash,
         assets_manifest_path=summary.assets_manifest_path,
+        input_pdf_hash=summary.input_pdf_hash,
+        canonical_pdf_hash=summary.canonical_pdf_hash,
+        materialization_action=summary.materialization_action,
+        materialization_outcome=summary.materialization_outcome,
+        parse_outcome=summary.parse_outcome,
     )
 
 

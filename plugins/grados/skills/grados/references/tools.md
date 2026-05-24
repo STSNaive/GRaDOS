@@ -19,8 +19,8 @@ Use these routes to keep the host agent from treating every public MCP tool as a
 | Task | Default route | Mechanical steps already handled inside GRaDOS |
 | --- | --- | --- |
 | Ordinary research answer | `grados:search_saved_papers` for local reuse/context, then `grados:search_academic_papers` for current database coverage. Read saved DOIs directly; extract only unsaved relevant DOIs with `grados:extract_paper_full_text`, then structure/read. Call extraction on a saved DOI only for explicit refresh, reparse, acquisition debugging, or rebuild work. If exact selectors are already known, read directly. | `grados:extract_paper_full_text` controls fetch strategy order, browser PDF acquisition, parser fallback, canonical save, index refresh, and remote metadata updates. Browser acquisition returns PDF bytes or manual-resume challenge metadata; it does not write `papers/*.md` directly. It returns an already-saved receipt by default when canonical Markdown already exists; pass `force_refresh=true` to refetch/reparse. |
-| Local PDF workflow | `grados:import_local_pdf_library` for directories or `grados:parse_pdf_file` for one PDF -> structure/read. | Local PDF parsing uses the configured parser waterfall, byte limits, canonical save, index refresh, and metadata update when a DOI is provided. |
-| Codex Chrome download handoff | `grados:ingest_codex_downloaded_pdf` after a pending `codex` receipt. | The ingest tool validates the download candidate and calls `grados:parse_pdf_file` internally. |
+| Local PDF workflow | `grados:import_local_pdf_library` for directories or `grados:parse_pdf_file` for one PDF -> structure/read. Use `grados:plan_library_pdf_cleanup` only as a dry-run maintenance report. | Local PDF parsing uses the configured parser waterfall, byte limits, shared PDF materialization, canonical save, index refresh, and metadata update when a DOI is provided. |
+| Codex Chrome download handoff | `grados:ingest_codex_downloaded_pdf` after a pending `codex` receipt, or with `downloaded_file_path` when the host already knows the exact PDF path. | The ingest tool validates the download candidate and calls `grados:parse_pdf_file` internally. |
 | Evidence organization | Saved papers -> `grados:build_evidence_grid`, `grados:compare_papers`, or `grados:get_papers_full_context(mode="estimate")` -> accepted anchors reread with `grados:read_saved_paper`. | Helper tools rank, align, or budget context, but they do not create final citation evidence. |
 | Draft audit | `grados:audit_draft_support` -> reread accepted or disputed anchors with `grados:read_saved_paper`. | The audit proposes verdicts and anchors; final support judgment still requires canonical reread. |
 | Pack-scoped audit | `grados:audit_answer_against_pack` with a known pack id; set `include_suggestions=true` only when follow-up gap planning is wanted in the same response. | The pack audit tool calls pack verification internally; call `grados:verify_evidence_pack` separately only when you need a standalone status report. Missing-evidence suggestions are suggestion-only and do not change audit verdicts. |
@@ -34,7 +34,7 @@ Do not start ordinary research with audit, comparison, external synthesis, Zoter
 | Tier | Tools | Use when |
 | --- | --- | --- |
 | Default research path | `grados:search_saved_papers`, `grados:search_academic_papers`, `grados:extract_paper_full_text`, `grados:get_saved_paper_structure`, `grados:read_saved_paper` | Normal literature questions, local reuse plus current database discovery, selective extraction, and citation-grade reading. |
-| Conditional input/assets | `grados:import_local_pdf_library`, `grados:parse_pdf_file`, `grados:ingest_codex_downloaded_pdf`, `grados:read_paper_asset` | The user provides PDFs, a Codex download needs ingest, or a cited paragraph depends on a figure/table/formula/source asset. |
+| Conditional input/assets | `grados:import_local_pdf_library`, `grados:parse_pdf_file`, `grados:ingest_codex_downloaded_pdf`, `grados:plan_library_pdf_cleanup`, `grados:read_paper_asset` | The user provides PDFs, a Codex download needs ingest, duplicate PDF cleanup needs a dry-run report, or a cited paragraph depends on a figure/table/formula/source asset. |
 | Analysis helpers | `grados:build_evidence_grid`, `grados:compare_papers`, `grados:audit_draft_support`, `grados:get_papers_full_context`, `grados:get_citation_graph` | Saved papers need organization, comparison, context budgeting, citation neighborhoods, or first-pass claim auditing. |
 | Handoff/recovery | `grados:prepare_evidence_pack`, `grados:read_evidence_pack`, `grados:verify_evidence_pack`, `grados:audit_answer_against_pack`, `grados:suggest_missing_evidence`, `grados:save_research_artifact`, `grados:query_research_artifacts`, `grados:manage_failure_cases` | Evidence must survive compression/handoff, a pack needs audit or inspection, or workflow/failure state needs explicit recovery. |
 | Advanced external/admin | `grados:run_external_synthesis`, `grados:preview_external_synthesis_packet`, `grados:prepare_external_synthesis_packet`, `grados:prepare_external_synthesis_from_topic`, `grados:save_external_synthesis_result`, `grados:audit_external_synthesis_result`, `grados:save_paper_to_zotero` | External synthesis is explicitly enabled or the final actually cited papers should be saved to Zotero. |
@@ -49,9 +49,10 @@ Do not start ordinary research with audit, comparison, external synthesis, Zoter
 | `grados:search_saved_papers` | Compact paper-level search over the saved-paper store. Uses metadata prefiltering, ChromaDB dense retrieval, SQLite FTS/BM25 fallback, exact lookup, and hybrid RRF when reranking is enabled. Treat snippets, scores, and evidence anchors as screening/reranking material, not citation evidence. |
 | `grados:get_saved_paper_structure` | Deterministic low-token paper card for one saved paper. Returns canonical URI, preview excerpt, section headings, section outline, counts, asset summary, and parser provenance summary when available. Use this before deep reading. |
 | `grados:extract_paper_full_text` | Fetch full text by DOI via the configured `api`, `browser`, optional `codex`, and `scihub` order, then parse via `Docling -> MinerU -> PyMuPDF` by default. Optional Unpaywall resolution can supply OA `url_for_pdf` / `url_for_landing_page` start URLs for `codex` and `browser`; the publisher browser path uses a locked persistent profile plus `browser/pdf-sessions` records, and only returns PDF bytes or challenge metadata before the normal parser/QA/persist pipeline writes canonical Markdown to `papers/`; MinerU is an authenticated cloud fallback that requires `MINERU_API_KEY`; `codex` returns a host-action receipt. If the DOI is already saved, the default `force_refresh=false` returns an already-saved receipt; set `force_refresh=true` for explicit refresh/reparse/debug work. |
-| `grados:import_local_pdf_library` | Import one local PDF file or a directory of PDFs into the canonical paper store. Supports recursive scanning, glob filtering, and optional raw-PDF archiving into `downloads/`. |
-| `grados:parse_pdf_file` | Parse a local PDF file using the same Python parsing waterfall. If DOI is provided, it writes the canonical `.md` file to `papers/` and returns a compact save receipt. |
-| `grados:ingest_codex_downloaded_pdf` | Complete a pending Codex Chrome extension handoff. It scans `extract.codex_handoff.download_watch_dir`, applies conservative PDF/age/settle/symlink/hash checks, and then reuses `parse_pdf_file(..., doi=..., copy_to_library=true, acquisition_via="codex")`. |
+| `grados:import_local_pdf_library` | Import one local PDF file or a directory of PDFs into the canonical paper store. Supports recursive scanning, glob filtering, and optional shared raw-PDF materialization into `downloads/{safe_doi}.pdf`. |
+| `grados:parse_pdf_file` | Parse a local PDF file using the same Python parsing waterfall. If DOI is provided, it writes the canonical `.md` file to `papers/`, materializes the managed PDF when `copy_to_library=true`, and returns a compact save receipt. |
+| `grados:ingest_codex_downloaded_pdf` | Complete a Codex Chrome extension handoff. It validates `downloaded_file_path` when provided, otherwise scans `extract.codex_handoff.download_watch_dir` plus a noncanonical project-downloads fallback, applies conservative PDF/age/settle/symlink/hash checks, and then reuses `parse_pdf_file(..., doi=..., copy_to_library=true, acquisition_via="codex")`. |
+| `grados:plan_library_pdf_cleanup` | Dry-run scan for noncanonical PDFs in `downloads/` that duplicate a DOI's managed `downloads/{safe_doi}.pdf` by hash. It reports candidates only and never deletes files. |
 | `grados:read_saved_paper` | Canonical deep-reading tool for previously saved papers. Accepts `doi`, a GRaDOS-returned opaque `safe_doi`, or `grados://papers/{safe_doi}` and returns a paragraph window plus lightweight asset refs for synthesis and citation verification. |
 | `grados:read_paper_asset` | List or read parser asset bundles for saved papers. Use it after `get_saved_paper_structure` or `read_saved_paper` when a figure, table, formula, page image, or source/debug asset is needed; `include_image=true` only inlines a specific image when it is under the configured limit. |
 | `grados:save_paper_to_zotero` | Save cited paper metadata to Zotero. Requires `ZOTERO_API_KEY` and Zotero library configuration. |
@@ -85,6 +86,7 @@ These checked guardrails mirror selected hard schema facts from the live FastMCP
 | --- | --- |
 | `grados:search_academic_papers` | `query` minLength=1; `limit` range 1-50; optional `indepth` uses the same `limit`. |
 | `grados:extract_paper_full_text` | `force_refresh` defaults to false; set true only to refetch/reparse already saved full text. |
+| `grados:ingest_codex_downloaded_pdf` | `downloaded_file_path` defaults to null; pass it when the host already knows the exact PDF path. |
 | `grados:search_saved_papers` | `query` minLength=1; `limit` range 1-25; `use_reranking` defaults to true. |
 | `grados:read_saved_paper` | accepts `doi`, `safe_doi`, or `uri`; `start_paragraph` minimum 0; `max_paragraphs` range 1-100. |
 | `grados:read_paper_asset` | list-mode `limit` range 1-100; `offset` minimum 0; `include_image` is explicit opt-in. |
@@ -192,8 +194,8 @@ Typical host-agent flow:
 
 1. Call `grados:extract_paper_full_text` with the DOI.
 2. If the receipt asks for `codex`, use the Codex `@chrome` plugin / Chrome extension backend and start from the receipt URL. This can be an Unpaywall OA URL when available, otherwise `https://doi.org/{doi}`.
-3. After Chrome reports the PDF download is complete, call `grados:ingest_codex_downloaded_pdf(doi=...)`. Pass `file_name_hint` or `downloaded_at` only as narrowing hints; GRaDOS still validates age, type, symlinks, stability, size, and hash.
-4. If the host already knows the exact absolute PDF path, it may skip watch-dir scanning and call `grados:parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.
+3. After Chrome reports the PDF download is complete, call `grados:ingest_codex_downloaded_pdf(doi=..., downloaded_file_path=...)` when the absolute path is known. That path is used only for the receipt and `_parsed` PDF materialization provenance, not for canonical Markdown/frontmatter/index citation metadata.
+4. If the exact path is not known, call `grados:ingest_codex_downloaded_pdf(doi=...)`. Pass `file_name_hint` or `downloaded_at` only as narrowing hints; GRaDOS still validates age, type, symlinks, stability, size, and hash. If the watch dir scan is empty, pass the real `downloaded_file_path` or call `grados:parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`; do not click the publisher download button again just because the watch dir missed the file.
 
 Relevant config:
 
@@ -203,6 +205,12 @@ Relevant config:
 - `extract.codex_handoff.download_scan_recursive`: opt-in recursive scan; the default scans only the watch-dir root.
 - `extract.pdf_read_timeout`: direct remote PDF read timeout; separate from landing-page / HTML / XML / JSON `extract.fetch_read_timeout`.
 - `extract.headless_browser.pdf_backfill_timeout`: browser context-request PDF backfill timeout; separate from browser navigation and polling deadlines.
+
+PDF materialization contract:
+
+- The only managed library PDF artifact for a DOI is `downloads/{safe_doi}.pdf`.
+- Same DOI + same PDF hash reuses, renames, or copies to that managed path. Same DOI + different hash returns a conflict receipt with both hashes/paths and does not overwrite or delete either file.
+- New `papers/*.md` frontmatter does not store `fetch_outcome`, `original_pdf_path`, `copied_pdf_path`, `source_pdf_hash`, or `acquisition_via`. Route information belongs in receipts and `remote_metadata.fetch_via`; parser and PDF materialization provenance belongs in `papers/_parsed/{safe_doi}.json`.
 
 ## MCP Resources
 

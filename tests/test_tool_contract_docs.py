@@ -74,6 +74,13 @@ def test_skill_tool_reference_mirrors_selected_live_schema_guardrails() -> None:
         ("search_academic_papers", "limit", "minimum", 1, "`limit` range 1-50"),
         ("search_academic_papers", "limit", "maximum", 50, "`limit` range 1-50"),
         ("extract_paper_full_text", "force_refresh", "default", False, "`force_refresh` defaults to false"),
+        (
+            "ingest_codex_downloaded_pdf",
+            "downloaded_file_path",
+            "default",
+            None,
+            "`downloaded_file_path` defaults to null",
+        ),
         ("search_saved_papers", "limit", "maximum", 25, "`limit` range 1-25"),
         ("read_saved_paper", "start_paragraph", "minimum", 0, "`start_paragraph` minimum 0"),
         ("read_saved_paper", "max_paragraphs", "maximum", 100, "`max_paragraphs` range 1-100"),

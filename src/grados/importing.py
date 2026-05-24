@@ -17,7 +17,7 @@ from grados.storage.assets import AssetLimits
 from grados.storage.papers import list_saved_papers
 from grados.workflows.library import (
     build_library_document_artifact,
-    maybe_save_library_pdf,
+    materialize_library_pdf,
     persist_reviewed_library_document,
     review_library_document,
 )
@@ -201,12 +201,34 @@ async def import_local_pdf_library(
             result.warnings.append(warning)
             detail_tokens.append("qa_warning")
 
-        copied_pdf_path = maybe_save_library_pdf(
+        pdf_materialization = materialize_library_pdf(
             doi=doi,
-            pdf_bytes=pdf_bytes,
             paths=paths,
+            input_path=pdf_file,
+            pdf_bytes=pdf_bytes,
             copy_to_library=copy_to_library,
         )
+        if pdf_materialization.outcome == "conflict":
+            result.failed += 1
+            warnings = [
+                "PDF materialization conflict: existing canonical PDF hash differs from the candidate PDF hash."
+            ]
+            warnings.extend(pdf_materialization.warnings)
+            result.warnings.extend(f"{pdf_file.name}: {warning}" for warning in warnings)
+            result.items.append(
+                ImportItemResult(
+                    source_path=str(pdf_file),
+                    status="failed",
+                    doi=doi,
+                    safe_doi=safe_doi,
+                    title=title,
+                    detail="pdf_materialization_conflict",
+                    copied_pdf_path=pdf_materialization.canonical_pdf_path,
+                    warnings=warnings,
+                    debug=item_debug,
+                )
+            )
+            continue
         persisted = persist_reviewed_library_document(
             review,
             paths=paths,
@@ -214,10 +236,7 @@ async def import_local_pdf_library(
             title=title,
             source="Local PDF Library",
             fetch_outcome="local_import",
-            extra_frontmatter={
-                "original_pdf_path": str(pdf_file),
-                "source_pdf_hash": pdf_hash,
-            },
+            extra_frontmatter=None,
             asset_mode=config.extract.assets.mode,
             asset_limits=AssetLimits(
                 max_asset_file_bytes=config.extract.assets.max_asset_file_bytes,
@@ -225,7 +244,8 @@ async def import_local_pdf_library(
                 max_asset_inline_bytes=config.extract.assets.max_asset_inline_bytes,
                 max_asset_count=config.extract.assets.max_asset_count,
             ),
-            copied_pdf_path=copied_pdf_path,
+            copied_pdf_path=pdf_materialization.copied_pdf_path,
+            pdf_materialization=pdf_materialization,
             index_warning_message="Search index refresh failed — paper saved to papers/ only. Error: {index_error}",
             indexing_config=config.indexing,
         )
