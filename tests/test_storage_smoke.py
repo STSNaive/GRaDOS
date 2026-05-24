@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import threading
 from pathlib import Path
 
 from grados.config import IndexingConfig
@@ -23,6 +25,13 @@ from grados.storage.papers import (
     save_asset_manifest,
     save_paper_markdown,
     save_pdf,
+)
+from grados.storage.parse_attempts import (
+    build_parse_attempt_id,
+    complete_parse_attempt,
+    fail_parse_attempt,
+    get_parse_attempt,
+    upsert_running_parse_attempt,
 )
 
 
@@ -295,6 +304,122 @@ def test_chunking_helpers_strip_frontmatter_and_normalize_reference_dois() -> No
         "10.1000/bar;",
     ]
     assert extract_reference_dois(markdown) == ["10.1000/foo", "10.1000/bar"]
+
+
+def test_parse_attempts_record_running_and_terminal_receipts(tmp_path: Path) -> None:
+    db_path = tmp_path / "database" / "research.sqlite3"
+    parser_config = {"order": ["MinerU", "PyMuPDF"], "mineru_timeout": 300000}
+    attempt_id = build_parse_attempt_id(
+        doi="10.1234/attempt",
+        input_pdf_hash="abc123",
+        copy_to_library=True,
+        acquisition_via="codex",
+        parser_config=parser_config,
+    )
+
+    record, created = upsert_running_parse_attempt(
+        db_path,
+        attempt_id=attempt_id,
+        doi="10.1234/attempt",
+        input_pdf_path="/tmp/paper.pdf",
+        input_pdf_name="paper.pdf",
+        input_pdf_hash="abc123",
+        copy_to_library=True,
+        acquisition_via="codex",
+        expected_title="Attempt",
+        parser_config=parser_config,
+    )
+
+    assert created is True
+    assert record.status == "running"
+    assert record.copy_to_library is True
+    assert record.acquisition_via == "codex"
+
+    complete_parse_attempt(
+        db_path,
+        attempt_id,
+        receipt_text="## PDF Parsed & Saved\n",
+        canonical_uri="grados://papers/10_1234_attempt",
+        paper_path="/tmp/10_1234_attempt.md",
+        canonical_pdf_path="/tmp/10_1234_attempt.pdf",
+        canonical_pdf_hash="def456",
+    )
+    completed = get_parse_attempt(db_path, attempt_id)
+
+    assert completed is not None
+    assert completed.status == "completed"
+    assert completed.receipt_text.startswith("## PDF Parsed")
+    assert completed.canonical_pdf_hash == "def456"
+
+    failed_attempt_id = build_parse_attempt_id(
+        doi="10.1234/attempt",
+        input_pdf_hash="different",
+        copy_to_library=True,
+        acquisition_via="codex",
+        parser_config=parser_config,
+    )
+    upsert_running_parse_attempt(
+        db_path,
+        attempt_id=failed_attempt_id,
+        doi="10.1234/attempt",
+        input_pdf_path="/tmp/other.pdf",
+        input_pdf_name="other.pdf",
+        input_pdf_hash="different",
+        copy_to_library=True,
+        acquisition_via="codex",
+        expected_title="Attempt",
+        parser_config=parser_config,
+    )
+    fail_parse_attempt(
+        db_path,
+        failed_attempt_id,
+        receipt_text="All parsers failed",
+        failure_reason="parse_failed",
+        error_message="All parsers failed",
+    )
+    failed = get_parse_attempt(db_path, failed_attempt_id)
+
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.failure_reason == "parse_failed"
+
+
+def test_parse_attempt_upsert_reuses_concurrent_insert(tmp_path: Path) -> None:
+    db_path = tmp_path / "database" / "research.sqlite3"
+    parser_config = {"order": ["MinerU", "PyMuPDF"], "mineru_timeout": 300000}
+    attempt_id = build_parse_attempt_id(
+        doi="10.1234/concurrent-attempt",
+        input_pdf_hash="abc123",
+        copy_to_library=True,
+        acquisition_via="codex",
+        parser_config=parser_config,
+    )
+    worker_count = 8
+    barrier = threading.Barrier(worker_count)
+
+    def insert_attempt(index: int) -> bool:
+        barrier.wait(timeout=5.0)
+        _, created = upsert_running_parse_attempt(
+            db_path,
+            attempt_id=attempt_id,
+            doi="10.1234/concurrent-attempt",
+            input_pdf_path=f"/tmp/paper-{index}.pdf",
+            input_pdf_name=f"paper-{index}.pdf",
+            input_pdf_hash="abc123",
+            copy_to_library=True,
+            acquisition_via="codex",
+            expected_title="Concurrent Attempt",
+            parser_config=parser_config,
+        )
+        return created
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
+        created_flags = list(pool.map(insert_attempt, range(worker_count)))
+
+    record = get_parse_attempt(db_path, attempt_id)
+    assert record is not None
+    assert record.status == "running"
+    assert sum(1 for created in created_flags if created) == 1
 
 
 def test_save_paper_markdown_surfaces_index_failure_without_blocking_canonical_write(

@@ -12,6 +12,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Updated the locked Python dependency graph for vulnerable networking, XML, auth, multipart, and parser-adjacent packages, including `authlib`, `cryptography`, `lxml`, `python-multipart`, `urllib3`, and Docling parser dependencies.
 
 ### Added
+- Added a durable DOI-bound local PDF parse-attempt ledger plus `extract.parsing.foreground_wait_seconds` and `extract.parsing.attempt_stale_seconds`, allowing `parse_pdf_file(..., doi=...)` to return `parse_in_progress` while long parser runs continue in the background.
 - Added `plan_library_pdf_cleanup`, a dry-run report for noncanonical `downloads/` PDFs that duplicate managed `downloads/{safe_doi}.pdf` artifacts by hash.
 - Added `downloaded_file_path` support to `ingest_codex_downloaded_pdf` so a host-known Chrome download path can be validated and ingested without relying on pending/watch-dir state.
 - Added `run_external_synthesis`, the default GRaDOS-native ChatGPT Pro browser route for enabled external synthesis. It prepares or verifies evidence packets, uses a private GRaDOS ChatGPT profile, confirms GRaDOS-validated Pro model and Pro Extended thinking route before sending, captures the advisory response, saves it, and audits it before canonical reread.
@@ -48,6 +49,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed `ingest_codex_downloaded_pdf` to treat `parse_in_progress` and background-completed canonical saves as recoverable non-failure states instead of recording `parse_failed` after a foreground tool timeout.
+- Changed DOI-bound local PDF parse attempts so retryable `parse_failed` receipts are not permanent caches: repeated calls wait for the stale window and then restart from the same PDF, while PDF materialization conflicts remain terminal.
 - Changed PDF persistence for `parse_pdf_file(copy_to_library=true)`, `ingest_codex_downloaded_pdf`, browser/API PDF fetches, and `import_local_pdf_library` to share one materialization helper that writes the managed artifact as `downloads/{safe_doi}.pdf`, reuses same-hash candidates, and returns a conflict receipt for same-DOI different-hash PDFs without overwriting either file.
 - Changed new saved-paper frontmatter to keep PDF acquisition paths, hashes, and route labels out of `papers/*.md`; parser and PDF materialization provenance now lives in `papers/_parsed/{safe_doi}.json`, while route information remains in receipts and `remote_metadata.fetch_via`.
 - Changed browser PDF capture to recognize additional publisher PDF URL/response patterns and record CDP response-body captures in browser session metadata before the downstream materialization/persist boundary handles storage.

@@ -112,6 +112,8 @@
             },
             "marker_timeout": 120000,
             "mineru_timeout": 300000,
+            "foreground_wait_seconds": 90.0,
+            "attempt_stale_seconds": 1800.0,
             "mineru_poll_interval": 3.0,
             "mineru_model_version": "vlm",
             "mineru_language": "en",
@@ -120,6 +122,8 @@
             "mineru_is_ocr": false,
             "_comment_marker_timeout": "Maximum time in milliseconds to wait for the isolated Marker subprocess.",
             "_comment_mineru_timeout": "Maximum time in milliseconds to wait for MinerU's authenticated cloud parser.",
+            "_comment_foreground_wait_seconds": "Seconds parse_pdf_file waits for a DOI-bound canonical save before returning parse_in_progress; the GRaDOS-owned background parse attempt continues.",
+            "_comment_attempt_stale_seconds": "Seconds before an inactive running or retryable failed DOI-bound local PDF parse attempt can be restarted from the same local PDF.",
             "_comment_mineru_model_version": "MinerU cloud model version. Use `vlm` for precise PDF parsing, or `pipeline` for the lighter model.",
             "_comment_mineru_language": "MinerU language hint. Default `en` fits most academic PDFs; use `ch` for Chinese documents."
         },

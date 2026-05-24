@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import hashlib
 import json
 import os
 import stat
 import sys
+import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
@@ -17,7 +20,7 @@ from typing import Annotated, Any
 from fastmcp import FastMCP
 from pydantic import Field
 
-from grados.config import GRaDOSPaths, IndexingConfig
+from grados.config import GRaDOSConfig, GRaDOSPaths, IndexingConfig
 from grados.http_limits import SizeLimitError, ensure_byte_limit
 from grados.local_files import LocalFileReadError, read_bounded_local_file
 from grados.publisher.common import PublisherMetadata, normalize_publisher_metadata, safe_doi_filename
@@ -56,6 +59,8 @@ _CODEX_INGEST_RECOVERY_NEXT_ACTION = (
     "call_ingest_codex_downloaded_pdf_with_downloaded_file_path_or_call_parse_pdf_file_with_known_pdf_path"
 )
 _CODEX_HANDOFF_DEFAULT_WATCH_DIR = "~/Downloads"
+_PARSE_ATTEMPT_FUTURES: dict[str, concurrent.futures.Future[str]] = {}
+_PARSE_ATTEMPT_LOCK = threading.Lock()
 
 
 def _format_asset_hint_lines(asset_hints: Sequence[Mapping[str, object]]) -> list[str]:
@@ -160,6 +165,138 @@ def _already_saved_receipt(doi: str, record: object, papers_dir: Path) -> str:
     if section_headings:
         result += "\n### Sections\n" + "\n".join(f"- {heading}" for heading in section_headings)
     return result
+
+
+def _parse_attempt_config_signature(config: object) -> dict[str, object]:
+    parsing = getattr(getattr(config, "extract", object()), "parsing", object())
+    return {
+        "order": list(getattr(parsing, "order", []) or []),
+        "enabled": dict(getattr(parsing, "enabled", {}) or {}),
+        "marker_timeout": int(getattr(parsing, "marker_timeout", 120000)),
+        "mineru_timeout": int(getattr(parsing, "mineru_timeout", 300000)),
+        "mineru_poll_interval": float(getattr(parsing, "mineru_poll_interval", 3.0)),
+        "mineru_model_version": str(getattr(parsing, "mineru_model_version", "")),
+        "mineru_language": str(getattr(parsing, "mineru_language", "")),
+        "mineru_enable_formula": bool(getattr(parsing, "mineru_enable_formula", True)),
+        "mineru_enable_table": bool(getattr(parsing, "mineru_enable_table", True)),
+        "mineru_is_ocr": bool(getattr(parsing, "mineru_is_ocr", False)),
+    }
+
+
+def _parse_attempt_is_stale(record: object, *, stale_seconds: float) -> bool:
+    updated_at = str(getattr(record, "updated_at", "") or "")
+    if not updated_at:
+        return True
+    try:
+        updated = datetime.fromisoformat(updated_at)
+    except ValueError:
+        return True
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - updated).total_seconds() >= stale_seconds
+
+
+def _parse_attempt_failure_is_terminal(record: object) -> bool:
+    return str(getattr(record, "failure_reason", "") or "") == "pdf_materialization_conflict"
+
+
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _parse_attempt_completion_metadata(paths: object, doi: str) -> dict[str, str]:
+    from grados.storage.papers import load_paper_record
+
+    record = load_paper_record(getattr(paths, "papers"), doi=doi)
+    metadata = {
+        "canonical_uri": "",
+        "paper_path": "",
+        "canonical_pdf_path": "",
+        "canonical_pdf_hash": "",
+    }
+    if record is not None:
+        metadata["canonical_uri"] = record.canonical_uri
+        metadata["paper_path"] = str((getattr(paths, "papers") / f"{record.safe_doi}.md").resolve())
+        pdf_path = getattr(paths, "downloads") / f"{record.safe_doi}.pdf"
+        if pdf_path.is_file():
+            metadata["canonical_pdf_path"] = str(pdf_path.resolve())
+            metadata["canonical_pdf_hash"] = _hash_file(pdf_path)
+    return metadata
+
+
+def _receipt_field(receipt: str, label: str) -> str:
+    prefix = f"- **{label}:** "
+    for line in receipt.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return ""
+
+
+def _parse_in_progress_receipt(
+    *,
+    doi: str,
+    attempt: object,
+    foreground_wait_seconds: float,
+    attempt_stale_seconds: float,
+    existing_worker: bool,
+) -> str:
+    action = "already_running" if existing_worker else "accepted"
+    lines = [
+        "## PDF Parse Accepted",
+        "",
+        f"- **DOI:** {doi}",
+        "- **Status:** in_progress",
+        "- **Outcome:** parse_in_progress",
+        f"- **Attempt ID:** {getattr(attempt, 'attempt_id', '')}",
+        f"- **Input PDF:** {getattr(attempt, 'input_pdf_path', '')}",
+        f"- **Input PDF Name:** {getattr(attempt, 'input_pdf_name', '')}",
+        f"- **Source PDF Hash:** {getattr(attempt, 'input_pdf_hash', '')}",
+        f"- **Action:** {action}",
+        f"- **Foreground Wait Seconds:** {foreground_wait_seconds:g}",
+        f"- **Attempt Stale Seconds:** {attempt_stale_seconds:g}",
+        "- **Next Action:** retry_parse_pdf_file_or_ingest_codex_downloaded_pdf_with_same_file_path",
+        "",
+        (
+            "GRaDOS is still parsing this local PDF in a durable DOI-bound attempt. "
+            "Do not download the PDF again; retry later with the same DOI and file path, or read the saved paper "
+            "if canonical materialization has completed."
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def _parse_retry_wait_receipt(
+    *,
+    doi: str,
+    attempt: object,
+    attempt_stale_seconds: float,
+) -> str:
+    lines = [
+        "## PDF Parse Accepted",
+        "",
+        f"- **DOI:** {doi}",
+        "- **Status:** retry_wait",
+        "- **Outcome:** parse_retry_wait",
+        f"- **Attempt ID:** {getattr(attempt, 'attempt_id', '')}",
+        f"- **Input PDF:** {getattr(attempt, 'input_pdf_path', '')}",
+        f"- **Input PDF Name:** {getattr(attempt, 'input_pdf_name', '')}",
+        f"- **Source PDF Hash:** {getattr(attempt, 'input_pdf_hash', '')}",
+        f"- **Previous Failure Reason:** {getattr(attempt, 'failure_reason', '')}",
+        f"- **Previous Error:** {getattr(attempt, 'error_message', '')}",
+        f"- **Attempt Stale Seconds:** {attempt_stale_seconds:g}",
+        "- **Next Action:** retry_parse_pdf_file_or_ingest_codex_downloaded_pdf_with_same_file_path_after_stale_window",
+        "",
+        (
+            "GRaDOS recorded a previous retryable parse failure for this DOI and PDF hash. "
+            "Do not download the PDF again; retry later with the same DOI and file path. "
+            "After the stale window expires, GRaDOS will restart the parse attempt from the same local PDF."
+        ),
+    ]
+    return "\n".join(lines)
 
 
 def _append_remote_metadata_warning(result: str, warning: str | None) -> str:
@@ -1496,7 +1633,58 @@ async def ingest_codex_downloaded_pdf(
         copy_to_library=True,
         acquisition_via="codex",
     )
+    if parse_receipt.startswith("## PDF Parse Accepted"):
+        parse_outcome = _receipt_field(parse_receipt, "Outcome") or "parse_in_progress"
+        return {
+            "status": "in_progress",
+            "outcome": parse_outcome,
+            "doi": doi,
+            "source_path": str(source_path),
+            "source_pdf_hash": source_hash,
+            "attempt_id": _receipt_field(parse_receipt, "Attempt ID"),
+            "watch_dir": str(watch_dir),
+            "candidate": candidate,
+            "rejected_candidates": rejected,
+            "parse_receipt": parse_receipt,
+            "next_action": (
+                "retry_ingest_codex_downloaded_pdf_with_same_downloaded_file_path"
+                "_or_read_saved_paper_if_completed"
+            ),
+        }
+    if parse_receipt.startswith("## Paper Already Saved"):
+        completed_record = load_paper_record(paths.papers, doi=doi)
+        return {
+            "status": "success",
+            "outcome": "background_completed" if completed_record is not None else "already_saved",
+            "doi": doi,
+            "safe_doi": completed_record.safe_doi if completed_record is not None else "",
+            "uri": completed_record.canonical_uri if completed_record is not None else "",
+            "source_path": str(source_path),
+            "source_pdf_hash": source_hash,
+            "watch_dir": str(watch_dir),
+            "candidate": candidate,
+            "rejected_candidates": rejected,
+            "parse_receipt": parse_receipt,
+            "next_action": "read_saved_paper_or_get_saved_paper_structure",
+        }
     if not parse_receipt.startswith("## PDF Parsed & Saved"):
+        completed_record = load_paper_record(paths.papers, doi=doi)
+        if completed_record is not None and completed_record.content_markdown.strip():
+            return {
+                "status": "success",
+                "outcome": "background_completed",
+                "doi": doi,
+                "safe_doi": completed_record.safe_doi,
+                "uri": completed_record.canonical_uri,
+                "file": str((paths.papers / f"{completed_record.safe_doi}.md").resolve()),
+                "source_path": str(source_path),
+                "source_pdf_hash": source_hash,
+                "watch_dir": str(watch_dir),
+                "candidate": candidate,
+                "rejected_candidates": rejected,
+                "parse_receipt": parse_receipt,
+                "next_action": "read_saved_paper_or_get_saved_paper_structure",
+            }
         if parse_receipt.startswith("## PDF Materialization Conflict"):
             recorded = _record_codex_ingest_receipt(
                 paths,
@@ -1854,48 +2042,20 @@ async def plan_library_pdf_cleanup() -> dict[str, object]:
     return plan_duplicate_library_pdf_cleanup(paths)
 
 
-async def parse_pdf_file(
-    file_path: Annotated[str, Field(min_length=1, description="Local path to the PDF file to parse.")],
-    expected_title: Annotated[
-        str | None,
-        Field(description="Optional title used for QA validation only."),
-    ] = None,
-    doi: Annotated[
-        str | None,
-        Field(description="Optional DOI to bind the parsed PDF to canonical storage and save it to the paper library."),
-    ] = None,
-    copy_to_library: Annotated[
-        bool,
-        Field(description="Copy the raw PDF into the managed downloads archive when a DOI is provided."),
-    ] = False,
-    acquisition_via: Annotated[
-        str | None,
-        Field(description="Optional acquisition route label, such as `codex` or `local_pdf`."),
-    ] = None,
+async def _parse_pdf_file_core(
+    *,
+    path: Path,
+    pdf_buffer: bytes,
+    pdf_hash: str,
+    expected_title: str | None,
+    doi: str | None,
+    copy_to_library: bool,
+    acquisition_via: str | None,
+    paths: GRaDOSPaths,
+    config: GRaDOSConfig,
 ) -> str:
-    """Parse a local PDF file into markdown."""
     from grados.extract.parse import parse_pdf_with_diagnostics
     from grados.extract.qa import is_valid_paper_content
-
-    path = Path(file_path).expanduser().resolve()
-    if not path.is_file():
-        return f"File not found: {file_path}"
-
-    paths, config = get_paths_and_config()
-    try:
-        pdf_buffer = read_bounded_local_file(
-            path,
-            max_bytes=config.extract.security.max_local_pdf_bytes,
-            label=f"Local PDF {path}",
-        )
-    except SizeLimitError as exc:
-        return f"PDF file is too large: {exc}"
-    except LocalFileReadError as exc:
-        return f"Could not read PDF file: {exc}"
-
-    if pdf_buffer[:5] != b"%PDF-":
-        return f"Not a valid PDF file: {file_path}"
-    pdf_hash = hashlib.sha256(pdf_buffer).hexdigest()
 
     artifact = await build_library_document_artifact(
         lambda: parse_pdf_with_diagnostics(
@@ -1924,7 +2084,7 @@ async def parse_pdf_file(
     )
     if not artifact.markdown:
         warnings, parser_debug = merge_library_diagnostics(artifact)
-        result = f"All parsers failed for: {file_path}"
+        result = f"All parsers failed for: {path}"
         if warnings:
             result += "\n\nWarnings:\n" + "\n".join(f"- {warning}" for warning in warnings)
         if parser_debug:
@@ -2027,6 +2187,351 @@ async def parse_pdf_file(
         result += "\n\n### Parser Debug\n" + "\n".join(f"- {entry}" for entry in parser_debug)
 
     return result
+
+
+def _run_parse_pdf_file_attempt_sync(
+    *,
+    attempt_id: str,
+    db_path: Path,
+    path: Path,
+    pdf_buffer: bytes,
+    pdf_hash: str,
+    expected_title: str | None,
+    doi: str,
+    copy_to_library: bool,
+    acquisition_via: str | None,
+    paths: GRaDOSPaths,
+    config: GRaDOSConfig,
+) -> str:
+    from grados.storage.parse_attempts import complete_parse_attempt, fail_parse_attempt
+
+    try:
+        receipt = asyncio.run(
+            _parse_pdf_file_core(
+                path=path,
+                pdf_buffer=pdf_buffer,
+                pdf_hash=pdf_hash,
+                expected_title=expected_title,
+                doi=doi,
+                copy_to_library=copy_to_library,
+                acquisition_via=acquisition_via,
+                paths=paths,
+                config=config,
+            )
+        )
+    except Exception as exc:
+        receipt = f"PDF parse attempt failed for {path}: {exc.__class__.__name__}: {exc}"
+        fail_parse_attempt(
+            db_path,
+            attempt_id,
+            receipt_text=receipt,
+            failure_reason="parse_failed",
+            error_message=f"{exc.__class__.__name__}: {exc}",
+        )
+        return receipt
+
+    if receipt.startswith("## PDF Parsed & Saved") or receipt.startswith("## Paper Already Saved"):
+        complete_parse_attempt(
+            db_path,
+            attempt_id,
+            receipt_text=receipt,
+            **_parse_attempt_completion_metadata(paths, doi),
+        )
+    elif receipt.startswith("## PDF Materialization Conflict"):
+        fail_parse_attempt(
+            db_path,
+            attempt_id,
+            receipt_text=receipt,
+            failure_reason="pdf_materialization_conflict",
+            error_message="PDF materialization conflict",
+        )
+    else:
+        fail_parse_attempt(
+            db_path,
+            attempt_id,
+            receipt_text=receipt,
+            failure_reason="parse_failed",
+            error_message=receipt.splitlines()[0] if receipt else "parse failed",
+        )
+    return receipt
+
+
+def _start_parse_attempt_future(
+    *,
+    attempt_id: str,
+    db_path: Path,
+    path: Path,
+    pdf_buffer: bytes,
+    pdf_hash: str,
+    expected_title: str | None,
+    doi: str,
+    copy_to_library: bool,
+    acquisition_via: str | None,
+    paths: GRaDOSPaths,
+    config: GRaDOSConfig,
+) -> concurrent.futures.Future[str]:
+    with _PARSE_ATTEMPT_LOCK:
+        future = _PARSE_ATTEMPT_FUTURES.get(attempt_id)
+        if future is not None and not future.done():
+            return future
+        future = concurrent.futures.Future()
+        _PARSE_ATTEMPT_FUTURES[attempt_id] = future
+
+    def _forget(completed: concurrent.futures.Future[str]) -> None:
+        with _PARSE_ATTEMPT_LOCK:
+            if _PARSE_ATTEMPT_FUTURES.get(attempt_id) is completed:
+                _PARSE_ATTEMPT_FUTURES.pop(attempt_id, None)
+
+    future.add_done_callback(_forget)
+    worker = threading.Thread(
+        target=_run_parse_attempt_future_worker,
+        kwargs={
+            "future": future,
+            "attempt_id": attempt_id,
+            "db_path": db_path,
+            "path": path,
+            "pdf_buffer": pdf_buffer,
+            "pdf_hash": pdf_hash,
+            "expected_title": expected_title,
+            "doi": doi,
+            "copy_to_library": copy_to_library,
+            "acquisition_via": acquisition_via,
+            "paths": paths,
+            "config": config,
+        },
+        name=f"grados-parse-attempt-{attempt_id[:8]}",
+        daemon=True,
+    )
+    worker.start()
+    return future
+
+
+def _run_parse_attempt_future_worker(
+    *,
+    future: concurrent.futures.Future[str],
+    attempt_id: str,
+    db_path: Path,
+    path: Path,
+    pdf_buffer: bytes,
+    pdf_hash: str,
+    expected_title: str | None,
+    doi: str,
+    copy_to_library: bool,
+    acquisition_via: str | None,
+    paths: GRaDOSPaths,
+    config: GRaDOSConfig,
+) -> None:
+    if not future.set_running_or_notify_cancel():
+        return
+    try:
+        result = _run_parse_pdf_file_attempt_sync(
+            attempt_id=attempt_id,
+            db_path=db_path,
+            path=path,
+            pdf_buffer=pdf_buffer,
+            pdf_hash=pdf_hash,
+            expected_title=expected_title,
+            doi=doi,
+            copy_to_library=copy_to_library,
+            acquisition_via=acquisition_via,
+            paths=paths,
+            config=config,
+        )
+    except BaseException as exc:
+        future.set_exception(exc)
+        return
+    future.set_result(result)
+
+
+async def _await_parse_attempt_future(
+    future: concurrent.futures.Future[str],
+    *,
+    timeout_seconds: float,
+) -> str | None:
+    if future.done():
+        return future.result()
+    if timeout_seconds <= 0:
+        return None
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(asyncio.wrap_future(future)),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        return None
+
+
+async def parse_pdf_file(
+    file_path: Annotated[str, Field(min_length=1, description="Local path to the PDF file to parse.")],
+    expected_title: Annotated[
+        str | None,
+        Field(description="Optional title used for QA validation only."),
+    ] = None,
+    doi: Annotated[
+        str | None,
+        Field(description="Optional DOI to bind the parsed PDF to canonical storage and save it to the paper library."),
+    ] = None,
+    copy_to_library: Annotated[
+        bool,
+        Field(description="Copy the raw PDF into the managed downloads archive when a DOI is provided."),
+    ] = False,
+    acquisition_via: Annotated[
+        str | None,
+        Field(description="Optional acquisition route label, such as `codex` or `local_pdf`."),
+    ] = None,
+) -> str:
+    """Parse a local PDF file into markdown."""
+    from grados.storage.papers import load_paper_record
+    from grados.storage.parse_attempts import (
+        build_parse_attempt_id,
+        get_parse_attempt,
+        mark_parse_attempt_interrupted,
+        restart_parse_attempt,
+        upsert_running_parse_attempt,
+    )
+
+    path = Path(file_path).expanduser().resolve()
+    if not path.is_file():
+        return f"File not found: {file_path}"
+
+    paths, config = get_paths_and_config()
+    try:
+        pdf_buffer = read_bounded_local_file(
+            path,
+            max_bytes=config.extract.security.max_local_pdf_bytes,
+            label=f"Local PDF {path}",
+        )
+    except SizeLimitError as exc:
+        return f"PDF file is too large: {exc}"
+    except LocalFileReadError as exc:
+        return f"Could not read PDF file: {exc}"
+
+    if pdf_buffer[:5] != b"%PDF-":
+        return f"Not a valid PDF file: {file_path}"
+    pdf_hash = hashlib.sha256(pdf_buffer).hexdigest()
+
+    if not doi:
+        return await _parse_pdf_file_core(
+            path=path,
+            pdf_buffer=pdf_buffer,
+            pdf_hash=pdf_hash,
+            expected_title=expected_title,
+            doi=None,
+            copy_to_library=copy_to_library,
+            acquisition_via=acquisition_via,
+            paths=paths,
+            config=config,
+        )
+
+    existing_record = load_paper_record(paths.papers, doi=doi)
+    if existing_record is not None and existing_record.content_markdown.strip():
+        return _already_saved_receipt(doi, existing_record, paths.papers)
+
+    normalized_acquisition = (acquisition_via or "").strip()
+    parser_config = _parse_attempt_config_signature(config)
+    attempt_id = build_parse_attempt_id(
+        doi=doi,
+        input_pdf_hash=pdf_hash,
+        copy_to_library=copy_to_library,
+        acquisition_via=normalized_acquisition,
+        parser_config=parser_config,
+    )
+    db_path = paths.database_state
+    attempt, created = upsert_running_parse_attempt(
+        db_path,
+        attempt_id=attempt_id,
+        doi=doi,
+        input_pdf_path=str(path),
+        input_pdf_name=path.name,
+        input_pdf_hash=pdf_hash,
+        copy_to_library=copy_to_library,
+        acquisition_via=normalized_acquisition,
+        expected_title=expected_title or "",
+        parser_config=parser_config,
+    )
+    foreground_wait_seconds = float(getattr(config.extract.parsing, "foreground_wait_seconds", 90.0))
+    attempt_stale_seconds = float(getattr(config.extract.parsing, "attempt_stale_seconds", 1800.0))
+    with _PARSE_ATTEMPT_LOCK:
+        active_future = _PARSE_ATTEMPT_FUTURES.get(attempt_id)
+    if active_future is not None and active_future.done():
+        refreshed = get_parse_attempt(db_path, attempt_id)
+        if refreshed is not None:
+            attempt = refreshed
+        active_future = None
+
+    if attempt.status == "completed" and attempt.receipt_text:
+        return attempt.receipt_text
+    should_start = created
+    if attempt.status == "failed" and attempt.receipt_text:
+        if _parse_attempt_failure_is_terminal(attempt):
+            return attempt.receipt_text
+        if not _parse_attempt_is_stale(attempt, stale_seconds=attempt_stale_seconds):
+            return _parse_retry_wait_receipt(
+                doi=doi,
+                attempt=attempt,
+                attempt_stale_seconds=attempt_stale_seconds,
+            )
+        restarted = restart_parse_attempt(db_path, attempt_id)
+        if restarted is not None:
+            attempt = restarted
+            should_start = True
+
+    if attempt.status == "interrupted":
+        restarted = restart_parse_attempt(db_path, attempt_id)
+        if restarted is not None:
+            attempt = restarted
+            should_start = True
+    if attempt.status == "running" and active_future is None and not should_start:
+        if _parse_attempt_is_stale(attempt, stale_seconds=attempt_stale_seconds):
+            mark_parse_attempt_interrupted(
+                db_path,
+                attempt_id,
+                error_message="running parse attempt had no in-process worker and exceeded attempt_stale_seconds",
+            )
+            restarted = restart_parse_attempt(db_path, attempt_id)
+            if restarted is not None:
+                attempt = restarted
+            should_start = True
+        else:
+            return _parse_in_progress_receipt(
+                doi=doi,
+                attempt=attempt,
+                foreground_wait_seconds=foreground_wait_seconds,
+                attempt_stale_seconds=attempt_stale_seconds,
+                existing_worker=False,
+            )
+
+    future = active_future
+    if future is None or should_start:
+        future = _start_parse_attempt_future(
+            attempt_id=attempt_id,
+            db_path=db_path,
+            path=path,
+            pdf_buffer=pdf_buffer,
+            pdf_hash=pdf_hash,
+            expected_title=expected_title,
+            doi=doi,
+            copy_to_library=copy_to_library,
+            acquisition_via=normalized_acquisition,
+            paths=paths,
+            config=config,
+        )
+
+    completed_receipt = await _await_parse_attempt_future(
+        future,
+        timeout_seconds=foreground_wait_seconds,
+    )
+    if completed_receipt is not None:
+        return completed_receipt
+
+    refreshed = get_parse_attempt(db_path, attempt_id) or attempt
+    return _parse_in_progress_receipt(
+        doi=doi,
+        attempt=refreshed,
+        foreground_wait_seconds=foreground_wait_seconds,
+        attempt_stale_seconds=attempt_stale_seconds,
+        existing_worker=True,
+    )
 
 
 def register_library_tools(mcp: FastMCP) -> None:

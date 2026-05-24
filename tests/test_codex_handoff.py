@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +13,7 @@ from grados.config import GRaDOSPaths, generate_default_config
 from grados.publisher.common import safe_doi_filename
 from grados.server_tools import library_tools
 from grados.storage.frontmatter import read_frontmatter_metadata_from_file
-from grados.storage.papers import save_paper_markdown
+from grados.storage.papers import load_paper_record, save_paper_markdown
 
 
 def _write_config(
@@ -22,6 +24,7 @@ def _write_config(
     settle_seconds: float = 0.0,
     settle_max_wait_seconds: float = 0.0,
     max_local_pdf_bytes: int | None = None,
+    parse_foreground_wait_seconds: float | None = None,
 ) -> None:
     paths = GRaDOSPaths(home)
     paths.ensure_directories()
@@ -32,6 +35,8 @@ def _write_config(
     config["extract"]["codex_handoff"]["download_settle_max_wait_seconds"] = settle_max_wait_seconds
     if max_local_pdf_bytes is not None:
         config["extract"]["security"]["max_local_pdf_bytes"] = max_local_pdf_bytes
+    if parse_foreground_wait_seconds is not None:
+        config["extract"]["parsing"]["foreground_wait_seconds"] = parse_foreground_wait_seconds
     paths.config_file.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
 
 
@@ -195,6 +200,67 @@ def test_ingest_codex_downloaded_pdf_accepts_known_downloaded_file_path(
     parsed_manifest = json.loads((paper_path.parent / frontmatter["parsed_manifest_path"]).read_text())
     assert parsed_manifest["input_pdf_path"] == str(pdf_path.resolve())
     assert parsed_manifest["materialization_action"] == "copied"
+
+
+def test_ingest_codex_downloaded_pdf_treats_slow_parse_as_in_progress(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    doi = "10.1234/slow-codex"
+    home = tmp_path / "grados-home"
+    watch_dir = tmp_path / "missing-watch-dir"
+    _write_config(home, watch_dir, parse_foreground_wait_seconds=0.01)
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    pdf_path = tmp_path / "Chrome Downloads" / "slow.pdf"
+    pdf_path.parent.mkdir()
+    pdf_path.write_bytes(b"%PDF-1.4\n%slow-codex")
+    started = threading.Event()
+    release = threading.Event()
+
+    import grados.extract.parse as parse_module
+    import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    async def fake_parse_pdf(*args: Any, **kwargs: Any) -> Any:
+        started.set()
+        release.wait(timeout=2.0)
+        return parse_module.ParsePipelineResult(
+            markdown="# Slow Codex\n\n## Abstract\n\n" + ("codex background content. " * 80),
+            parser_used="MinerU",
+        )
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+    _patch_pending_record(monkeypatch, None)
+
+    try:
+        result = asyncio.run(
+            library_tools.ingest_codex_downloaded_pdf(
+                doi=doi,
+                expected_title="Slow Codex",
+                downloaded_file_path=str(pdf_path),
+            )
+        )
+
+        assert started.wait(timeout=1.0)
+        assert result["status"] == "in_progress"
+        assert result["outcome"] == "parse_in_progress"
+        assert result["attempt_id"]
+        assert result["source_path"] == str(pdf_path)
+        assert "parse_failed" not in json.dumps(result)
+        release.set()
+        deadline = time.monotonic() + 2.0
+        paths = GRaDOSPaths(home)
+        while time.monotonic() < deadline:
+            if load_paper_record(paths.papers, doi=doi) is not None:
+                break
+            time.sleep(0.02)
+        assert load_paper_record(paths.papers, doi=doi) is not None
+    finally:
+        release.set()
 
 
 def test_ingest_codex_downloaded_pdf_requires_pending_codex_handoff(

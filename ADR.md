@@ -664,3 +664,28 @@
 - `browser/pdf-sessions`、capture metadata 和 challenge resume 是 operational/debug data，不是 citation evidence，也不是 `papers/*.md` 的替代来源。
 - 新增 publisher-specific browser strategy 时，应接入现有 strategy registry，并以 PDF response/download/backfill capture 作为成功判定，而不是以“点击了按钮”判定成功。
 - README、CHANGELOG、skill tool reference 和 tests 共同维护当前用户可见行为；TODO 只保留 CDP attach/reuse、`codex` 去留和 live DOI 样本这类未完成决策。
+
+---
+
+## ADR-025：DOI-bound local PDF parse/save 使用 GRaDOS-owned attempt ledger 恢复长解析
+
+- 状态：Accepted
+- 日期：2026-05-24
+
+### 背景
+- `parse_pdf_file(file_path=..., doi=..., copy_to_library=true)` 可能调用 MinerU 等长耗时 parser；MinerU 默认 parser timeout 是 300 秒，长于常见 MCP/host 前台等待窗口。
+- 前台调用超时不等于解析失败：GRaDOS 后台仍可能完成 canonical Markdown 和 `downloads/{safe_doi}.pdf` 保存。
+- 如果没有 GRaDOS 自己的 parse attempt 状态，host 后续可能把 timeout 当成失败，再触发 `ingest_codex_downloaded_pdf` 的 pending/watch-dir 恢复路径，从而诱导重复下载。
+
+### 决策
+- DOI-bound `parse_pdf_file` 在开始长解析前写入 `database/research.sqlite3` 的 `parse_attempts` ledger，attempt key 由 DOI、PDF hash、`copy_to_library`、acquisition label 和 parser config signature 决定。
+- `extract.parsing.foreground_wait_seconds` 控制前台等待 canonical save 的时间；超出后返回 `parse_in_progress` receipt，后台 parse/save attempt 继续运行。
+- `extract.parsing.attempt_stale_seconds` 控制 running attempt 在没有当前进程 worker 时何时视为 interrupted，也控制可重试 failed attempt 何时可用同一个本地 PDF 路径重启；PDF materialization conflict 仍是 terminal receipt，不自动覆盖或重试。
+- `ingest_codex_downloaded_pdf` 把 `parse_in_progress` / background-completed 视为非失败，不写 `parse_failed` failure memory；只有 parser waterfall 真正失败后才记录 parse failure。
+- Parse attempt 状态只属于 GRaDOS 控制面；不写入 `papers/*.md` frontmatter、canonical Markdown 正文、Chroma/FTS metadata 或 citation evidence。成功后的 parser/materialization provenance 仍由 `_parsed` sidecar 承载。
+- 不新增 Codex-specific polling contract，也不把 Chrome tab lifecycle 写入 GRaDOS core。重复调用同一个 DOI/path/hash 由 GRaDOS ledger 自行恢复。
+
+### 结果与影响
+- Host 前台 timeout 不再被误导为 parse failure；长解析会返回可恢复 receipt，并且后续重复调用能复用 running/completed attempt。
+- 用户可按环境调整前台等待和 stale 判定，但单个 parser 自己的 timeout 仍由 `mineru_timeout`、`marker_timeout` 等既有配置决定。
+- `download_watch_dir` 继续只是 ingest scan-only 配置；已知文件路径仍应传 `downloaded_file_path` 或直接调用 `parse_pdf_file(file_path=...)`。

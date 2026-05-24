@@ -320,6 +320,22 @@ class ParsingConfig(BaseModel):
     })
     marker_timeout: int = Field(default=120000, description="Timeout in milliseconds for isolated Marker parser runs.")
     mineru_timeout: int = Field(default=300000, description="Timeout in milliseconds for MinerU cloud parsing.")
+    foreground_wait_seconds: float = Field(
+        default=90.0,
+        ge=0.0,
+        description=(
+            "Seconds parse_pdf_file waits for DOI-bound canonical save before returning an in-progress receipt. "
+            "The background parse attempt continues after this wait expires."
+        ),
+    )
+    attempt_stale_seconds: float = Field(
+        default=1800.0,
+        ge=1.0,
+        description=(
+            "Seconds before an inactive running or retryable failed DOI-bound local PDF parse attempt may be "
+            "restarted from the same file."
+        ),
+    )
     mineru_poll_interval: float = Field(default=3.0, ge=0.5, description="Seconds between MinerU task polls.")
     mineru_model_version: str = Field(default="vlm", description="MinerU model version: pipeline or vlm.")
     mineru_language: str = Field(default="en", description="MinerU document language hint.")
@@ -783,6 +799,14 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     )
     data["extract"]["parsing"]["_comment_mineru_timeout"] = (
         "Maximum time in milliseconds to wait for MinerU's authenticated cloud parser."
+    )
+    data["extract"]["parsing"]["_comment_foreground_wait_seconds"] = (
+        "Seconds parse_pdf_file waits for a DOI-bound canonical save before returning parse_in_progress; "
+        "the GRaDOS-owned background parse attempt continues."
+    )
+    data["extract"]["parsing"]["_comment_attempt_stale_seconds"] = (
+        "Seconds before an inactive running or retryable failed DOI-bound local PDF parse attempt can be restarted "
+        "from the same local PDF."
     )
     data["extract"]["parsing"]["_comment_mineru_model_version"] = (
         "MinerU cloud model version. Use `vlm` for precise PDF parsing, or `pipeline` for the lighter model."

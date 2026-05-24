@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import sqlite3
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1444,6 +1448,400 @@ def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
     assert parsed_manifest["materialization_outcome"] == "success"
     assert parsed_manifest["parse_outcome"] == "success"
     assert (tmp_path / "grados-home" / "downloads" / f"{record.safe_doi}.pdf").is_file()
+
+
+def test_parse_pdf_file_returns_in_progress_and_reconciles_background_save(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    config = generate_default_config(paths)
+    config["extract"]["parsing"]["foreground_wait_seconds"] = 0.01
+    config["extract"]["parsing"]["attempt_stale_seconds"] = 30.0
+    paths.config_file.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    pdf_path = tmp_path / "slow.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%slow")
+    doi = "10.1234/slow-parse"
+    started = threading.Event()
+    release = threading.Event()
+    calls = {"count": 0}
+
+    import grados.extract.parse as parse_module
+    import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    async def fake_parse_pdf(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["count"] += 1
+        started.set()
+        release.wait(timeout=2.0)
+        return parse_module.ParsePipelineResult(
+            markdown="# Slow Parse\n\n## Abstract\n\n" + ("background parser content. " * 80),
+            parser_used="MinerU",
+        )
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+
+    first = asyncio.run(
+        parse_pdf_file(
+            file_path=str(pdf_path),
+            expected_title="Slow Parse",
+            doi=doi,
+            copy_to_library=True,
+            acquisition_via="codex",
+        )
+    )
+    assert started.wait(timeout=1.0)
+    assert first.startswith("## PDF Parse Accepted")
+    assert "Outcome:** parse_in_progress" in first
+    assert "Source PDF Hash:**" in first
+
+    second = asyncio.run(
+        parse_pdf_file(
+            file_path=str(pdf_path),
+            expected_title="Slow Parse",
+            doi=doi,
+            copy_to_library=True,
+            acquisition_via="codex",
+        )
+    )
+    assert second.startswith("## PDF Parse Accepted")
+    assert calls["count"] == 1
+
+    release.set()
+    deadline = time.monotonic() + 2.0
+    record = None
+    while time.monotonic() < deadline:
+        record = load_paper_record(paths.papers, doi=doi)
+        if record is not None:
+            break
+        time.sleep(0.02)
+
+    assert record is not None
+    third = asyncio.run(
+        parse_pdf_file(
+            file_path=str(pdf_path),
+            expected_title="Slow Parse",
+            doi=doi,
+            copy_to_library=True,
+            acquisition_via="codex",
+        )
+    )
+
+    assert third.startswith("## Paper Already Saved")
+    assert calls["count"] == 1
+    frontmatter = read_frontmatter_metadata_from_file(paths.papers / f"{record.safe_doi}.md")
+    assert "source_pdf_hash" not in frontmatter
+    assert "acquisition_via" not in frontmatter
+
+
+def test_parse_pdf_file_returns_already_saved_without_reparsing(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    doi = "10.1234/already-local"
+    save_paper_markdown(
+        doi,
+        "# Already Local\n\n## Abstract\n\n" + ("saved content. " * 80),
+        paths.papers,
+        title="Already Local",
+    )
+    pdf_path = tmp_path / "already.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%already")
+
+    import grados.extract.parse as parse_module
+
+    async def forbidden_parse(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("already saved DOI should not be reparsed")
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", forbidden_parse)
+
+    result = asyncio.run(parse_pdf_file(file_path=str(pdf_path), doi=doi, copy_to_library=True))
+
+    assert result.startswith("## Paper Already Saved")
+
+
+def test_parse_pdf_file_restarts_stale_running_attempt_without_worker(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    config = generate_default_config(paths)
+    config["extract"]["parsing"]["foreground_wait_seconds"] = 1.0
+    config["extract"]["parsing"]["attempt_stale_seconds"] = 1.0
+    paths.config_file.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    pdf_path = tmp_path / "stale.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%stale")
+    doi = "10.1234/stale-parse"
+    pdf_hash = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+
+    from grados.storage.parse_attempts import build_parse_attempt_id, upsert_running_parse_attempt
+
+    parser_config = {
+        "order": ["Docling", "MinerU", "PyMuPDF"],
+        "enabled": {"Docling": True, "MinerU": True, "PyMuPDF": True},
+        "marker_timeout": 120000,
+        "mineru_timeout": 300000,
+        "mineru_poll_interval": 3.0,
+        "mineru_model_version": "vlm",
+        "mineru_language": "en",
+        "mineru_enable_formula": True,
+        "mineru_enable_table": True,
+        "mineru_is_ocr": False,
+    }
+    attempt_id = build_parse_attempt_id(
+        doi=doi,
+        input_pdf_hash=pdf_hash,
+        copy_to_library=True,
+        acquisition_via="codex",
+        parser_config=parser_config,
+    )
+    upsert_running_parse_attempt(
+        paths.database_state,
+        attempt_id=attempt_id,
+        doi=doi,
+        input_pdf_path=str(pdf_path.resolve()),
+        input_pdf_name=pdf_path.name,
+        input_pdf_hash=pdf_hash,
+        copy_to_library=True,
+        acquisition_via="codex",
+        expected_title="Stale Parse",
+        parser_config=parser_config,
+    )
+    with sqlite3.connect(paths.database_state) as conn:
+        conn.execute(
+            "UPDATE parse_attempts SET updated_at = ? WHERE attempt_id = ?",
+            ("2000-01-01T00:00:00+00:00", attempt_id),
+        )
+
+    import grados.extract.parse as parse_module
+    import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    async def fake_parse_pdf(*args, **kwargs):  # noqa: ANN002, ANN003
+        return parse_module.ParsePipelineResult(
+            markdown="# Stale Parse\n\n## Abstract\n\n" + ("restarted background parser content. " * 80),
+            parser_used="Docling",
+        )
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        parse_pdf_file(
+            file_path=str(pdf_path),
+            expected_title="Stale Parse",
+            doi=doi,
+            copy_to_library=True,
+            acquisition_via="codex",
+        )
+    )
+
+    assert result.startswith("## PDF Parsed & Saved")
+    record = load_paper_record(paths.papers, doi=doi)
+    assert record is not None
+
+
+def test_parse_pdf_file_failed_attempt_waits_then_retries_after_stale(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    config = generate_default_config(paths)
+    config["extract"]["parsing"]["foreground_wait_seconds"] = 1.0
+    config["extract"]["parsing"]["attempt_stale_seconds"] = 60.0
+    paths.config_file.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    pdf_path = tmp_path / "failed-then-retry.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%failed-then-retry")
+    doi = "10.1234/failed-then-retry"
+    pdf_hash = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+    parser_config = {
+        "order": ["Docling", "MinerU", "PyMuPDF"],
+        "enabled": {"Docling": True, "MinerU": True, "PyMuPDF": True},
+        "marker_timeout": 120000,
+        "mineru_timeout": 300000,
+        "mineru_poll_interval": 3.0,
+        "mineru_model_version": "vlm",
+        "mineru_language": "en",
+        "mineru_enable_formula": True,
+        "mineru_enable_table": True,
+        "mineru_is_ocr": False,
+    }
+
+    from grados.storage.parse_attempts import build_parse_attempt_id, fail_parse_attempt, upsert_running_parse_attempt
+
+    attempt_id = build_parse_attempt_id(
+        doi=doi,
+        input_pdf_hash=pdf_hash,
+        copy_to_library=True,
+        acquisition_via="codex",
+        parser_config=parser_config,
+    )
+    upsert_running_parse_attempt(
+        paths.database_state,
+        attempt_id=attempt_id,
+        doi=doi,
+        input_pdf_path=str(pdf_path.resolve()),
+        input_pdf_name=pdf_path.name,
+        input_pdf_hash=pdf_hash,
+        copy_to_library=True,
+        acquisition_via="codex",
+        expected_title="Failed Then Retry",
+        parser_config=parser_config,
+    )
+    fail_parse_attempt(
+        paths.database_state,
+        attempt_id,
+        receipt_text="All parsers failed for: failed-then-retry.pdf",
+        failure_reason="parse_failed",
+        error_message="All parsers failed",
+    )
+
+    import grados.extract.parse as parse_module
+    import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    calls = {"count": 0}
+
+    async def fake_parse_pdf(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["count"] += 1
+        return parse_module.ParsePipelineResult(
+            markdown="# Failed Then Retry\n\n## Abstract\n\n" + ("recovered parser content. " * 80),
+            parser_used="Docling",
+        )
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+
+    retry_wait = asyncio.run(
+        parse_pdf_file(
+            file_path=str(pdf_path),
+            expected_title="Failed Then Retry",
+            doi=doi,
+            copy_to_library=True,
+            acquisition_via="codex",
+        )
+    )
+    assert retry_wait.startswith("## PDF Parse Accepted")
+    assert "Outcome:** parse_retry_wait" in retry_wait
+    assert calls["count"] == 0
+
+    with sqlite3.connect(paths.database_state) as conn:
+        conn.execute(
+            "UPDATE parse_attempts SET updated_at = ? WHERE attempt_id = ?",
+            ("2000-01-01T00:00:00+00:00", attempt_id),
+        )
+
+    recovered = asyncio.run(
+        parse_pdf_file(
+            file_path=str(pdf_path),
+            expected_title="Failed Then Retry",
+            doi=doi,
+            copy_to_library=True,
+            acquisition_via="codex",
+        )
+    )
+
+    assert recovered.startswith("## PDF Parsed & Saved")
+    assert calls["count"] == 1
+    assert load_paper_record(paths.papers, doi=doi) is not None
+
+
+def test_parse_pdf_file_keeps_materialization_conflict_terminal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    paths.config_file.write_text(json.dumps(generate_default_config(paths)), encoding="utf-8")
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    pdf_path = tmp_path / "conflict.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%conflict")
+    doi = "10.1234/conflict-terminal"
+    pdf_hash = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+    parser_config = {
+        "order": ["Docling", "MinerU", "PyMuPDF"],
+        "enabled": {"Docling": True, "MinerU": True, "PyMuPDF": True},
+        "marker_timeout": 120000,
+        "mineru_timeout": 300000,
+        "mineru_poll_interval": 3.0,
+        "mineru_model_version": "vlm",
+        "mineru_language": "en",
+        "mineru_enable_formula": True,
+        "mineru_enable_table": True,
+        "mineru_is_ocr": False,
+    }
+
+    from grados.storage.parse_attempts import build_parse_attempt_id, fail_parse_attempt, upsert_running_parse_attempt
+
+    attempt_id = build_parse_attempt_id(
+        doi=doi,
+        input_pdf_hash=pdf_hash,
+        copy_to_library=True,
+        acquisition_via="codex",
+        parser_config=parser_config,
+    )
+    upsert_running_parse_attempt(
+        paths.database_state,
+        attempt_id=attempt_id,
+        doi=doi,
+        input_pdf_path=str(pdf_path.resolve()),
+        input_pdf_name=pdf_path.name,
+        input_pdf_hash=pdf_hash,
+        copy_to_library=True,
+        acquisition_via="codex",
+        expected_title="Conflict Terminal",
+        parser_config=parser_config,
+    )
+    conflict_receipt = "## PDF Materialization Conflict\n\n- **DOI:** 10.1234/conflict-terminal"
+    fail_parse_attempt(
+        paths.database_state,
+        attempt_id,
+        receipt_text=conflict_receipt,
+        failure_reason="pdf_materialization_conflict",
+        error_message="PDF materialization conflict",
+    )
+    with sqlite3.connect(paths.database_state) as conn:
+        conn.execute(
+            "UPDATE parse_attempts SET updated_at = ? WHERE attempt_id = ?",
+            ("2000-01-01T00:00:00+00:00", attempt_id),
+        )
+
+    import grados.extract.parse as parse_module
+
+    async def forbidden_parse(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("materialization conflicts should not auto-retry")
+
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", forbidden_parse)
+
+    result = asyncio.run(
+        parse_pdf_file(
+            file_path=str(pdf_path),
+            expected_title="Conflict Terminal",
+            doi=doi,
+            copy_to_library=True,
+            acquisition_via="codex",
+        )
+    )
+
+    assert result == conflict_receipt
 
 
 def test_stage_b_state_tools_round_trip(tmp_path: Path, monkeypatch) -> None:
