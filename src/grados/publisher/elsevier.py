@@ -37,6 +37,8 @@ class ElsevierFetchResult:
     outcome: str = ""  # native_full_text | metadata_only | failed
     text_format: str = ""  # markdown | text
     asset_hints: list[dict[str, str]] = field(default_factory=list)
+    trace: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _build_asset_hints(metadata: ElsevierMetadataSignal | None) -> list[dict[str, str]]:
@@ -63,6 +65,57 @@ def _build_asset_hints(metadata: ElsevierMetadataSignal | None) -> list[dict[str
             "value": metadata.eid,
         })
     return hints
+
+
+def _short_error_message(exc: Exception) -> str:
+    detail = str(exc).strip().replace("\n", " ")
+    return detail[:240]
+
+
+def _elsevier_attempt_record(
+    step: str,
+    *,
+    outcome: str,
+    response: httpx.Response | None = None,
+    exception: Exception | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "provider": "elsevier",
+        "step": step,
+        "outcome": outcome,
+    }
+    if response is not None:
+        record["status_code"] = response.status_code
+        headers = getattr(response, "headers", {})
+        content_type = str(headers.get("content-type", "") if hasattr(headers, "get") else "").strip()
+        if content_type:
+            record["content_type"] = content_type
+    if exception is not None:
+        record["exception_type"] = exception.__class__.__name__
+        message = _short_error_message(exception)
+        if message:
+            record["exception_message"] = message
+        exc_response = getattr(exception, "response", None)
+        if isinstance(exc_response, httpx.Response):
+            record["status_code"] = exc_response.status_code
+            content_type = exc_response.headers.get("content-type", "").strip()
+            if content_type:
+                record["content_type"] = content_type
+    return record
+
+
+def _elsevier_attempt_warning(record: dict[str, Any]) -> str:
+    step = str(record.get("step", "") or "request")
+    exception_type = str(record.get("exception_type", "") or "")
+    if exception_type:
+        message = str(record.get("exception_message", "") or "")
+        suffix = f": {message}" if message else ""
+        return f"Elsevier TDM {step} raised {exception_type}{suffix}"
+    status = record.get("status_code")
+    outcome = str(record.get("outcome", "") or "failed")
+    if status is not None:
+        return f"Elsevier TDM {step} outcome={outcome} status={status}"
+    return f"Elsevier TDM {step} outcome={outcome}"
 
 
 def extract_metadata_signal(payload: Any, fallback_doi: str) -> ElsevierMetadataSignal | None:
@@ -148,8 +201,13 @@ async def fetch_elsevier_article(
     max_text_bytes: int = DEFAULT_MAX_REMOTE_TEXT_BYTES,
 ) -> ElsevierFetchResult:
     """Fetch article via Elsevier TDM API with waterfall: XML FULL → metadata."""
+    trace: list[dict[str, Any]] = []
+    warnings: list[str] = []
     if not api_key:
-        return ElsevierFetchResult(outcome="failed")
+        record = _elsevier_attempt_record("api_key", outcome="missing_api_key")
+        trace.append(record)
+        warnings.append("Elsevier TDM skipped: missing API key")
+        return ElsevierFetchResult(outcome="failed", trace=trace, warnings=warnings)
 
     base = f"https://api.elsevier.com/content/article/doi/{doi}"
 
@@ -159,30 +217,51 @@ async def fetch_elsevier_article(
         if resp.status_code == 200 and resp.text:
             text, metadata = _extract_elsevier_markdown_from_xml(resp.text, fallback_doi=doi)
             if text and len(text) > 1000:
+                trace.append(_elsevier_attempt_record("full_xml", outcome="native_full_text", response=resp))
                 return ElsevierFetchResult(
                     text=text,
                     metadata=metadata,
                     outcome="native_full_text",
                     text_format="markdown",
                     asset_hints=_build_asset_hints(metadata),
+                    trace=trace,
+                    warnings=warnings,
                 )
-    except Exception:
-        pass
+            record = _elsevier_attempt_record("full_xml", outcome="no_usable_full_text", response=resp)
+            record["text_chars"] = len(text or "")
+            trace.append(record)
+            warnings.append(_elsevier_attempt_warning(record))
+        else:
+            record = _elsevier_attempt_record("full_xml", outcome="http_status", response=resp)
+            trace.append(record)
+            warnings.append(_elsevier_attempt_warning(record))
+    except Exception as exc:
+        record = _elsevier_attempt_record("full_xml", outcome="exception", exception=exc)
+        trace.append(record)
+        warnings.append(_elsevier_attempt_warning(record))
 
     # 2. Metadata only
     try:
         resp = await _elsevier_article_json(client, base, api_key, max_text_bytes=max_text_bytes)
         if resp.status_code == 200:
             metadata = extract_metadata_signal(resp.json(), doi)
+            trace.append(_elsevier_attempt_record("metadata_json", outcome="metadata_only", response=resp))
             return ElsevierFetchResult(
                 metadata=metadata,
                 outcome="metadata_only",
                 asset_hints=_build_asset_hints(metadata),
+                trace=trace,
+                warnings=warnings,
             )
-    except Exception:
-        pass
+        record = _elsevier_attempt_record("metadata_json", outcome="http_status", response=resp)
+        trace.append(record)
+        warnings.append(_elsevier_attempt_warning(record))
+    except Exception as exc:
+        record = _elsevier_attempt_record("metadata_json", outcome="exception", exception=exc)
+        trace.append(record)
+        warnings.append(_elsevier_attempt_warning(record))
 
-    return ElsevierFetchResult(outcome="failed")
+    return ElsevierFetchResult(outcome="failed", trace=trace, warnings=warnings)
 
 
 def _extract_elsevier_markdown_from_xml(

@@ -75,9 +75,13 @@ def ensure_bytes_within_limit(data: bytes, *, max_bytes: int, label: str) -> Non
 
 
 def _clone_response(response: httpx.Response, content: bytes) -> httpx.Response:
+    headers = httpx.Headers(response.headers)
+    for header in ("content-encoding", "content-length", "transfer-encoding"):
+        if header in headers:
+            del headers[header]
     return httpx.Response(
         response.status_code,
-        headers=response.headers,
+        headers=headers,
         content=content,
         request=response.request,
         extensions=response.extensions,

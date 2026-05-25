@@ -276,7 +276,14 @@ async def _run_codex_fetch_strategy(context: FetchStrategyContext) -> FetchResul
 async def _run_elsevier_tdm_provider(context: TDMProviderContext) -> FetchResult:
     key = context.api_keys.get("ELSEVIER_API_KEY", "")
     if not key:
-        return FetchResult(outcome="failed", via="api", state="error")
+        return FetchResult(
+            outcome="failed",
+            via="api",
+            state="error",
+            source="Elsevier TDM",
+            trace=[{"provider": "elsevier", "step": "api_key", "outcome": "missing_api_key"}],
+            warnings=["Elsevier TDM skipped: missing API key"],
+        )
 
     result: ElsevierFetchResult = await fetch_elsevier_article(
         context.doi,
@@ -294,6 +301,8 @@ async def _run_elsevier_tdm_provider(context: TDMProviderContext) -> FetchResult
             text_format=result.text_format,
             metadata=normalize_publisher_metadata(result.metadata),
             asset_hints=result.asset_hints,
+            trace=result.trace,
+            warnings=result.warnings,
         )
     return FetchResult(
         outcome=result.outcome or "failed",
@@ -302,6 +311,8 @@ async def _run_elsevier_tdm_provider(context: TDMProviderContext) -> FetchResult
         state="partial" if result.outcome == "metadata_only" else "error",
         metadata=normalize_publisher_metadata(result.metadata),
         asset_hints=result.asset_hints,
+        trace=result.trace,
+        warnings=result.warnings,
     )
 
 
@@ -650,6 +661,7 @@ async def _fetch_tdm(
         max_remote_text_bytes=max_remote_text_bytes,
     )
     partial_result: FetchResult | None = None
+    failure_result: FetchResult | None = None
 
     for provider in providers:
         if not enabled.get(provider.name, True):
@@ -659,9 +671,13 @@ async def _fetch_tdm(
             return result
         if _is_fetch_partial(result):
             partial_result = _prefer_partial_result(partial_result, result)
+            continue
+        failure_result = _prefer_failed_result(failure_result, result)
 
     if partial_result is not None:
         return partial_result
+    if failure_result is not None:
+        return failure_result
 
     return FetchResult(outcome="failed", via="api", state="error")
 

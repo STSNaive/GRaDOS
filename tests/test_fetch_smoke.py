@@ -16,7 +16,12 @@ from grados.extract.fetch import (
     build_tdm_providers,
 )
 from grados.publisher.common import PublisherMetadata
-from grados.publisher.elsevier import ElsevierFetchResult, ElsevierMetadataSignal, _extract_elsevier_markdown_from_xml
+from grados.publisher.elsevier import (
+    ElsevierFetchResult,
+    ElsevierMetadataSignal,
+    _extract_elsevier_markdown_from_xml,
+    fetch_elsevier_article,
+)
 from grados.publisher.springer import SpringerFetchResult
 
 
@@ -132,6 +137,33 @@ def test_fetch_tdm_returns_metadata_only_when_no_full_text_available(monkeypatch
     assert result.metadata.title == "Metadata Only Paper"
     assert result.metadata.pii == "S123456789000001"
     assert result.asset_hints == [{"kind": "article_landing", "url": "https://example.com/article"}]
+
+
+def test_fetch_tdm_preserves_elsevier_attempt_trace(monkeypatch) -> None:
+    trace = [{"provider": "elsevier", "step": "full_xml", "outcome": "exception"}]
+
+    async def fake_elsevier(doi, key, client, **kwargs):
+        _ = doi, key, client, kwargs
+        return ElsevierFetchResult(
+            outcome="failed",
+            trace=trace,
+            warnings=["Elsevier TDM full_xml raised DecodingError: incorrect header check"],
+        )
+
+    monkeypatch.setattr("grados.extract.fetch.fetch_elsevier_article", fake_elsevier)
+
+    result = asyncio.run(
+        _fetch_tdm(
+            doi="10.1234/demo",
+            api_keys={"ELSEVIER_API_KEY": "elsevier-key"},
+            client=object(),  # type: ignore[arg-type]
+            tdm_order=["Elsevier"],
+        )
+    )
+
+    assert result.outcome == "failed"
+    assert result.trace == trace
+    assert result.warnings == ["Elsevier TDM full_xml raised DecodingError: incorrect header check"]
 
 
 def test_fetch_paper_preserves_metadata_only_after_later_failures(monkeypatch) -> None:
@@ -1001,3 +1033,32 @@ def test_elsevier_xml_rejects_entity_expansion() -> None:
 
     with pytest.raises(EntitiesForbidden):
         _extract_elsevier_markdown_from_xml(xml_payload, fallback_doi="10.1016/j.demo.2026.01.001")
+
+
+def test_fetch_elsevier_article_records_decode_failures(monkeypatch) -> None:
+    async def broken_xml(client, base, api_key, *, max_text_bytes):
+        _ = client, base, api_key, max_text_bytes
+        raise httpx.DecodingError("incorrect header check")
+
+    async def broken_json(client, base, api_key, *, max_text_bytes):
+        _ = client, base, api_key, max_text_bytes
+        raise httpx.DecodingError("metadata decode failed")
+
+    monkeypatch.setattr("grados.publisher.elsevier._elsevier_article_xml", broken_xml)
+    monkeypatch.setattr("grados.publisher.elsevier._elsevier_article_json", broken_json)
+
+    result = asyncio.run(
+        fetch_elsevier_article(
+            "10.1016/j.demo.2026.01.001",
+            "elsevier-key",
+            object(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert result.outcome == "failed"
+    assert result.trace[0]["provider"] == "elsevier"
+    assert result.trace[0]["step"] == "full_xml"
+    assert result.trace[0]["exception_type"] == "DecodingError"
+    assert result.trace[1]["step"] == "metadata_json"
+    assert result.trace[1]["exception_type"] == "DecodingError"
+    assert any("full_xml raised DecodingError" in warning for warning in result.warnings)
