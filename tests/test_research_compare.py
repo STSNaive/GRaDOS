@@ -66,6 +66,54 @@ def test_compare_papers_aligns_saved_methods_sections(tmp_path: Path) -> None:
     assert "reread" in comparison.papers[0].evidence[0].warning
 
 
+def test_compare_papers_excludes_backmatter_sections(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        compare_module,
+        "_resolve_documents",
+        lambda chroma_dir, dois: (
+            [
+                SimpleNamespace(
+                    doi="10.1234/demo",
+                    safe_doi="10_1234_demo",
+                    title="Paper A",
+                    year="2025",
+                    journal="Composite Structures",
+                )
+            ],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        compare_module,
+        "_select_sections",
+        lambda record, focus="methods": [
+            {
+                "name": "References",
+                "text": "Method term appears in a cited reference title.",
+                "paragraph_start": 12,
+                "paragraph_count": 2,
+            },
+            {
+                "name": "Methods",
+                "text": "The method uses modal analysis.",
+                "paragraph_start": 3,
+                "paragraph_count": 2,
+            },
+        ],
+    )
+
+    comparison = compare_papers(
+        tmp_path / "chroma",
+        dois=["10.1234/demo"],
+        focus="methods",
+        comparison_axes=["method"],
+    )
+
+    assert comparison.papers[0].sections_used == ["Methods"]
+    assert comparison.papers[0].excluded_sections == ["References"]
+    assert comparison.papers[0].evidence[0].section_name == "Methods"
+
+
 def test_compare_papers_escapes_markdown_table_cells(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         compare_module,

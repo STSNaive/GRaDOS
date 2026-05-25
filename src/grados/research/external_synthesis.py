@@ -40,6 +40,7 @@ __all__ = [
 EXTERNAL_SYNTHESIS_PACKET_KIND = "external_synthesis_packet"
 EXTERNAL_SYNTHESIS_RESULT_KIND = "external_synthesis_result"
 EXTERNAL_SYNTHESIS_PROTOCOL_VERSION = "external-synthesis-v1"
+DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS = 120.0
 
 ExternalSynthesisMode = Literal["review", "synthesize"]
 
@@ -470,6 +471,7 @@ async def run_external_synthesis(
             mode=resolved_mode,
             metadata=metadata,
             recover_session_id=recover_session_id,
+            assistant_timeout_seconds=DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS,
         )
     else:
         if bool(topic.strip()) == bool(source_pack_id):
@@ -522,17 +524,31 @@ async def run_external_synthesis(
                 **(metadata or {}),
                 "packet_artifact_id": packet_artifact_id,
                 "prompt_hash": prompt_hash,
+                "foreground_wait_seconds": DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS,
             },
+            assistant_timeout_seconds=DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS,
         )
 
     browser_payload = browser_result.to_dict()
     if not browser_result.ok:
+        recoverable = browser_result.status == "incomplete_capture" or browser_result.error_code in {
+            "assistant_timeout",
+            "capture_failed",
+        }
         return {
             "ok": False,
             "sendable": False,
             "saved": False,
             "error": browser_result.error_code or "chatgpt_browser_failed",
             "message": browser_result.error,
+            "recoverable": recoverable,
+            "browser_session_id": browser_result.session_id,
+            "browser_session_record": browser_result.session_record_path,
+            "next_action": (
+                "retry run_external_synthesis with recover_session_id after ChatGPT finishes"
+                if recoverable
+                else "inspect browser error and retry when fixed"
+            ),
             "browser": browser_payload,
             "packet": packet,
         }

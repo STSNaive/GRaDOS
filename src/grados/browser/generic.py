@@ -209,12 +209,17 @@ async def fetch_with_browser(
         )
 
         if state.pdf_captured():
+            final_url = state.final_url or state.capture_url or _page_url(runtime.root_page)
+            if runtime.retain and config.close_pdf_page_after_capture:
+                protected = set()
+                if not runtime.job_page_owned:
+                    protected.add(runtime.session.root_page)
+                await listeners.close_tracked_pages(except_pages=protected)
             await finalize_browser_success(
                 runtime,
                 close_secondary_pages=close_secondary_pages,
-                close_pdf_page_after_capture=config.close_pdf_page_after_capture,
+                close_pdf_page_after_capture=False,
             )
-            final_url = state.final_url or state.capture_url or _page_url(runtime.root_page)
             source = f"Browser ({runtime.browser_label})"
             update_session(
                 status="ok",
@@ -235,10 +240,10 @@ async def fetch_with_browser(
                 capture=state.capture_payload(),
             )
 
-        await finalize_browser_no_capture(runtime)
         outcome = "publisher_challenge" if state.challenge_seen else "timed_out"
         final_url = state.final_url or _page_url(runtime.root_page)
         host = _host_from_url(final_url)
+        await finalize_browser_no_capture(runtime, keep_job_page=state.challenge_seen)
         resume = (
             _browser_resume_payload(
                 doi=doi,

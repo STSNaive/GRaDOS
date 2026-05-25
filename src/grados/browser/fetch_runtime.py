@@ -195,6 +195,7 @@ class BrowserListenerRegistry:
     cdp_pdf_candidates: dict[str, dict[str, str]] = field(default_factory=dict)
     cdp_sessions: dict[Any, Any] = field(default_factory=dict)
     cdp_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    context_page_listener_registered: bool = False
     on_response: Callable[[Any], Awaitable[None]] = field(init=False)
     on_download: Callable[[Any], Awaitable[None]] = field(init=False)
     on_new_page: Callable[[Any], None] = field(init=False)
@@ -368,8 +369,10 @@ class BrowserListenerRegistry:
                 details={"reason": "body_unavailable", "message": f"{exc.__class__.__name__}: {exc}"},
             )
 
-    def register(self, root_page: Any) -> None:
-        self.context.on("page", self.on_new_page)
+    def register(self, root_page: Any, *, track_context_pages: bool = False) -> None:
+        if track_context_pages:
+            self.context.on("page", self.on_new_page)
+            self.context_page_listener_registered = True
         self.track_page(root_page)
 
     def detach(self) -> None:
@@ -384,11 +387,24 @@ class BrowserListenerRegistry:
                 # Listener cleanup runs after capture is over; keep teardown
                 # best-effort so one bad page does not hide the final outcome.
                 pass
-        try:
-            self.context.remove_listener("page", self.on_new_page)
-        except Exception:
-            # Same rationale as page listener cleanup above.
-            pass
+        if self.context_page_listener_registered:
+            try:
+                self.context.remove_listener("page", self.on_new_page)
+            except Exception:
+                # Same rationale as page listener cleanup above.
+                pass
+            self.context_page_listener_registered = False
+
+    async def close_tracked_pages(self, *, except_pages: set[Any] | None = None) -> None:
+        protected = except_pages or set()
+        for page in list(self.tracked_pages):
+            if page in protected:
+                continue
+            try:
+                if not page.is_closed():
+                    await page.close()
+            except Exception:
+                pass
 
 
 async def navigate_to_doi_target(
@@ -434,14 +450,18 @@ async def run_browser_polling_loop(
     current_sleep = poll_min
 
     while time.monotonic() < deadline and not state.pdf_captured():
+        saw_open_page = False
+        saw_actionable_page = False
         for page in list(listeners.tracked_pages):
             if state.pdf_captured() or page.is_closed():
                 continue
 
+            saw_open_page = True
             blocked = await state.inspect_challenge(page)
             if blocked:
                 continue
 
+            saw_actionable_page = True
             await backfill_from_url(
                 page,
                 context,
@@ -485,6 +505,13 @@ async def run_browser_polling_loop(
             )
 
         if state.pdf_captured():
+            break
+        if saw_open_page and state.challenge_seen and not saw_actionable_page:
+            state.record_event(
+                "polling_stopped_for_manual_resume",
+                url=state.final_url,
+                details={"reason": state.challenge_reason or "publisher_challenge"},
+            )
             break
 
         await asyncio.sleep(current_sleep)

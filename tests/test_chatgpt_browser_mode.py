@@ -54,6 +54,7 @@ from grados.browser.chatgpt.thinking import (
     _pro_thinking_expression,
     rank_thinking_label,
 )
+from grados.browser.chatgpt.types import ChatGPTCapture
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 
 
@@ -306,6 +307,74 @@ def test_login_setup_keep_open_holds_lock_until_browser_closes(
         "wait_for_close",
         "cleanup",
         "exit:external_synthesis_setup",
+    ]
+
+
+def test_chatgpt_recovery_waits_for_assistant_before_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from grados.browser.chatgpt import runtime
+
+    events: list[str] = []
+
+    class FakePage:
+        url = "about:blank"
+
+        async def goto(self, url: str, **kwargs: Any) -> None:
+            assert kwargs["wait_until"] == "domcontentloaded"
+            assert kwargs["timeout"] == 60_000
+            self.url = url
+            events.append(f"goto:{url}")
+
+    class FakeStore:
+        def save_response(self, session_id: str, response_text: str) -> str:
+            assert session_id == "chatgpt-test"
+            assert response_text == "final answer"
+            events.append("save_response")
+            return str(tmp_path / "response.md")
+
+        def update(self, session_id: str, **kwargs: Any) -> None:
+            assert session_id == "chatgpt-test"
+            events.append(f"update:{kwargs['status']}")
+
+    async def fake_ensure_login(page: FakePage) -> None:
+        assert page.url == "https://chatgpt.com/c/demo"
+        events.append("login")
+
+    async def fake_wait(page: FakePage, **kwargs: Any) -> None:
+        assert page.url == "https://chatgpt.com/c/demo"
+        assert kwargs == {"timeout_seconds": 12.0}
+        events.append("wait_done")
+
+    async def fake_capture(page: FakePage) -> ChatGPTCapture:
+        assert page.url == "https://chatgpt.com/c/demo"
+        events.append("capture")
+        return ChatGPTCapture(response_text="final answer", method="dom_text")
+
+    monkeypatch.setattr(runtime, "ensure_chatgpt_logged_in", fake_ensure_login)
+    monkeypatch.setattr(runtime, "wait_for_assistant_done", fake_wait)
+    monkeypatch.setattr(runtime, "capture_final_response", fake_capture)
+
+    asyncio.run(
+        runtime._run_page_flow(
+            FakePage(),
+            store=FakeStore(),
+            session_id="chatgpt-test",
+            prompt="",
+            recover=True,
+            record={"conversation_url": "https://chatgpt.com/c/demo"},
+            assistant_timeout_seconds=12.0,
+        )
+    )
+
+    assert events == [
+        "goto:https://chatgpt.com/c/demo",
+        "login",
+        "wait_done",
+        "capture",
+        "save_response",
+        "update:captured",
     ]
 
 

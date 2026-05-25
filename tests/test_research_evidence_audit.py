@@ -6,6 +6,7 @@ import grados.research.draft_audit as draft_audit
 import grados.research.evidence_grid as evidence_grid
 from grados.research.draft_audit import audit_draft_support
 from grados.research.evidence_grid import build_evidence_grid
+from grados.storage.papers import save_paper_markdown
 from grados.storage.vector import PaperSearchResult
 
 
@@ -152,6 +153,103 @@ def test_build_evidence_grid_batches_scoped_doi_searches(monkeypatch, tmp_path: 
 
     assert calls == [("attenuation", 2, ("10.1234/a", "10.1234/b"))]
     assert [row.doi for row in grid.grids[0].rows] == ["10.1234/a", "10.1234/b"]
+
+
+def test_build_evidence_grid_falls_back_to_canonical_section_for_scoped_doi(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    chroma_dir = tmp_path / "database" / "chroma"
+    papers_dir = tmp_path / "papers"
+    save_paper_markdown(
+        doi="10.1234/fallback",
+        markdown=(
+            "# Fallback Paper\n\n"
+            "## Methods\n\n"
+            "The method section describes composite damping validation on a fixture.\n\n"
+            "## Results\n\n"
+            "The result section reports a different measurement."
+        ),
+        papers_dir=papers_dir,
+        title="Fallback Paper",
+        source="fixture",
+    )
+
+    def fake_search_papers(chroma_dir_arg, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir_arg, query, limit, kwargs)
+        return [
+            PaperSearchResult(
+                doi="10.1234/fallback",
+                safe_doi="10_1234_fallback",
+                title="Fallback Paper",
+                authors=[],
+                year="",
+                journal="",
+                section_name="Results",
+                paragraph_start=4,
+                paragraph_count=1,
+                snippet="Result section that does not match the requested section filter.",
+                score=1.4,
+            )
+        ]
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    grid = build_evidence_grid(
+        chroma_dir,
+        topic="composite damping validation",
+        subquestions=["composite damping validation"],
+        dois=["10.1234/fallback"],
+        section_filter=["Methods"],
+    )
+
+    row = grid.grids[0].rows[0]
+    assert row.doi == "10.1234/fallback"
+    assert row.section_name == "Methods"
+    assert grid.covered_dois == ["10.1234/fallback"]
+    assert grid.missing_scoped_dois == []
+
+
+def test_build_evidence_grid_drops_stale_missing_reasons_after_topic_fallback(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def fake_search_papers(chroma_dir_arg, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir_arg, limit, kwargs)
+        calls.append(query)
+        if query != "broad topic hit":
+            return []
+        return [
+            PaperSearchResult(
+                doi="10.1234/fallback",
+                safe_doi="10_1234_fallback",
+                title="Fallback Paper",
+                authors=[],
+                year="",
+                journal="",
+                section_name="Results",
+                paragraph_start=4,
+                paragraph_count=1,
+                snippet="The broad topic search covered the previously missing scoped DOI.",
+                score=1.4,
+            )
+        ]
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    grid = build_evidence_grid(
+        tmp_path / "database" / "chroma",
+        topic="broad topic hit",
+        subquestions=["narrow miss"],
+        dois=["10.1234/fallback"],
+    )
+
+    assert calls == ["narrow miss", "broad topic hit"]
+    assert grid.covered_dois == ["10.1234/fallback"]
+    assert grid.missing_scoped_dois == []
+    assert grid.missing_reasons == {}
 
 
 def test_audit_draft_support_requires_canonical_paragraph_window(monkeypatch, tmp_path: Path) -> None:

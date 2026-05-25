@@ -39,6 +39,7 @@ class ParsePipelineResult:
     warnings: list[str] = field(default_factory=list)
     debug: list[str] = field(default_factory=list)
     assets: list[PendingAsset] = field(default_factory=list)
+    qa_passed: bool | None = None
 
 
 @dataclass
@@ -306,12 +307,17 @@ async def parse_pdf_with_diagnostics(
     max_asset_total_bytes: int = DEFAULT_MAX_ASSET_TOTAL_BYTES,
     max_asset_inline_bytes: int = DEFAULT_MAX_ASSET_INLINE_BYTES,
     max_asset_count: int = DEFAULT_MAX_ASSET_COUNT,
+    qa_validator: Callable[[str, int, str | None], bool] | None = None,
+    qa_min_characters: int = 0,
+    qa_expected_title: str | None = None,
+    continue_on_qa_failure: bool = False,
 ) -> ParsePipelineResult:
     """Parse a PDF buffer and preserve parser warnings/debug for caller-facing receipts."""
     strategies = build_pdf_parser_strategies(parse_order)
     enabled = parse_enabled or {"Docling": True, "MinerU": True, "PyMuPDF": True}
     warnings: list[str] = []
     debug: list[str] = []
+    fallback_result: ParsePipelineResult | None = None
     context = PdfParserContext(
         pdf_buffer=pdf_buffer,
         filename=filename,
@@ -347,14 +353,35 @@ async def parse_pdf_with_diagnostics(
         if attempt.debug:
             debug.append(attempt.debug)
         if attempt.markdown:
+            qa_passed: bool | None = None
+            if qa_validator is not None:
+                qa_passed = bool(qa_validator(attempt.markdown, qa_min_characters, qa_expected_title))
+                if continue_on_qa_failure and not qa_passed:
+                    parser_warning = f"{strategy.name} parser output failed QA; trying next parser."
+                    if parser_warning not in warnings:
+                        warnings.append(parser_warning)
+                    candidate = ParsePipelineResult(
+                        markdown=attempt.markdown,
+                        parser_used=strategy.name,
+                        warnings=warnings.copy(),
+                        debug=debug.copy(),
+                        assets=attempt.assets,
+                        qa_passed=False,
+                    )
+                    if fallback_result is None or len(attempt.markdown) > len(fallback_result.markdown or ""):
+                        fallback_result = candidate
+                    continue
             return ParsePipelineResult(
                 markdown=attempt.markdown,
                 parser_used=strategy.name,
                 warnings=warnings,
                 debug=debug,
                 assets=attempt.assets,
+                qa_passed=qa_passed,
             )
 
+    if fallback_result is not None:
+        return fallback_result
     return ParsePipelineResult(markdown=None, warnings=warnings, debug=debug)
 
 

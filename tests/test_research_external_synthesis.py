@@ -183,6 +183,26 @@ def test_preview_external_synthesis_packet_does_not_persist(monkeypatch, tmp_pat
     assert saved_packets["count"] == 0
 
 
+def test_prepare_evidence_pack_reports_scoped_doi_coverage(monkeypatch, tmp_path: Path) -> None:
+    _save_demo_paper(tmp_path)
+    _patch_search(monkeypatch)
+
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="composite damping",
+        subquestions=["How much attenuation is reported?"],
+        scoped_dois=["10.1234/demo", "10.1234/missing"],
+    )
+    loaded = evidence_pack_module.read_evidence_pack(_db_path(tmp_path), pack_id=str(receipt["pack_id"]))
+
+    assert receipt["requested_scoped_dois"] == ["10.1234/demo", "10.1234/missing"]
+    assert receipt["covered_dois"] == ["10.1234/demo"]
+    assert receipt["missing_scoped_dois"] == ["10.1234/missing"]
+    assert receipt["missing_reasons"]["10.1234/missing"] == "missing_paper"
+    assert loaded["pack"]["missing_scoped_dois"] == ["10.1234/missing"]
+
+
 def test_prepare_external_synthesis_packet_rejects_stale_pack(
     monkeypatch,
     tmp_path: Path,
@@ -368,6 +388,47 @@ def test_run_external_synthesis_uses_browser_and_audits(
     assert result["model_label"] == "Pro"
     assert "GRaDOS evidence packet" in str(seen["prompt"])
     assert seen["packet_artifact_id"]
+    assert seen["assistant_timeout_seconds"] == 120.0
+
+
+def test_run_external_synthesis_returns_recoverable_timeout_receipt(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    receipt = _prepare_pack(monkeypatch, tmp_path)
+    paths = GRaDOSPaths(tmp_path)
+
+    async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
+        _ = (paths_arg, browser_config, kwargs)
+        return ChatGPTBrowserResult(
+            ok=False,
+            status="incomplete_capture",
+            session_id="chatgpt-timeout",
+            error="Timed out waiting for ChatGPT response generation to finish.",
+            error_code="assistant_timeout",
+            session_record_path=str(tmp_path / "session.json"),
+            metadata={"pack_id": str(receipt["pack_id"])},
+        )
+
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fake_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        run_external_synthesis(
+            _chroma_dir(tmp_path),
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            pack_id=str(receipt["pack_id"]),
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["recoverable"] is True
+    assert result["browser_session_id"] == "chatgpt-timeout"
+    assert result["next_action"] == "retry run_external_synthesis with recover_session_id after ChatGPT finishes"
 
 
 def test_external_synthesis_audit_uses_packet_reference_scope(

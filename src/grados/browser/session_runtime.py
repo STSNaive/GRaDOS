@@ -25,6 +25,7 @@ class BrowserRuntime:
     session_id: str = ""
     profile_dir: str = ""
     profile_lock: Any | None = None
+    job_page_owned: bool = False
 
 
 async def acquire_browser_runtime(
@@ -86,20 +87,29 @@ async def acquire_browser_runtime(
     if profile_lock is not None and not getattr(profile_lock, "reentrant", False):
         session.profile_lock = profile_lock
 
+    root_page = session.root_page
+    job_page_owned = False
+    if retain:
+        try:
+            root_page = await session.context.new_page()
+            job_page_owned = root_page is not session.root_page
+        except Exception:
+            root_page = session.root_page
+
     runtime = BrowserRuntime(
         browser_label=browser_label,
         browser_source=str(resolution.source),
         retain=retain,
         session=session,
         context=session.context,
-        root_page=session.root_page,
+        root_page=root_page,
         session_id=session_id or getattr(session, "session_id", ""),
         profile_dir=resolution.profile_directory or "",
         profile_lock=profile_lock,
+        job_page_owned=job_page_owned,
     )
 
     if retain:
-        await close_secondary_pages(runtime.context, runtime.root_page)
         await focus_root_page(runtime.root_page)
 
     return runtime
@@ -121,11 +131,15 @@ async def finalize_browser_success(
     close_pdf_page_after_capture: bool,
 ) -> None:
     """Tear down or refocus the browser after a successful PDF capture."""
-    if runtime.retain and close_pdf_page_after_capture:
-        await close_secondary_pages(runtime.context, runtime.root_page)
+    _ = close_secondary_pages
+    if runtime.retain and close_pdf_page_after_capture and runtime.job_page_owned:
+        try:
+            await runtime.root_page.close()
+        except Exception:
+            pass
     if runtime.retain:
         try:
-            await focus_root_page(runtime.root_page)
+            await focus_root_page(runtime.session.root_page)
         finally:
             release_runtime_lock(runtime, release_file=False)
         return
@@ -135,9 +149,21 @@ async def finalize_browser_success(
         release_runtime_lock(runtime)
 
 
-async def finalize_browser_no_capture(runtime: BrowserRuntime) -> None:
+async def _close_runtime_job_page(runtime: BrowserRuntime) -> None:
+    if not runtime.job_page_owned:
+        return
+    try:
+        if not runtime.root_page.is_closed():
+            await runtime.root_page.close()
+    except Exception:
+        pass
+
+
+async def finalize_browser_no_capture(runtime: BrowserRuntime, *, keep_job_page: bool = False) -> None:
     """Release ephemeral sessions after timed-out or challenge-only runs."""
     if runtime.retain:
+        if not keep_job_page:
+            await _close_runtime_job_page(runtime)
         release_runtime_lock(runtime, release_file=False)
         return
     try:
@@ -149,6 +175,7 @@ async def finalize_browser_no_capture(runtime: BrowserRuntime) -> None:
 async def finalize_browser_error(runtime: BrowserRuntime) -> None:
     """Release ephemeral sessions after unexpected errors."""
     if runtime.retain:
+        await _close_runtime_job_page(runtime)
         release_runtime_lock(runtime, release_file=False)
         return
     try:

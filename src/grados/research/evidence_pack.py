@@ -76,6 +76,10 @@ class EvidencePack:
     created_at: str
     insufficient_evidence: list[str] = field(default_factory=list)
     retrieval_trace: list[dict[str, Any]] = field(default_factory=list)
+    requested_scoped_dois: list[str] = field(default_factory=list)
+    covered_dois: list[str] = field(default_factory=list)
+    missing_scoped_dois: list[str] = field(default_factory=list)
+    missing_reasons: dict[str, str] = field(default_factory=dict)
 
 
 def _utc_now() -> str:
@@ -150,6 +154,13 @@ def evidence_pack_from_dict(payload: dict[str, Any]) -> EvidencePack:
         retrieval_trace=[
             dict(item) for item in payload.get("retrieval_trace", []) if isinstance(item, dict)
         ],
+        requested_scoped_dois=[str(item) for item in payload.get("requested_scoped_dois", [])],
+        covered_dois=[str(item) for item in payload.get("covered_dois", [])],
+        missing_scoped_dois=[str(item) for item in payload.get("missing_scoped_dois", [])],
+        missing_reasons={
+            str(key): str(value)
+            for key, value in dict(payload.get("missing_reasons") or {}).items()
+        },
     )
 
 
@@ -165,6 +176,10 @@ def _build_pack(
     evidence_items: list[EvidencePackItem],
     insufficient_evidence: list[str],
     retrieval_trace: list[dict[str, Any]],
+    requested_scoped_dois: list[str] | None = None,
+    covered_dois: list[str] | None = None,
+    missing_scoped_dois: list[str] | None = None,
+    missing_reasons: dict[str, str] | None = None,
 ) -> EvidencePack:
     payload: dict[str, Any] = {
         "pack_id": _new_pack_id(),
@@ -177,6 +192,10 @@ def _build_pack(
         "created_at": _utc_now(),
         "insufficient_evidence": insufficient_evidence,
         "retrieval_trace": retrieval_trace,
+        "requested_scoped_dois": requested_scoped_dois or [],
+        "covered_dois": covered_dois or [],
+        "missing_scoped_dois": missing_scoped_dois or [],
+        "missing_reasons": missing_reasons or {},
     }
     payload["pack_sha256"] = compute_pack_sha256(payload)
     return evidence_pack_from_dict(payload)
@@ -364,6 +383,25 @@ def _candidate_matches(
         return [], trace
 
 
+def _missing_scoped_doi_reasons(
+    *,
+    requested_dois: list[str],
+    covered_dois: set[str],
+    retrieval_trace: list[dict[str, Any]],
+) -> dict[str, str]:
+    reasons: dict[str, str] = {}
+    for trace in retrieval_trace:
+        doi = str(trace.get("doi") or "").strip()
+        if not doi or doi.lower() in covered_dois:
+            continue
+        status = str(trace.get("status") or trace.get("reason") or "not_covered")
+        reasons.setdefault(doi, status)
+    for doi in requested_dois:
+        if doi.lower() not in covered_dois:
+            reasons.setdefault(doi, "not_covered")
+    return reasons
+
+
 def prepare_evidence_pack(
     chroma_dir: Path,
     db_path: Path,
@@ -400,6 +438,7 @@ def prepare_evidence_pack(
         )
         retrieval_trace.extend(trace)
         covered_for_subquestion = 0
+        covered_dois_for_subquestion: set[str] = set()
 
         for match in matches[:max_windows]:
             item, item_trace = _candidate_to_item(
@@ -412,14 +451,18 @@ def prepare_evidence_pack(
             if item is None:
                 continue
             covered_for_subquestion += 1
+            if item.doi:
+                covered_dois_for_subquestion.add(item.doi.lower())
             key = (item.safe_doi, item.block_id)
             if key in seen_blocks:
                 continue
             seen_blocks.add(key)
             evidence_items.append(item)
 
-        if covered_for_subquestion == 0 and resolved_dois:
+        if resolved_dois:
             for scoped_doi in resolved_dois[:max_windows]:
+                if scoped_doi.lower() in covered_dois_for_subquestion:
+                    continue
                 item, item_trace = _fallback_scoped_item(
                     papers_dir,
                     scoped_doi,
@@ -431,14 +474,23 @@ def prepare_evidence_pack(
                 if item is None:
                     continue
                 covered_for_subquestion += 1
+                if item.doi:
+                    covered_dois_for_subquestion.add(item.doi.lower())
                 key = (item.safe_doi, item.block_id)
                 if key not in seen_blocks:
                     seen_blocks.add(key)
                     evidence_items.append(item)
-                break
 
         if covered_for_subquestion == 0:
             insufficient_evidence.append(subquestion)
+
+    covered_lower = {item.doi.lower() for item in evidence_items if item.doi}
+    missing_scoped_dois = [doi for doi in resolved_dois if doi.lower() not in covered_lower]
+    missing_reasons = _missing_scoped_doi_reasons(
+        requested_dois=resolved_dois,
+        covered_dois=covered_lower,
+        retrieval_trace=retrieval_trace,
+    )
 
     pack = _build_pack(
         topic=normalized_topic,
@@ -447,6 +499,10 @@ def prepare_evidence_pack(
         evidence_items=evidence_items,
         insufficient_evidence=insufficient_evidence,
         retrieval_trace=retrieval_trace,
+        requested_scoped_dois=resolved_dois,
+        covered_dois=sorted({item.doi for item in evidence_items if item.doi}),
+        missing_scoped_dois=missing_scoped_dois,
+        missing_reasons=missing_reasons,
     )
     return save_evidence_pack(db_path, pack)
 
@@ -468,6 +524,9 @@ def save_evidence_pack(db_path: Path, pack: EvidencePack | dict[str, Any]) -> di
             "pack_id": pack_obj.pack_id,
             "pack_sha256": pack_obj.pack_sha256,
             "evidence_count": len(pack_obj.evidence_items),
+            "requested_scoped_dois": list(pack_obj.requested_scoped_dois),
+            "covered_dois": list(pack_obj.covered_dois),
+            "missing_scoped_dois": list(pack_obj.missing_scoped_dois),
         },
     )
     return {
@@ -478,6 +537,10 @@ def save_evidence_pack(db_path: Path, pack: EvidencePack | dict[str, Any]) -> di
         "answerable": pack_obj.answerable,
         "insufficient_evidence": list(pack_obj.insufficient_evidence),
         "evidence_count": len(pack_obj.evidence_items),
+        "requested_scoped_dois": list(pack_obj.requested_scoped_dois),
+        "covered_dois": list(pack_obj.covered_dois),
+        "missing_scoped_dois": list(pack_obj.missing_scoped_dois),
+        "missing_reasons": dict(pack_obj.missing_reasons),
         "created_at": pack_obj.created_at,
         "preview": receipt.get("preview", ""),
     }

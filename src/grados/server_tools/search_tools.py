@@ -443,6 +443,7 @@ async def _run_indepth_for_results(
         f"- Candidates processed: {len(candidates)}\n"
         f"- Full text available: {fulltext_count}\n"
         f"- Paper summaries written: {summaries_written}\n"
+        "- Scope: one-pass materialization of the current search candidates, not autonomous query expansion.\n"
         "- Note: checkpoint and paper_summary content is navigation material; cite only after `read_saved_paper`."
     )
     return warnings, summary
@@ -479,7 +480,7 @@ async def search_academic_papers(
             description=(
                 "Override research.indepth.enabled for this request. "
                 "Default config is off; when enabled, GRaDOS attempts full-text materialization "
-                "for the returned candidates using the same limit."
+                "for the returned candidates using the same limit; it does not autonomously expand the query."
             )
         ),
     ] = None,

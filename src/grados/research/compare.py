@@ -8,6 +8,22 @@ from pathlib import Path
 from grados.research.common import _excerpt_for_axis, _resolve_documents, _select_sections
 from grados.research.models import ComparisonEvidenceItem, PaperComparisonResult, PaperComparisonRow
 
+_BACKMATTER_MARKERS = (
+    "references",
+    "bibliography",
+    "works cited",
+    "literature cited",
+    "credit",
+    "author contribution",
+    "acknowledg",
+    "funding",
+    "declaration",
+    "conflict",
+    "competing interest",
+    "supplementary",
+    "appendix",
+)
+
 
 def _canonical_uri(safe_doi: str) -> str:
     return f"grados://papers/{safe_doi}" if safe_doi else ""
@@ -28,6 +44,23 @@ def _coerce_nonnegative_int(value: object) -> int:
     if isinstance(value, str) and value.strip().isdigit():
         return int(value)
     return 0
+
+
+def _is_backmatter_section(section_name: str) -> bool:
+    normalized = re.sub(r"\s+", " ", section_name.strip().lower())
+    return any(marker in normalized for marker in _BACKMATTER_MARKERS)
+
+
+def _filter_comparison_sections(sections: list[dict[str, object]]) -> tuple[list[dict[str, object]], list[str], bool]:
+    excluded = [
+        str(section.get("name", ""))
+        for section in sections
+        if _is_backmatter_section(str(section.get("name", "")))
+    ]
+    filtered = [section for section in sections if not _is_backmatter_section(str(section.get("name", "")))]
+    if filtered:
+        return filtered, excluded, False
+    return sections, [], True
 
 
 def _axis_evidence(
@@ -94,7 +127,8 @@ def compare_papers(
 
     paper_rows: list[PaperComparisonRow] = []
     for record in resolved:
-        sections = _select_sections(record, focus=focus)
+        selected_sections = _select_sections(record, focus=focus)
+        sections, excluded_sections, fallback_all_sections = _filter_comparison_sections(selected_sections)
         canonical_uri = _canonical_uri(record.safe_doi)
         evidence = [_axis_evidence(axis=axis, sections=sections, canonical_uri=canonical_uri) for axis in axes]
         comparisons = {item.axis: item.excerpt for item in evidence}
@@ -110,6 +144,8 @@ def compare_papers(
                 sections_used=[str(section["name"]) for section in sections],
                 comparisons=comparisons,
                 evidence=evidence,
+                fallback_all_sections=fallback_all_sections,
+                excluded_sections=excluded_sections,
             )
         )
 

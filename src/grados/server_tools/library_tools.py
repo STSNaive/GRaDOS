@@ -441,6 +441,78 @@ def _infer_remote_fetch_status(outcome: str, state: str, warnings: list[str]) ->
     return "failed"
 
 
+def _canonical_fetch_strategy_name(name: str) -> str:
+    normalized = "".join(ch for ch in name.lower() if ch.isalnum())
+    aliases = {
+        "api": "api",
+        "tdm": "api",
+        "browser": "browser",
+        "headless": "browser",
+        "codex": "codex",
+        "scihub": "scihub",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _remaining_fetch_order_after(order: Sequence[str], via: str) -> list[str]:
+    canonical_order: list[str] = []
+    seen: set[str] = set()
+    for item in order:
+        canonical = _canonical_fetch_strategy_name(str(item))
+        if canonical and canonical not in seen:
+            canonical_order.append(canonical)
+            seen.add(canonical)
+    if not canonical_order:
+        canonical_order = ["api", "browser", "codex", "scihub"]
+
+    canonical_via = _canonical_fetch_strategy_name(via)
+    if canonical_via not in canonical_order:
+        return []
+    return canonical_order[canonical_order.index(canonical_via) + 1 :]
+
+
+def _append_unique_diagnostics(target: list[str], values: Sequence[str]) -> None:
+    for value in values:
+        normalized = str(value).strip()
+        if normalized and normalized not in target:
+            target.append(normalized)
+
+
+def _publisher_metadata_signal_score(metadata: PublisherMetadata | None) -> int:
+    if metadata is None:
+        return 0
+    return sum(
+        1
+        for value in [
+            metadata.doi.strip(),
+            metadata.title.strip(),
+            metadata.abstract.strip(),
+            metadata.year.strip(),
+            metadata.journal.strip(),
+            metadata.publisher.strip(),
+            metadata.pii.strip(),
+            metadata.eid.strip(),
+            metadata.scidir_url.strip(),
+            metadata.html_url.strip(),
+            metadata.pdf_url.strip(),
+        ]
+        if value
+    ) + len(metadata.authors)
+
+
+def _prefer_publisher_metadata(
+    current: PublisherMetadata | None,
+    candidate: PublisherMetadata | None,
+) -> PublisherMetadata | None:
+    if candidate is None:
+        return current
+    if current is None:
+        return candidate
+    if _publisher_metadata_signal_score(candidate) > _publisher_metadata_signal_score(current):
+        return candidate
+    return current
+
+
 def _record_remote_metadata_update(
     *,
     metadata_dir: Path,
@@ -558,29 +630,45 @@ async def extract_paper_full_text(
     browser_resume = _load_browser_resume(paths, doi) if resume_browser else None
     if resume_browser and browser_resume is None:
         browser_resume = {}
+    configured_fetch_order = list(config.extract.fetch_strategy.order)
+    repair_warnings: list[str] = []
 
-    fetch_result = await fetch_paper(
-        doi=doi,
-        api_keys=api_keys,
-        etiquette_email=config.academic_etiquette_email,
-        fetch_order=config.extract.fetch_strategy.order,
-        fetch_enabled=config.extract.fetch_strategy.enabled,
-        tdm_order=config.extract.tdm.order,
-        tdm_enabled=config.extract.tdm.enabled,
-        sci_hub_config=config.extract.sci_hub.model_dump(),
-        headless_config=config.extract.headless_browser,
-        paths=paths,
-        browser_resume=browser_resume if resume_browser else None,
-        codex_handoff_config=config.extract.codex_handoff,
-        unpaywall_enabled=bool(getattr(config.extract.unpaywall, "enabled", True)),
-        max_remote_pdf_bytes=config.extract.security.max_remote_pdf_bytes,
-        max_remote_text_bytes=config.extract.security.max_remote_text_bytes,
-        max_browser_capture_bytes=config.extract.security.max_browser_capture_bytes,
+    async def run_fetch_attempt(
+        *,
+        fetch_order: list[str],
+        browser_resume_override: dict[str, str] | None,
+    ) -> Any:
+        return await fetch_paper(
+            doi=doi,
+            api_keys=api_keys,
+            etiquette_email=config.academic_etiquette_email,
+            fetch_order=fetch_order,
+            fetch_enabled=config.extract.fetch_strategy.enabled,
+            tdm_order=config.extract.tdm.order,
+            tdm_enabled=config.extract.tdm.enabled,
+            sci_hub_config=config.extract.sci_hub.model_dump(),
+            headless_config=config.extract.headless_browser,
+            paths=paths,
+            browser_resume=browser_resume_override,
+            codex_handoff_config=config.extract.codex_handoff,
+            unpaywall_enabled=bool(getattr(config.extract.unpaywall, "enabled", True)),
+            max_remote_pdf_bytes=config.extract.security.max_remote_pdf_bytes,
+            max_remote_text_bytes=config.extract.security.max_remote_text_bytes,
+            max_browser_capture_bytes=config.extract.security.max_browser_capture_bytes,
+        )
+
+    fetch_result = await run_fetch_attempt(
+        fetch_order=configured_fetch_order,
+        browser_resume_override=browser_resume if resume_browser else None,
     )
 
-    metadata = normalize_publisher_metadata(fetch_result.metadata)
-    if metadata is not None and expected_title and not metadata.title:
-        metadata = metadata.model_copy(update={"title": expected_title})
+    def normalized_fetch_metadata(fetch_candidate: Any) -> PublisherMetadata | None:
+        candidate_metadata = normalize_publisher_metadata(fetch_candidate.metadata)
+        if candidate_metadata is not None and expected_title and not candidate_metadata.title:
+            candidate_metadata = candidate_metadata.model_copy(update={"title": expected_title})
+        return candidate_metadata
+
+    metadata = normalized_fetch_metadata(fetch_result)
 
     if fetch_result.outcome == "metadata_only":
         remote_warning = _record_remote_metadata_update(
@@ -636,71 +724,19 @@ async def extract_paper_full_text(
             remote_warning,
         )
 
-    if fetch_result.outcome == "native_full_text":
-        artifact = await build_library_document_artifact(
-            lambda: normalize_document_text_with_diagnostics(
-                fetch_result.text,
-                content_format=fetch_result.text_format or "text",
-                filename=f"{doi}.txt",
+    async def build_artifact_for_fetch(candidate: Any) -> Any:
+        if candidate.outcome == "native_full_text":
+            return await build_library_document_artifact(
+                lambda: normalize_document_text_with_diagnostics(
+                    candidate.text,
+                    content_format=candidate.text_format or "text",
+                    filename=f"{doi}.txt",
+                )
             )
-        )
-        if not artifact.markdown:
-            remote_warning = _record_remote_metadata_update(
-                metadata_dir=metadata_dir,
-                doi=doi,
-                fetch_status="failed",
-                has_fulltext=True,
-                source=fetch_result.source,
-                title=expected_title or (metadata.title if metadata is not None else ""),
-                metadata=metadata,
-                fetch_via=fetch_result.via,
-                fetch_state=fetch_result.state,
-                fetch_host=fetch_result.host,
-                fetch_resume=fetch_result.resume,
-                fetch_manual=fetch_result.manual,
-                fetch_trace=fetch_result.trace,
-                indexing_config=indexing_config,
-            )
-            return _append_remote_metadata_warning(
-                f"Failed to normalize native full text for {doi}",
-                remote_warning,
-            )
-        copied_pdf_path = ""
-        pdf_materialization = None
-    else:
-        pdf_materialization = materialize_library_pdf(
-            doi=doi,
-            paths=paths,
-            input_path=None,
-            pdf_bytes=fetch_result.pdf_buffer,
-            copy_to_library=True,
-        )
-        if pdf_materialization.outcome == "conflict":
-            remote_warning = _record_remote_metadata_update(
-                metadata_dir=metadata_dir,
-                doi=doi,
-                fetch_status="failed",
-                has_fulltext=True,
-                source=fetch_result.source,
-                title=expected_title or (metadata.title if metadata is not None else ""),
-                metadata=metadata,
-                fetch_via=fetch_result.via,
-                fetch_state="pdf_materialization_conflict",
-                fetch_host=fetch_result.host,
-                fetch_resume=fetch_result.resume,
-                fetch_manual=fetch_result.manual,
-                fetch_trace=fetch_result.trace,
-                indexing_config=indexing_config,
-            )
-            return _append_remote_metadata_warning(
-                _pdf_materialization_conflict_receipt(doi, pdf_materialization),
-                remote_warning,
-            )
-        copied_pdf_path = pdf_materialization.copied_pdf_path
-        artifact = await build_library_document_artifact(
+        return await build_library_document_artifact(
             lambda: parse_pdf_with_diagnostics(
-                fetch_result.pdf_buffer,
-                filename=Path(copied_pdf_path).name if copied_pdf_path else f"{safe_doi_filename(doi)}.pdf",
+                candidate.pdf_buffer,
+                filename=f"{safe_doi_filename(doi)}.pdf",
                 parse_order=config.extract.parsing.order,
                 parse_enabled=config.extract.parsing.enabled,
                 marker_timeout=config.extract.parsing.marker_timeout,
@@ -720,12 +756,44 @@ async def extract_paper_full_text(
                 max_asset_total_bytes=config.extract.assets.max_asset_total_bytes,
                 max_asset_inline_bytes=config.extract.assets.max_asset_inline_bytes,
                 max_asset_count=config.extract.assets.max_asset_count,
+                qa_validator=is_valid_paper_content,
+                qa_min_characters=config.extract.qa.min_characters,
+                qa_expected_title=expected_title,
+                continue_on_qa_failure=True,
             )
         )
+
+    artifact = None
+    review = None
+    copied_pdf_path = ""
+    pdf_materialization = None
+
+    while True:
+        artifact = await build_artifact_for_fetch(fetch_result)
         if not artifact.markdown:
+            remaining_order = _remaining_fetch_order_after(configured_fetch_order, fetch_result.via)
+            if remaining_order and not resume_browser:
+                repair_warnings.append(
+                    f"{fetch_result.source or fetch_result.via} returned no usable Markdown; "
+                    f"trying next fetch routes: {', '.join(remaining_order)}."
+                )
+                previous_fetch_result = fetch_result
+                next_fetch = await run_fetch_attempt(
+                    fetch_order=remaining_order,
+                    browser_resume_override=None,
+                )
+                if next_fetch.outcome in ("native_full_text", "pdf_obtained"):
+                    fetch_result = next_fetch
+                    metadata = _prefer_publisher_metadata(metadata, normalized_fetch_metadata(fetch_result))
+                    continue
+                _append_unique_diagnostics(repair_warnings, list(getattr(next_fetch, "warnings", []) or []))
+                repair_warnings.append(
+                    f"Next fetch route ended with outcome={next_fetch.outcome or 'failed'}; keeping parse failure."
+                )
+                fetch_result = previous_fetch_result
             warnings, parser_debug = merge_library_diagnostics(
                 artifact,
-                base_warnings=fetch_result.warnings,
+                base_warnings=[*repair_warnings, *list(fetch_result.warnings)],
             )
             warning_block = "\n".join(f"- {warning}" for warning in warnings) if warnings else "- Unknown parse failure"
             debug_block = "\n".join(f"- {entry}" for entry in parser_debug)
@@ -750,6 +818,41 @@ async def extract_paper_full_text(
             )
             return _append_remote_metadata_warning(result, remote_warning)
 
+        review = review_library_document(
+            artifact,
+            qa_validator=is_valid_paper_content,
+            qa_min_characters=config.extract.qa.min_characters,
+            qa_expected_title=expected_title,
+            qa_warning_message="QA validation failed — saved content may be incomplete.",
+            base_warnings=[*repair_warnings, *list(fetch_result.warnings)],
+        )
+        if review.qa_passed:
+            break
+
+        remaining_order = _remaining_fetch_order_after(configured_fetch_order, fetch_result.via)
+        if not remaining_order or resume_browser:
+            repair_warnings.append(
+                "QA repair waterfall exhausted; saving this candidate as partial_success with QA warnings."
+            )
+            break
+        repair_warnings.append(
+            f"QA rejected {fetch_result.source or fetch_result.via}; "
+            f"trying next fetch routes: {', '.join(remaining_order)}."
+        )
+        next_fetch = await run_fetch_attempt(
+            fetch_order=remaining_order,
+            browser_resume_override=None,
+        )
+        if next_fetch.outcome not in ("native_full_text", "pdf_obtained"):
+            _append_unique_diagnostics(repair_warnings, list(getattr(next_fetch, "warnings", []) or []))
+            repair_warnings.append(
+                f"Next fetch route ended with outcome={next_fetch.outcome or 'failed'}; "
+                "keeping best QA-failed candidate."
+            )
+            break
+        fetch_result = next_fetch
+        metadata = _prefer_publisher_metadata(metadata, normalized_fetch_metadata(fetch_result))
+
     title = ""
     authors: list[str] = []
     year = ""
@@ -768,14 +871,39 @@ async def extract_paper_full_text(
     if expected_title and not title:
         title = expected_title
 
-    review = review_library_document(
-        artifact,
-        qa_validator=is_valid_paper_content,
-        qa_min_characters=config.extract.qa.min_characters,
-        qa_expected_title=expected_title,
-        qa_warning_message="QA validation failed — saved content may be incomplete.",
-        base_warnings=list(fetch_result.warnings),
-    )
+    if review is None:
+        raise RuntimeError("Internal error: reviewed library document was not prepared")
+    if fetch_result.outcome == "pdf_obtained":
+        pdf_materialization = materialize_library_pdf(
+            doi=doi,
+            paths=paths,
+            input_path=None,
+            pdf_bytes=fetch_result.pdf_buffer,
+            copy_to_library=True,
+        )
+        if pdf_materialization.outcome == "conflict":
+            remote_warning = _record_remote_metadata_update(
+                metadata_dir=metadata_dir,
+                doi=doi,
+                fetch_status="failed",
+                has_fulltext=True,
+                source=fetch_result.source,
+                title=title,
+                metadata=metadata,
+                fetch_via=fetch_result.via,
+                fetch_state="pdf_materialization_conflict",
+                fetch_host=fetch_result.host,
+                fetch_resume=fetch_result.resume,
+                fetch_manual=fetch_result.manual,
+                fetch_trace=fetch_result.trace,
+                indexing_config=indexing_config,
+            )
+            return _append_remote_metadata_warning(
+                _pdf_materialization_conflict_receipt(doi, pdf_materialization),
+                remote_warning,
+            )
+        copied_pdf_path = pdf_materialization.copied_pdf_path
+
     persisted = persist_reviewed_library_document(
         review,
         paths=paths,
@@ -799,7 +927,7 @@ async def extract_paper_full_text(
         ),
         indexing_config=indexing_config,
     )
-    fetch_status = "partial_success" if persisted.index_warning_added else "fulltext"
+    fetch_status = "partial_success" if persisted.index_warning_added or not persisted.qa_passed else "fulltext"
     remote_warning = _record_remote_metadata_update(
         metadata_dir=metadata_dir,
         doi=doi,
@@ -819,7 +947,7 @@ async def extract_paper_full_text(
 
     result = (
         "## Paper Extracted with Partial Success\n\n"
-        if persisted.index_warning_added
+        if fetch_status == "partial_success"
         else "## Paper Extracted Successfully\n\n"
     )
     result += f"- **DOI:** {doi}\n"
@@ -846,6 +974,7 @@ async def extract_paper_full_text(
         result += f"- **State:** {fetch_result.state}\n"
     result += f"- **Fetch Status:** {fetch_status}\n"
     result += "- **Has Fulltext:** true\n"
+    result += f"- **QA Status:** {'passed' if persisted.qa_passed else 'failed'}\n"
     result += f"- **Index Status:** {persisted.summary.index_status}\n"
     if persisted.artifact.parser_used:
         result += f"- **Parser Used:** {persisted.artifact.parser_used}\n"

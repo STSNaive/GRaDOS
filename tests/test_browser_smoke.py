@@ -178,6 +178,149 @@ def test_reusable_session_carries_profile_lock_when_replacing_same_profile(monke
     assert session.profile_lock is old_lock
 
 
+def test_retained_browser_runtime_uses_job_page_without_closing_manual_page(tmp_path: Path) -> None:
+    from grados.browser.session_runtime import acquire_browser_runtime
+
+    class FakePage:
+        def __init__(self, url: str) -> None:
+            self.url = url
+            self.closed = False
+            self.focused = False
+
+        def is_closed(self) -> bool:
+            return self.closed
+
+        async def close(self) -> None:
+            self.closed = True
+
+        async def bring_to_front(self) -> None:
+            self.focused = True
+
+    class FakeContext:
+        def __init__(self, root_page: FakePage) -> None:
+            self.pages = [root_page]
+            self.created_pages: list[FakePage] = []
+
+        async def new_page(self) -> FakePage:
+            page = FakePage("about:blank")
+            self.pages.append(page)
+            self.created_pages.append(page)
+            return page
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.root_page = FakePage("https://publisher.example/manual-check")
+            self.context = FakeContext(self.root_page)
+            self.profile_lock = None
+
+    session = FakeSession()
+    close_secondary_calls = 0
+
+    async def fake_close_secondary_pages(context, root_page) -> None:  # noqa: ANN001
+        nonlocal close_secondary_calls
+        _ = (context, root_page)
+        close_secondary_calls += 1
+
+    async def fake_get_or_create_reusable_session(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return session
+
+    async def fake_launch_browser_session(**kwargs):  # noqa: ANN003
+        raise AssertionError("retained runtime should reuse the interactive session")
+
+    runtime = asyncio.run(
+        acquire_browser_runtime(
+            HeadlessBrowserConfig(
+                reuse_interactive_window=True,
+                keep_interactive_window_open=True,
+                use_persistent_profile=False,
+            ),
+            GRaDOSPaths(tmp_path / "grados-home"),
+            resolve_browser_executable=lambda config, paths: type(
+                "Resolution",
+                (),
+                {
+                    "source": "managed",
+                    "browser": "Chrome",
+                    "executable_path": "/tmp/chrome",
+                    "profile_directory": None,
+                },
+            )(),
+            random_viewport=lambda: {"width": 1366, "height": 768},
+            get_or_create_reusable_session=fake_get_or_create_reusable_session,
+            launch_browser_session=fake_launch_browser_session,
+            close_secondary_pages=fake_close_secondary_pages,
+            session_id="pdf-test",
+        )
+    )
+
+    assert runtime is not None
+    assert runtime.root_page is session.context.created_pages[0]
+    assert runtime.job_page_owned is True
+    assert runtime.root_page.focused is True
+    assert session.root_page.closed is False
+    assert close_secondary_calls == 0
+
+
+def test_retained_browser_finalizers_close_only_disposable_job_pages() -> None:
+    from grados.browser.session_runtime import (
+        BrowserRuntime,
+        finalize_browser_error,
+        finalize_browser_no_capture,
+    )
+
+    class FakePage:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def is_closed(self) -> bool:
+            return self.closed
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class FakeSession:
+        def __init__(self, root_page: FakePage) -> None:
+            self.root_page = root_page
+            self.profile_lock = None
+
+    def make_runtime() -> tuple[BrowserRuntime, FakePage, FakePage]:
+        manual_page = FakePage()
+        job_page = FakePage()
+        session = FakeSession(manual_page)
+        return (
+            BrowserRuntime(
+                browser_label="Chrome",
+                browser_source="managed",
+                retain=True,
+                session=session,
+                context=object(),
+                root_page=job_page,
+                job_page_owned=True,
+            ),
+            manual_page,
+            job_page,
+        )
+
+    runtime, manual_page, job_page = make_runtime()
+    asyncio.run(finalize_browser_no_capture(runtime))
+
+    assert job_page.closed is True
+    assert manual_page.closed is False
+
+    runtime, manual_page, job_page = make_runtime()
+    asyncio.run(finalize_browser_no_capture(runtime, keep_job_page=True))
+
+    assert job_page.closed is False
+    assert manual_page.closed is False
+
+    runtime, manual_page, job_page = make_runtime()
+    asyncio.run(finalize_browser_error(runtime))
+
+    assert job_page.closed is True
+    assert manual_page.closed is False
+
+
 def test_pdf_browser_session_store_round_trip(tmp_path: Path) -> None:
     record = create_pdf_browser_session(
         tmp_path / "sessions",

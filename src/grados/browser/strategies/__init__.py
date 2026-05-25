@@ -68,7 +68,9 @@ async def _run_sciencedirect_page_strategy(context: BrowserPageStrategyContext) 
 async def _run_generic_page_strategy(context: BrowserPageStrategyContext) -> None:
     await try_generic_pdf_click(
         context.page,
+        context.context,
         context.action_state,
+        context.track_page,
         context.pdf_captured,
         context.report_warning,
         context.record_event,

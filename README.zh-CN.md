@@ -47,7 +47,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | --- | --- | --- |
 | GRaDOS | `search_academic_papers` | 检索远程学术数据库中的论文元数据，支持 DOI 去重、continuation token 续查，并暴露本地保存/全文/summary 状态。可选 `indepth=true` 会用同一个 `limit` materialize 返回候选；默认配置关闭。 |
 | GRaDOS | `search_saved_papers` | 检索本地已保存论文库，支持语义检索、SQLite FTS/BM25 fallback、exact lookup、metadata 过滤与 hybrid RRF。返回的 snippet 和 Evidence Anchor JSON block 只是筛选/重排线索，不是最终引用证据。 |
-| GRaDOS | `extract_paper_full_text` | 按 DOI 抓取、解析并保存单篇论文的 canonical 全文。若 DOI 已保存，默认 `force_refresh=false` 只返回已保存回执；设置 `force_refresh=true` 才会重新抓取/解析。 |
+| GRaDOS | `extract_paper_full_text` | 按 DOI 抓取、解析、QA 校验并保存单篇论文的 canonical 全文。若 DOI 已保存，默认 `force_refresh=false` 只返回已保存回执；设置 `force_refresh=true` 才会重新抓取/解析。 |
 | GRaDOS | `read_saved_paper` | 从单篇已保存论文中读取段落窗口，用于 canonical 深读与引用核验。可通过 DOI、safe DOI 或 `grados://papers/...` URI 定位论文。 |
 | GRaDOS | `get_saved_paper_structure` | 返回单篇论文的低 token 结构卡片，包含预览、章节标题、资产摘要，以及可用时的 parser provenance summary。适合深读前筛选，不应替代最终引用依据。 |
 | GRaDOS | `read_paper_asset` | 列出或读取已保存论文的 parser assets，包括图片、表格、公式、页面图和 debug/source 文件。图片只在显式请求且低于尺寸上限时内联返回。 |
@@ -58,13 +58,13 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 把单篇论文保存到当前配置的 Zotero 库，通常用于最终答案里实际引用到的论文。 |
 | GRaDOS | `save_research_artifact` | 把 search snapshot、extraction receipt、evidence grid、compression-safe evidence checkpoint 和 run-linked artifact 等可复用中间产物持久化到本地 SQLite 状态库；传入 `metadata.research_run_id` 可把 artifact 挂到 run manifest。 |
 | GRaDOS | `query_research_artifacts` | 按 id、kind 或关键词查询已保存的 research artifact；`detail=true` 会返回完整内容。 |
-| GRaDOS | `prepare_evidence_pack` | 召回候选 anchor，回读 `papers/*.md` 中的 canonical blocks，并持久化最小 `evidence_pack` artifact，包含 pack hash、block hash 和 answerability 状态。 |
+| GRaDOS | `prepare_evidence_pack` | 召回候选 anchor，回读 `papers/*.md` 中的 canonical blocks，并持久化最小 `evidence_pack` artifact，包含 pack hash、block hash、answerability 和 scoped DOI 覆盖状态。 |
 | GRaDOS | `read_evidence_pack` | 通过 pack id 或 artifact id 恢复已保存的 evidence pack。 |
 | GRaDOS | `verify_evidence_pack` | 从当前 `papers/*.md` 重建 canonical block manifest，并报告 snapshot/current validity、missing paper、document change、relocation 和 hash mismatch。 |
 | GRaDOS | `preview_external_synthesis_packet` | 从 current-valid evidence pack dry-run 紧凑 external-synthesis packet，不保存 artifact，也不调用外部服务。 |
 | GRaDOS | `prepare_external_synthesis_packet` | 持久化 `external_synthesis_packet` artifact，包含 verified anchor id、canonical 段落坐标、excerpt、candidate claim、limitations 和 prompt hash，并把 host prompt 作为可再生成视图返回。 |
 | GRaDOS | `prepare_external_synthesis_from_topic` | 从 topic 准备 fresh evidence pack，并在同一路线中持久化 verified external-synthesis packet，返回 pack/packet id 和 host prompt。 |
-| GRaDOS | `run_external_synthesis` | 运行默认的 GRaDOS-native ChatGPT Pro browser 路线：准备或验证 packet，使用私有 ChatGPT profile，确认 GRaDOS-validated Pro model 路线和 Pro Extended thinking 路线，捕获 advisory response，保存并审计后再进入 canonical reread。 |
+| GRaDOS | `run_external_synthesis` | 运行默认的 GRaDOS-native ChatGPT Pro browser 路线：准备或验证 packet，使用私有 ChatGPT profile，确认 GRaDOS-validated Pro model 路线和 Pro Extended thinking 路线，捕获 advisory response，保存并审计后再进入 canonical reread；长生成会返回可恢复 session receipt。 |
 | GRaDOS | `save_external_synthesis_result` | 把 host 提供的 ChatGPT Pro 回复保存为 advisory `external_synthesis_result` 状态，并关联 source pack、可选 packet、prompt hash 和 session metadata；默认 `audit=true`。 |
 | GRaDOS | `audit_external_synthesis_result` | 优先按已关联 packet 审计 external synthesis 结果，没有 packet 时才退回 source pack；结构化 `claims[].anchor_ids` 是主要交接合同，正文 audit 作为风险扫描保留。 |
 | GRaDOS | `audit_answer_against_pack` | 只使用单个 pack 内的 evidence items 审计草稿 claims，返回 `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，不会全库搜索来填补缺口；可用 `include_suggestions=true` 附带后续补证建议。 |
@@ -72,8 +72,8 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `manage_failure_cases` | 记录、查询并总结 fetch、parse、search 或 citation 失败案例，也能给出保守的重试建议。 |
 | GRaDOS | `get_citation_graph` | 返回本地论文库中的轻量引用关系，包括引用邻居、共同参考文献和反向 citing-paper 查询。 |
 | GRaDOS | `get_papers_full_context` | 为按上下文预算分批的已保存论文返回结构化全文上下文，可先拿 token 估计，也可直接进入 CAG 风格的深读模式。 |
-| GRaDOS | `build_evidence_grid` | 围绕主题或子问题，从本地论文库构建写作前的证据网格；行内带可回读 anchor，供 agent-side reranking 后再核验引用。 |
-| GRaDOS | `compare_papers` | 跨多篇已保存论文抽取并行对比材料，聚焦 methods、results 或 full text；返回 excerpt 会带每个对比轴的回读 anchor。 |
+| GRaDOS | `build_evidence_grid` | 围绕主题或子问题，从本地论文库构建写作前的证据网格；行内带可回读 anchor，供 agent-side reranking 后再核验引用，scoped DOI 调用会报告 requested/covered/missing 覆盖状态。 |
+| GRaDOS | `compare_papers` | 跨多篇已保存论文抽取并行对比材料，聚焦 methods、results 或 full text；返回 excerpt 会带每个对比轴的回读 anchor，并默认避开后置噪声 section。 |
 | GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 first-pass `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，以及候选 evidence snippet、issue type、revision action 和 anchor；`candidate_limit` 控制每条 claim 的候选数。 |
 
 ### MCP 资源 📚
@@ -417,13 +417,13 @@ Unpaywall 是可选的 DOI 到 OA location resolver，不是下载路径。`extr
 
 旧的抓取策略别名 `TDM`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。当前 `scihub` 运行时使用 `extract.sci_hub.endpoints` 作为有序访问列表：第一个 endpoint 优先尝试，后续 endpoint 作为 fallback。旧的 `extract.sci_hub.fallback_mirror` 在 `endpoints` 省略或为空时仍然兼容。
 
-`browser` 是机构权限访问 publisher 全文的一等路径。它使用 GRaDOS 托管的 publisher profile（`browser/profile`）、profile lock、`browser/pdf-sessions` 下的 operational PDF browser session records，以及 response/download/CDP/backfill PDF capture。browser acquisition 不会直接写 `papers/*.md`：它只返回 PDF bytes 或 challenge 以及 browser capture metadata，随后由 `extract_paper_full_text` 继续走 PDF materialization、parser、QA 和 canonical Markdown persistence 管线。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
+`browser` 是机构权限访问 publisher 全文的一等路径。它使用 GRaDOS 托管的 publisher profile（`browser/profile`）、profile lock、`browser/pdf-sessions` 下的 operational PDF browser session records，以及 response/download/CDP/backfill PDF capture。browser acquisition 不会直接写 `papers/*.md`：它只返回 PDF bytes 或 challenge 以及 browser capture metadata，随后由 `extract_paper_full_text` 继续走 PDF materialization、parser、QA 和 canonical Markdown persistence 管线。保留的浏览器窗口会保住 manual/challenge 页，每个 DOI 使用自己的 job-owned page。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
 
 `codex` 默认关闭。启用并放入 `extract.fetch_strategy.order` 后，它会在该顺序位置作为 Codex Chrome extension host-agent handoff：`extract_paper_full_text` 返回 Chrome 下载 receipt，外层 agent 使用 Codex `@chrome` 插件 / Chrome 中的 [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) 作为 acquisition route。若 host 已知道 PDF 绝对路径，调用 `ingest_codex_downloaded_pdf(doi=..., downloaded_file_path=...)` 或 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`；否则 `ingest_codex_downloaded_pdf` 只扫描 `extract.codex_handoff.download_watch_dir`。这个 watch dir 只是 ingest 扫描目录，不会配置 Chrome；扫描为空时应传真实路径，而不是再次点击 publisher 下载按钮。若 DOI-bound 本地解析超过 `extract.parsing.foreground_wait_seconds`，GRaDOS 会返回 `parse_in_progress` receipt，继续在后台运行同一个 parse attempt，并在后续同 DOI + PDF hash 调用中恢复/对账；不要因为前台先返回就重新下载 PDF。若 Unpaywall 找到 OA URL，receipt 会优先从该 URL 开始，而不是 `https://doi.org/{doi}`。
 
-所有会拷入论文库的 PDF acquisition 路径共用同一个 materialization 边界。每个 DOI 的受管原始 PDF 是 `downloads/{safe_doi}.pdf`；publisher 文件名和外部本地 PDF 只是 acquisition input。同 DOI 同 hash 会复用、rename 或 copy 到受管路径；同 DOI 不同 hash 会返回 conflict receipt，保留已有 canonical PDF 和候选输入。新写入的 `papers/*.md` frontmatter 只保留阅读元数据和 `parsed_manifest_path` / `assets_manifest_path` 这类指针；PDF 路径、hash、acquisition route、parser/materialization provenance 进入 receipt、`remote_metadata.fetch_via` 和 `papers/_parsed/{safe_doi}.json`。
+所有会拷入论文库的 PDF acquisition 路径共用同一个 materialization 边界。每个 DOI 的受管原始 PDF 是 `downloads/{safe_doi}.pdf`；publisher 文件名和外部本地 PDF 只是 acquisition input。同 DOI 同 hash 会复用、rename 或 copy 到受管路径；同 DOI 不同 hash 会返回 conflict receipt，保留已有 canonical PDF 和候选输入。PDF fetch 会先解析并通过 QA 后才作为普通 `fulltext` 成功；parser QA 失败会继续尝试配置的 parser/fetch fallback，最终仍未通过时只保存为 `partial_success`。新写入的 `papers/*.md` frontmatter 只保留阅读元数据和 `parsed_manifest_path` / `assets_manifest_path` 这类指针；PDF 路径、hash、acquisition route、parser/materialization provenance 进入 receipt、`remote_metadata.fetch_via` 和 `papers/_parsed/{safe_doi}.json`。
 
-若 `research.external_synthesis.enabled=true`，GRaDOS 只能在自己准备并验证 evidence pack 后使用 ChatGPT Pro。默认工具是 `run_external_synthesis`：从 topic 开始时准备 evidence pack 和 packet；已有 pack id 时验证并 packet 化该 pack；随后打开专用 GRaDOS ChatGPT profile，在发送前确认 GRaDOS-validated Pro model 路线（`gpt-5.5-pro`）和 Pro Extended thinking 路线，捕获回复，用 `save_external_synthesis_result(audit=true)` 保存，并返回 audit 与 canonical reread next action。`preview_external_synthesis_packet`、`prepare_external_synthesis_from_topic`、`prepare_external_synthesis_packet`、`save_external_synthesis_result` 和 `audit_external_synthesis_result` 仍保留给 dry run、恢复和显式重跑。结果关联 packet id 时，audit 只接受该 packet 中实际发送过的 anchor、DOI、block id 和 canonical URI；结构化 `claims[].anchor_ids` 是主要 claim 合同，正文 audit 作为风险扫描保留。模型和 thinking 选择是协议默认值，不通过 GRaDOS config 配置；本地化界面下 GRaDOS 会记录实际确认到的原始标签。这个改动不移除单独的 `extract.fetch_strategy.codex` PDF acquisition 路线。
+若 `research.external_synthesis.enabled=true`，GRaDOS 只能在自己准备并验证 evidence pack 后使用 ChatGPT Pro。默认工具是 `run_external_synthesis`：从 topic 开始时准备 evidence pack 和 packet；已有 pack id 时验证并 packet 化该 pack；随后打开专用 GRaDOS ChatGPT profile，在发送前确认 GRaDOS-validated Pro model 路线（`gpt-5.5-pro`）和 Pro Extended thinking 路线，捕获回复，用 `save_external_synthesis_result(audit=true)` 保存，并返回 audit 与 canonical reread next action。如果 ChatGPT 生成超过前台等待时间，工具会返回 `recoverable=true` 和 `browser_session_id`，后续可用 `recover_session_id` 恢复捕获。`preview_external_synthesis_packet`、`prepare_external_synthesis_from_topic`、`prepare_external_synthesis_packet`、`save_external_synthesis_result` 和 `audit_external_synthesis_result` 仍保留给 dry run、恢复和显式重跑。结果关联 packet id 时，audit 只接受该 packet 中实际发送过的 anchor、DOI、block id 和 canonical URI；结构化 `claims[].anchor_ids` 是主要 claim 合同，正文 audit 作为风险扫描保留。模型和 thinking 选择是协议默认值，不通过 GRaDOS config 配置；本地化界面下 GRaDOS 会记录实际确认到的原始标签。这个改动不移除单独的 `extract.fetch_strategy.codex` PDF acquisition 路线。
 
 PDF 解析优先级：
 

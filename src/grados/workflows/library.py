@@ -25,6 +25,7 @@ class LibraryDocumentArtifact:
     warnings: list[str] = field(default_factory=list)
     debug: list[str] = field(default_factory=list)
     assets: list[PendingAsset] = field(default_factory=list)
+    qa_passed: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,7 @@ async def build_library_document_artifact(
         warnings=list(result.warnings),
         debug=list(result.debug),
         assets=list(result.assets),
+        qa_passed=result.qa_passed,
     )
 
 

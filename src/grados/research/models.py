@@ -150,6 +150,10 @@ class EvidenceGridResult:
     section_filter: list[str]
     paper_coverage: dict[str, int]
     grids: list[EvidenceGridBlock]
+    requested_scoped_dois: list[str] = field(default_factory=list)
+    covered_dois: list[str] = field(default_factory=list)
+    missing_scoped_dois: list[str] = field(default_factory=list)
+    missing_reasons: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -164,6 +168,8 @@ class PaperComparisonRow:
     sections_used: list[str]
     comparisons: dict[str, str]
     evidence: list[ComparisonEvidenceItem] = field(default_factory=list)
+    fallback_all_sections: bool = False
+    excluded_sections: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

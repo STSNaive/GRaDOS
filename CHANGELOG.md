@@ -49,6 +49,12 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed publisher browser reuse so retained interactive windows keep manual/challenge pages open while each DOI fetch uses a job-owned page and only tracks explicitly owned popup/download pages.
+- Changed `extract_paper_full_text` so parser QA failures continue through configured parser/fetch fallbacks and unresolved QA failures are saved as `partial_success` instead of ordinary `fulltext`.
+- Changed evidence packs and scoped evidence grids to report requested, covered, and missing DOI coverage with missing reasons.
+- Changed `compare_papers` to exclude References, CRediT, acknowledgements, funding, declarations, and similar backmatter sections from default comparison evidence.
+- Changed `run_external_synthesis` to return a recoverable browser-session receipt when ChatGPT generation exceeds the foreground wait, allowing later recovery with `recover_session_id`.
+- Changed `search_academic_papers(indepth=true)` receipts/tool description to state that indepth is a one-pass materialization of the current search candidates, not autonomous query expansion.
 - Changed `ingest_codex_downloaded_pdf` to treat `parse_in_progress` and background-completed canonical saves as recoverable non-failure states instead of recording `parse_failed` after a foreground tool timeout.
 - Changed DOI-bound local PDF parse attempts so retryable `parse_failed` receipts are not permanent caches: repeated calls wait for the stale window and then restart from the same PDF, while PDF materialization conflicts remain terminal.
 - Changed PDF persistence for `parse_pdf_file(copy_to_library=true)`, `ingest_codex_downloaded_pdf`, browser/API PDF fetches, and `import_local_pdf_library` to share one materialization helper that writes the managed artifact as `downloads/{safe_doi}.pdf`, reuses same-hash candidates, and returns a conflict receipt for same-DOI different-hash PDFs without overwriting either file.

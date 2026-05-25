@@ -8,7 +8,9 @@ from typing import Any
 
 async def try_generic_pdf_click(
     page: Any,
+    context: Any,
     action_state: dict[str, Any],
+    track_page: Callable[[Any], None],
     pdf_captured: Any,
     report_warning: Callable[[str], None],
     record_event: Callable[..., None] | None = None,
@@ -38,7 +40,28 @@ async def try_generic_pdf_click(
                     url=page.url,
                     details={"strategy": "GenericPdfClick", "action": "click_pdf_link", "href": href},
                 )
-            await link.click()
+            clicked = False
+            popup = None
+            expect_page = getattr(context, "expect_page", None)
+            if callable(expect_page):
+                try:
+                    async with expect_page(timeout=3000) as page_info:
+                        await link.click()
+                        clicked = True
+                    popup = await page_info.value
+                except Exception:
+                    if not clicked:
+                        await link.click()
+                        clicked = True
+            else:
+                await link.click()
+                clicked = True
+            if popup is not None:
+                track_page(popup)
+                try:
+                    await popup.wait_for_load_state("domcontentloaded")
+                except Exception:
+                    pass
             try:
                 await page.wait_for_load_state("domcontentloaded")
             except Exception:

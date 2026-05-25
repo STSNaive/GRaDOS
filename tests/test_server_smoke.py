@@ -923,6 +923,71 @@ def test_extract_paper_full_text_reports_partial_success_when_indexing_fails(
     assert remote_calls[0]["fetch_status"] == "partial_success"
 
 
+def test_extract_paper_full_text_repairs_qa_failure_with_next_fetch_route(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    import grados.extract.fetch as fetch_module
+    import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    fetch_orders: list[list[str]] = []
+
+    async def fake_fetch_paper(**kwargs):
+        fetch_order = list(kwargs.get("fetch_order") or [])
+        fetch_orders.append(fetch_order)
+        if fetch_order and fetch_order[0] == "api":
+            return fetch_module.FetchResult(
+                text="# Wrong Paper\n\n## Abstract\n\n" + ("wrong composite damping content. " * 80),
+                outcome="native_full_text",
+                source="Elsevier TDM",
+                via="api",
+                metadata=PublisherMetadata(
+                    doi="10.1234/demo",
+                    title="API Metadata Title",
+                    authors=["Alice Smith"],
+                    year="2026",
+                    journal="Composite Structures",
+                    publisher="Elsevier",
+                ),
+                warnings=["api candidate was short"],
+            )
+        return fetch_module.FetchResult(
+            text="# Repair Success\n\n## Abstract\n\n" + ("validated composite damping content. " * 80),
+            outcome="native_full_text",
+            source="Browser",
+            via="browser",
+        )
+
+    monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda markdown, *args: "Repair Success" in markdown)
+    monkeypatch.setattr(remote_metadata, "record_remote_fetch_result", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: 1)
+
+    result = asyncio.run(
+        extract_paper_full_text(
+            doi="10.1234/demo",
+            expected_title="Repair Success",
+        )
+    )
+
+    assert "Paper Extracted Successfully" in result
+    assert "Source:** Browser" in result
+    assert "QA rejected Elsevier TDM" in result
+    assert "Fetch Status:** fulltext" in result
+    assert fetch_orders[0][0] == "api"
+    assert fetch_orders[1] == ["browser", "codex", "scihub"]
+    record = load_paper_record(tmp_path / "grados-home" / "papers", doi="10.1234/demo")
+    assert record is not None
+    assert record.title == "API Metadata Title"
+    assert record.authors == ["Alice Smith"]
+    assert record.year == "2026"
+    assert record.journal == "Composite Structures"
+
+
 def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
 

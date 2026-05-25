@@ -445,6 +445,41 @@ def test_parse_pdf_with_diagnostics_preserves_standardized_parser_messages(monke
     assert result.debug == ["Docling debug: RuntimeError: cold start failed"]
 
 
+def test_parse_pdf_with_diagnostics_continues_after_qa_failure(monkeypatch) -> None:
+    import grados.extract.parse as parse_module
+
+    monkeypatch.setattr(
+        parse_module,
+        "_parse_docling_attempt",
+        lambda pdf_buffer, filename, **kwargs: parse_module._ParserAttemptResult(
+            markdown="# Wrong Paper\n\n## Abstract\n\nshort",
+        ),
+    )
+    monkeypatch.setattr(
+        parse_module,
+        "_parse_marker_attempt",
+        lambda pdf_buffer, filename, marker_timeout: parse_module._ParserAttemptResult(
+            markdown="# Expected Paper\n\n## Abstract\n\n" + ("validated content " * 80),
+        ),
+    )
+
+    result = asyncio.run(
+        parse_pdf_with_diagnostics(
+            _make_sample_pdf_bytes(),
+            parse_order=["Docling", "Marker"],
+            parse_enabled={"Docling": True, "Marker": True, "PyMuPDF": False},
+            qa_validator=lambda markdown, min_chars, expected_title: "Expected Paper" in markdown,
+            qa_min_characters=100,
+            qa_expected_title="Expected Paper",
+            continue_on_qa_failure=True,
+        )
+    )
+
+    assert result.parser_used == "Marker"
+    assert result.qa_passed is True
+    assert "Docling parser output failed QA; trying next parser." in result.warnings
+
+
 def test_quality_assurance_accepts_structured_paper_text() -> None:
     text = (
         "# Demo Paper Title\n\n"
