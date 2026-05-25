@@ -44,6 +44,14 @@ def _row_from_match(
     )
 
 
+def _section_int(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdecimal():
+        return int(value)
+    return 0
+
+
 def _row_from_section(
     *,
     subquestion: str,
@@ -55,8 +63,8 @@ def _row_from_section(
     terms = _query_terms(query_text)
     lexical_score = float(sum(text.lower().count(term) for term in terms))
     score = max(0.1, lexical_score)
-    paragraph_count = int(section.get("paragraph_count") or 0)
-    paragraph_start = int(section.get("paragraph_start") or 0)
+    paragraph_count = _section_int(section.get("paragraph_count"))
+    paragraph_start = _section_int(section.get("paragraph_start"))
     return EvidenceGridRow(
         subquestion=subquestion,
         query_used=query_text,
