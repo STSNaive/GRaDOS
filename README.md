@@ -33,9 +33,9 @@ GRaDOS is designed to sit inside an agent research workflow:
 
 Host agents may use their own reasoning model to plan queries, screen candidates, rerank anchors, judge support, and synthesize prose. GRaDOS does not call that model directly: snippets, scores, evidence grids, comparisons, and audits are navigation material until the agent rereads the canonical paragraph window with `read_saved_paper`.
 
-For handoff-safe citation work, `prepare_evidence_pack` materializes canonical blocks from `papers/*.md` into a persisted pack. A pack becomes current citation evidence only when `verify_evidence_pack` reports `current_valid=true`; strict pack audits never search the whole library to silently patch missing evidence.
+For handoff-safe citation work, `prepare_evidence_pack` materializes canonical blocks from `papers/*.md` into a persisted pack, filtering References/backmatter, title-only, and citation-only fragments before counting DOI coverage. A pack becomes current citation evidence only when `verify_evidence_pack` reports `current_valid=true`; strict pack audits ignore non-evidence pack items and never search the whole library to silently patch missing evidence.
 
-When external synthesis is enabled, GRaDOS can turn a current-valid evidence pack into a compact host-side ChatGPT Pro packet, save the returned advisory response, and audit it back against the saved packet when linked, otherwise the source pack. The Pro response remains recovery/review material until accepted claims are reread through canonical GRaDOS paragraph windows.
+When external synthesis is enabled, GRaDOS can turn a current-valid evidence pack into a compact host-side ChatGPT Pro packet, save the returned advisory response, and audit it back against the saved packet when linked, otherwise the source pack. Packets with missing scoped DOI coverage or non-evidence anchors are not sendable. The Pro response remains recovery/review material until accepted claims are reread through canonical GRaDOS paragraph windows.
 
 For run-level recovery, a `research_run_manifest` is a lightweight directory page for one research run. It can link search queries, candidates, extraction/parser receipts, `paper_summary`, `research_checkpoint`, `evidence_checkpoint`, `evidence_pack`, audit result IDs, canonical anchors, and failure records. It may keep an append-only event ledger plus a redacted config/provenance snapshot; append correction events instead of rewriting past events, and never store secrets. The run manifest is navigation/provenance only and must never replace canonical rereading of `papers/*.md` or current-valid evidence packs for final citation support.
 
@@ -58,7 +58,7 @@ For evidence-grounded writing, the bundled skill includes `references/paper_writ
 | GRaDOS | `save_paper_to_zotero` | Save one paper to the configured Zotero library through the Web API, typically for papers that actually support the final answer. |
 | GRaDOS | `save_research_artifact` | Persist reusable intermediate outputs such as search snapshots, extraction receipts, evidence grids, compression-safe evidence checkpoints, and run-linked artifacts in the local SQLite state store. Include `metadata.research_run_id` to attach an artifact to a run manifest. |
 | GRaDOS | `query_research_artifacts` | Query previously saved research artifacts by id, kind, or keyword. `detail=true` returns the full stored content. |
-| GRaDOS | `prepare_evidence_pack` | Retrieve candidate anchors, reread canonical blocks from `papers/*.md`, and persist a minimal `evidence_pack` artifact with pack hash, block hashes, answerability, and scoped DOI coverage. |
+| GRaDOS | `prepare_evidence_pack` | Retrieve candidate anchors, reread canonical blocks from `papers/*.md`, filter non-evidence fragments, and persist a minimal `evidence_pack` artifact with pack hash, block hashes, answerability, and scoped DOI coverage. |
 | GRaDOS | `read_evidence_pack` | Restore a persisted evidence pack by pack id or artifact id. |
 | GRaDOS | `verify_evidence_pack` | Rebuild canonical block manifests from current `papers/*.md` and report snapshot/current validity, missing papers, document changes, relocation, and hash mismatches. |
 | GRaDOS | `preview_external_synthesis_packet` | Dry-run a compact external-synthesis packet from one current-valid evidence pack without saving artifacts or contacting external services. |
@@ -73,8 +73,8 @@ For evidence-grounded writing, the bundled skill includes `references/paper_writ
 | GRaDOS | `get_citation_graph` | Return lightweight local citation relationships, including citation neighbors, common references, and reverse citing-paper lookups. |
 | GRaDOS | `get_papers_full_context` | Return structured full-context material for context-budgeted saved-paper batches, with token estimates or actual section content for CAG-style deep reading. |
 | GRaDOS | `build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. Rows carry reread anchors for agent-side reranking before citation verification, and scoped DOI calls report requested/covered/missing coverage. |
-| GRaDOS | `compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. Returned excerpts carry per-axis reread anchors and avoid backmatter sections by default. |
-| GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return first-pass `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts with candidate evidence snippets, issue types, revision actions, and anchors. `candidate_limit` controls candidates per claim. |
+| GRaDOS | `compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. Returned excerpts carry per-axis reread anchors, avoid backmatter sections by default, and leave an axis empty when no eligible excerpt exists. |
+| GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return first-pass `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts with eligible candidate evidence snippets, issue types, revision actions, and anchors. `candidate_limit` controls candidates per claim. |
 
 ### MCP Resources 📚
 

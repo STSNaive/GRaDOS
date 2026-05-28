@@ -357,6 +357,90 @@ def test_audit_draft_support_handles_chinese_claims_and_author_year_citations(
     ]
 
 
+def test_audit_draft_support_attaches_standalone_citation_marker(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, limit, kwargs)
+        return [
+            PaperSearchResult(
+                doi="10.1234/demo",
+                safe_doi="10_1234_demo",
+                title="Composite Damping Study",
+                authors=["Smith"],
+                year="2025",
+                journal="Composite Structures",
+                section_name="Results",
+                paragraph_start=4,
+                paragraph_count=2,
+                snippet="Composite damping improved vibration attenuation by 18%.",
+                score=1.35,
+            )
+        ]
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    result = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text="Composite damping improves vibration attenuation by 18%. [Smith et al., 2025]",
+        strictness="strict",
+    )
+
+    assert result.claims_checked == 1
+    assert result.claims[0].verdict == "verified"
+    assert result.claims[0].citation_marker_present is True
+    assert result.claims[0].citations[0].author == "smith"
+
+
+def test_audit_draft_support_filters_reference_candidates_before_verdict(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, limit, kwargs)
+        return [
+            PaperSearchResult(
+                doi="10.9999/refs",
+                safe_doi="10_9999_refs",
+                title="Reference List",
+                authors=["Other"],
+                year="2024",
+                journal="References",
+                section_name="References",
+                paragraph_start=20,
+                paragraph_count=1,
+                snippet="Smith et al. 2025. Composite damping.",
+                score=2.0,
+            ),
+            PaperSearchResult(
+                doi="10.1234/demo",
+                safe_doi="10_1234_demo",
+                title="Composite Damping Study",
+                authors=["Smith"],
+                year="2025",
+                journal="Composite Structures",
+                section_name="Results",
+                paragraph_start=4,
+                paragraph_count=2,
+                snippet="Composite damping improved vibration attenuation by 18%.",
+                score=1.35,
+            ),
+        ]
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    result = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text="Composite damping improves vibration attenuation by 18% [Smith et al., 2025].",
+        strictness="strict",
+    )
+
+    assert result.claims[0].verdict == "verified"
+    assert [item.section_name for item in result.claims[0].evidence] == ["Results"]
+    assert result.claims[0].evidence[0].doi == "10.1234/demo"
+
+
 def test_audit_draft_support_deduplicates_repeated_queries(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
 

@@ -7,6 +7,10 @@ from collections import Counter
 from pathlib import Path
 from typing import TypedDict
 
+from grados.research.evidence_eligibility import (
+    classify_evidence_rejection,
+    is_citation_fragment,
+)
 from grados.research.models import (
     AuditCitationMarker,
     AuditedClaim,
@@ -44,6 +48,10 @@ def _split_claims(draft_text: str) -> list[str]:
         sentences = re.split(r"(?<=[。！？])|(?<=[.!?])\s+", block)
         for sentence in sentences:
             candidate = sentence.strip()
+            if is_citation_fragment(candidate):
+                if claims:
+                    claims[-1] = f"{claims[-1].rstrip()} {candidate}"
+                continue
             if len(candidate) >= 20:
                 claims.append(candidate)
     return claims
@@ -110,6 +118,33 @@ def _citation_matches_result(marker: AuditCitationMarker, result: PaperSearchRes
 
 def _citation_style_supports_attribution(citation_style: str) -> bool:
     return citation_style == "author_year"
+
+
+def _eligible_evidence(results: list[PaperSearchResult]) -> list[PaperSearchResult]:
+    return [
+        result
+        for result in results
+        if (
+            classify_evidence_rejection(result.section_name, result.snippet, known_title=result.title)
+            is None
+        )
+    ]
+
+
+def _rank_evidence_for_markers(
+    evidence: list[PaperSearchResult],
+    markers: list[AuditCitationMarker],
+    citation_style: str,
+) -> list[PaperSearchResult]:
+    if not markers or not _citation_style_supports_attribution(citation_style):
+        return evidence
+    return sorted(
+        evidence,
+        key=lambda result: (
+            not any(_citation_matches_result(marker, result) for marker in markers),
+            -float(result.score),
+        ),
+    )
 
 
 def _has_canonical_anchor(result: PaperSearchResult) -> bool:
@@ -245,7 +280,11 @@ def audit_draft_support(
                     use_reranking=True,
                 )
                 evidence_cache[cache_key] = cached
-            evidence = cached
+            evidence = _rank_evidence_for_markers(
+                _eligible_evidence(cached),
+                markers,
+                citation_style,
+            )
         verdict_payload = _draft_verdict(
             evidence=evidence,
             markers=markers,

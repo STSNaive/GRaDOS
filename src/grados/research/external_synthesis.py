@@ -15,6 +15,7 @@ from grados.research.draft_audit import (
     VERDICT_UNVERIFIABLE,
     VERDICT_VERIFIED,
 )
+from grados.research.evidence_eligibility import classify_evidence_rejection
 from grados.research.evidence_pack import (
     EvidencePack,
     EvidencePackItem,
@@ -87,6 +88,7 @@ def _blocked_packet_result(
     mode: ExternalSynthesisMode,
     verify_result: dict[str, Any],
     error: str,
+    blocked_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "ok": False,
@@ -96,6 +98,7 @@ def _blocked_packet_result(
         "pack_id": pack_id,
         "error": error,
         "blocked_reasons": [error],
+        "blocked_items": blocked_items or [],
         "verify": verify_result,
     }
 
@@ -238,6 +241,10 @@ def _build_packet(
         "item_count": len(packet_items),
         "omitted_evidence_count": max(0, len(pack.evidence_items) - len(packet_items)),
         "insufficient_evidence": list(pack.insufficient_evidence),
+        "requested_scoped_dois": list(pack.requested_scoped_dois),
+        "covered_dois": list(pack.covered_dois),
+        "missing_scoped_dois": list(pack.missing_scoped_dois),
+        "missing_reasons": dict(pack.missing_reasons),
         "forbidden": [
             "Do not introduce pack-external papers, DOIs, facts, citations, or web evidence.",
             "Do not treat ChatGPT Pro output as final citation evidence.",
@@ -249,10 +256,73 @@ def _build_packet(
     return payload
 
 
-def _packet_preview(packet: dict[str, Any]) -> dict[str, Any]:
+def _packet_section_name(item: dict[str, Any]) -> str:
+    heading_path = item.get("heading_path")
+    if isinstance(heading_path, list) and heading_path:
+        return str(heading_path[-1])
+    return ""
+
+
+def _validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
+    blocked_items: list[dict[str, Any]] = []
+    blocked_reasons: list[str] = []
+    for item in packet.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        anchor_id = str(item.get("anchor_id") or "")
+        section_name = _packet_section_name(item)
+        text = str(item.get("short_excerpt") or item.get("candidate_claim") or "")
+        reason = classify_evidence_rejection(
+            section_name,
+            text,
+            known_title=str(item.get("title") or ""),
+        )
+        if reason is None:
+            continue
+        blocked_items.append(
+            {
+                "anchor_id": anchor_id,
+                "doi": str(item.get("doi") or ""),
+                "section_name": section_name,
+                "reason": reason,
+            }
+        )
+        blocked_reasons.append(f"{anchor_id or 'anchor'}:{reason}:{section_name or 'unknown_section'}")
+
+    missing_reasons = packet.get("missing_reasons")
+    missing_reason_map = missing_reasons if isinstance(missing_reasons, dict) else {}
+    missing_scoped_dois = [
+        str(doi) for doi in packet.get("missing_scoped_dois", []) if str(doi).strip()
+    ]
+    if missing_scoped_dois:
+        blocked_reasons.append("missing_scoped_doi_coverage")
+        blocked_items.extend(
+            {
+                "doi": doi,
+                "reason": str(missing_reason_map.get(doi) or "not_covered"),
+            }
+            for doi in missing_scoped_dois
+        )
+
+    if not packet.get("items"):
+        blocked_reasons.append("empty_evidence_packet")
+
     return {
-        "ok": True,
-        "sendable": True,
+        "sendable": not blocked_reasons,
+        "blocked_reasons": blocked_reasons,
+        "blocked_items": blocked_items,
+    }
+
+
+def _packet_preview(
+    packet: dict[str, Any],
+    validation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    validation = validation or _validate_packet(packet)
+    sendable = bool(validation.get("sendable"))
+    return {
+        "ok": sendable,
+        "sendable": sendable,
         "saved": False,
         "mode": packet["mode"],
         "pack_id": packet["pack_id"],
@@ -263,7 +333,8 @@ def _packet_preview(packet: dict[str, Any]) -> dict[str, Any]:
         "estimated_chars": packet["estimated_chars"],
         "estimated_tokens": packet["estimated_tokens"],
         "verify": packet["verify"],
-        "blocked_reasons": [],
+        "blocked_reasons": list(validation.get("blocked_reasons", [])),
+        "blocked_items": list(validation.get("blocked_items", [])),
         "prompt_skeleton": (
             "Send the packet to ChatGPT Pro only after the gate is enabled. Ask for claims, "
             "anchor_ids, confidence, caveats, missing_evidence, and forbidden_or_outside_content."
@@ -310,7 +381,7 @@ def preview_external_synthesis_packet(
         max_items=max_items,
         max_excerpt_chars=max_excerpt_chars,
     )
-    return _packet_preview(packet)
+    return _packet_preview(packet, _validate_packet(packet))
 
 
 def prepare_external_synthesis_packet(
@@ -348,6 +419,10 @@ def prepare_external_synthesis_packet(
         max_items=max_items,
         max_excerpt_chars=max_excerpt_chars,
     )
+    validation = _validate_packet(packet)
+    preview = _packet_preview(packet, validation)
+    if not preview["sendable"]:
+        return preview
     host_prompt, _ = _render_host_prompt(packet)
     artifact_metadata = {
         **(metadata or {}),
@@ -366,7 +441,7 @@ def prepare_external_synthesis_packet(
         metadata=artifact_metadata,
     )
     return {
-        **_packet_preview(packet),
+        **preview,
         "saved": True,
         "artifact_id": receipt["artifact_id"],
         "kind": EXTERNAL_SYNTHESIS_PACKET_KIND,

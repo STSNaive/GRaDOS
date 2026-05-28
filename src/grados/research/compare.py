@@ -6,23 +6,8 @@ import re
 from pathlib import Path
 
 from grados.research.common import _excerpt_for_axis, _resolve_documents, _select_sections
+from grados.research.evidence_eligibility import classify_evidence_rejection, is_non_evidence_section
 from grados.research.models import ComparisonEvidenceItem, PaperComparisonResult, PaperComparisonRow
-
-_BACKMATTER_MARKERS = (
-    "references",
-    "bibliography",
-    "works cited",
-    "literature cited",
-    "credit",
-    "author contribution",
-    "acknowledg",
-    "funding",
-    "declaration",
-    "conflict",
-    "competing interest",
-    "supplementary",
-    "appendix",
-)
 
 
 def _canonical_uri(safe_doi: str) -> str:
@@ -46,18 +31,13 @@ def _coerce_nonnegative_int(value: object) -> int:
     return 0
 
 
-def _is_backmatter_section(section_name: str) -> bool:
-    normalized = re.sub(r"\s+", " ", section_name.strip().lower())
-    return any(marker in normalized for marker in _BACKMATTER_MARKERS)
-
-
 def _filter_comparison_sections(sections: list[dict[str, object]]) -> tuple[list[dict[str, object]], list[str], bool]:
     excluded = [
         str(section.get("name", ""))
         for section in sections
-        if _is_backmatter_section(str(section.get("name", "")))
+        if is_non_evidence_section(str(section.get("name", "")))
     ]
-    filtered = [section for section in sections if not _is_backmatter_section(str(section.get("name", "")))]
+    filtered = [section for section in sections if not is_non_evidence_section(str(section.get("name", "")))]
     if filtered:
         return filtered, excluded, False
     return sections, [], True
@@ -68,6 +48,7 @@ def _axis_evidence(
     axis: str,
     sections: list[dict[str, object]],
     canonical_uri: str,
+    known_title: str = "",
 ) -> ComparisonEvidenceItem:
     axis_terms = re.findall(r"[a-z0-9]{3,}", axis.lower())
     best_section: dict[str, object] | None = None
@@ -75,8 +56,12 @@ def _axis_evidence(
     best_score = -1
 
     for section in sections:
-        excerpt = _excerpt_for_axis(str(section.get("text", "")), axis)
+        section_name = str(section.get("name", ""))
+        section_text = str(section.get("content") or section.get("text", ""))
+        excerpt = _excerpt_for_axis(section_text, axis)
         if not excerpt:
+            continue
+        if classify_evidence_rejection(section_name, excerpt, known_title=known_title) is not None:
             continue
         score = sum(excerpt.lower().count(term) for term in axis_terms)
         if score > best_score:
@@ -90,7 +75,7 @@ def _axis_evidence(
             section_name="",
             excerpt="",
             canonical_uri=canonical_uri,
-            warning="No comparable excerpt could be located.",
+            warning="no_evidence_for_axis",
         )
 
     paragraph_count = _coerce_nonnegative_int(best_section.get("paragraph_count", 0))
@@ -130,7 +115,15 @@ def compare_papers(
         selected_sections = _select_sections(record, focus=focus)
         sections, excluded_sections, fallback_all_sections = _filter_comparison_sections(selected_sections)
         canonical_uri = _canonical_uri(record.safe_doi)
-        evidence = [_axis_evidence(axis=axis, sections=sections, canonical_uri=canonical_uri) for axis in axes]
+        evidence = [
+            _axis_evidence(
+                axis=axis,
+                sections=sections,
+                canonical_uri=canonical_uri,
+                known_title=record.title,
+            )
+            for axis in axes
+        ]
         comparisons = {item.axis: item.excerpt for item in evidence}
         paper_rows.append(
             PaperComparisonRow(

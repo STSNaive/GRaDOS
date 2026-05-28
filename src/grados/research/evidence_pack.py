@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from grados.research.evidence_eligibility import classify_evidence_rejection
 from grados.research_state import query_research_artifacts, save_research_artifact
 from grados.storage.canonical_blocks import (
     CanonicalBlock,
@@ -186,7 +187,7 @@ def _build_pack(
         "topic": topic,
         "query": query,
         "subquestions": subquestions,
-        "answerable": bool(evidence_items) and not insufficient_evidence,
+        "answerable": bool(evidence_items) and not insufficient_evidence and not missing_scoped_dois,
         "evidence_items": [asdict(item) for item in evidence_items],
         "pack_sha256": "",
         "created_at": _utc_now(),
@@ -245,6 +246,43 @@ def _block_to_item(
     )
 
 
+def _item_section_name(item: EvidencePackItem) -> str:
+    return item.heading_path[-1] if item.heading_path else ""
+
+
+def _missing_reason_for_rejection(reason: str) -> str:
+    if reason == "backmatter_section":
+        return "no_non_reference_evidence"
+    return "no_eligible_evidence"
+
+
+def _trace_item_eligibility(
+    trace: dict[str, Any],
+    item: EvidencePackItem,
+) -> tuple[EvidencePackItem | None, dict[str, Any]]:
+    section_name = _item_section_name(item) or str(trace.get("section_name") or "")
+    rejection = classify_evidence_rejection(section_name, item.text, known_title=item.title)
+    item_trace = {
+        **trace,
+        "section_name": section_name,
+        "block_id": item.block_id,
+        "canonical_uri": item.canonical_uri,
+    }
+    if rejection is None:
+        item_trace["eligibility"] = "eligible"
+        return item, item_trace
+
+    item_trace.update(
+        {
+            "status": "filtered",
+            "eligibility": "rejected",
+            "rejection_reason": rejection,
+            "missing_reason": _missing_reason_for_rejection(rejection),
+        }
+    )
+    return None, item_trace
+
+
 def _candidate_to_item(
     papers_dir: Path,
     match: PaperSearchResult,
@@ -291,7 +329,8 @@ def _candidate_to_item(
             safe_doi=manifest.safe_doi,
         ),
     }
-    return _block_to_item(block, subquestion=subquestion, query_used=query_used, trace=item_trace), trace
+    item = _block_to_item(block, subquestion=subquestion, query_used=query_used, trace=item_trace)
+    return _trace_item_eligibility(trace, item)
 
 
 def _fallback_scoped_item(
@@ -311,18 +350,30 @@ def _fallback_scoped_item(
     }
     if manifest is None or not manifest.blocks:
         trace["status"] = "missing_paper"
+        trace["missing_reason"] = "missing_paper"
         return None, trace
     trace["status"] = "materialized"
     item_trace = {
         **trace,
         "paper_record": load_paper_record(papers_dir, doi=doi, safe_doi=manifest.safe_doi),
     }
-    return _block_to_item(
-        manifest.blocks[0],
-        subquestion=subquestion,
-        query_used=query_used,
-        trace=item_trace,
-    ), trace
+    best_rejected: dict[str, Any] | None = None
+    for block in manifest.blocks:
+        item = _block_to_item(
+            block,
+            subquestion=subquestion,
+            query_used=query_used,
+            trace=item_trace,
+        )
+        eligible_item, block_trace = _trace_item_eligibility(trace, item)
+        if eligible_item is not None:
+            return eligible_item, block_trace
+        if (
+            best_rejected is None
+            or str(block_trace.get("missing_reason")) == "no_non_reference_evidence"
+        ):
+            best_rejected = block_trace
+    return None, best_rejected or trace
 
 
 def _candidate_matches(
@@ -336,12 +387,12 @@ def _candidate_matches(
     trace: list[dict[str, Any]] = []
     matches: list[PaperSearchResult] = []
     if scoped_dois:
-        for scoped_doi in scoped_dois[:max_windows]:
+        for scoped_doi in scoped_dois:
             try:
                 scoped_matches = search_papers(
                     chroma_dir,
                     query_text,
-                    limit=1,
+                    limit=max_windows,
                     papers_dir=papers_dir,
                     doi=scoped_doi,
                     use_reranking=True,
@@ -357,7 +408,7 @@ def _candidate_matches(
                     }
                 )
                 continue
-            matches.extend(scoped_matches[:1])
+            matches.extend(scoped_matches[:max_windows])
         return matches, trace
 
     try:
@@ -390,15 +441,36 @@ def _missing_scoped_doi_reasons(
     retrieval_trace: list[dict[str, Any]],
 ) -> dict[str, str]:
     reasons: dict[str, str] = {}
+
+    def reason_priority(reason: str) -> int:
+        return {
+            "no_non_reference_evidence": 100,
+            "no_eligible_evidence": 95,
+            "missing_paper": 90,
+            "block_missing": 80,
+            "search_failed": 70,
+            "not_covered": 10,
+        }.get(reason, 50)
+
+    def set_reason(doi: str, reason: str) -> None:
+        current = reasons.get(doi)
+        if current is None or reason_priority(reason) > reason_priority(current):
+            reasons[doi] = reason
+
     for trace in retrieval_trace:
         doi = str(trace.get("doi") or "").strip()
         if not doi or doi.lower() in covered_dois:
             continue
-        status = str(trace.get("status") or trace.get("reason") or "not_covered")
-        reasons.setdefault(doi, status)
+        status = str(
+            trace.get("missing_reason")
+            or trace.get("reason")
+            or trace.get("status")
+            or "not_covered"
+        )
+        set_reason(doi, status)
     for doi in requested_dois:
         if doi.lower() not in covered_dois:
-            reasons.setdefault(doi, "not_covered")
+            set_reason(doi, "not_covered")
     return reasons
 
 
@@ -440,7 +512,14 @@ def prepare_evidence_pack(
         covered_for_subquestion = 0
         covered_dois_for_subquestion: set[str] = set()
 
-        for match in matches[:max_windows]:
+        candidate_matches = matches if resolved_dois else matches[:max_windows]
+        for match in candidate_matches:
+            if (
+                resolved_dois
+                and match.doi
+                and match.doi.lower() in covered_dois_for_subquestion
+            ):
+                continue
             item, item_trace = _candidate_to_item(
                 papers_dir,
                 match,
@@ -460,7 +539,7 @@ def prepare_evidence_pack(
             evidence_items.append(item)
 
         if resolved_dois:
-            for scoped_doi in resolved_dois[:max_windows]:
+            for scoped_doi in resolved_dois:
                 if scoped_doi.lower() in covered_dois_for_subquestion:
                     continue
                 item, item_trace = _fallback_scoped_item(

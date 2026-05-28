@@ -6,6 +6,8 @@ import grados.research.draft_audit as draft_audit
 import grados.research.evidence_pack as evidence_pack_module
 from grados.publisher.common import safe_doi_filename
 from grados.research.evidence_pack import (
+    EvidencePack,
+    EvidencePackItem,
     compute_pack_sha256,
     prepare_evidence_pack,
     read_evidence_pack,
@@ -183,6 +185,259 @@ def test_prepare_pack_counts_reused_block_as_subquestion_coverage(monkeypatch, t
     assert receipt["answerable"] is True
     assert receipt["insufficient_evidence"] == []
     assert receipt["evidence_count"] == 1
+
+
+def test_prepare_pack_filters_reference_only_scoped_doi(monkeypatch, tmp_path: Path) -> None:
+    save_paper_markdown(
+        "10.1234/refs",
+        "# Reference Only\n\n## References\n\nSmith et al. 2024. DOI 10.1234/source.",
+        _papers_dir(tmp_path),
+        title="Reference Only",
+        source="fixture",
+    )
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, limit, kwargs)
+        return [
+            PaperSearchResult(
+                doi="10.1234/refs",
+                safe_doi=safe_doi_filename("10.1234/refs"),
+                title="Reference Only",
+                authors=["Smith"],
+                year="2024",
+                journal="References",
+                section_name="References",
+                paragraph_start=2,
+                paragraph_count=1,
+                snippet="Smith et al. 2024. DOI 10.1234/source.",
+                score=1.4,
+            )
+        ]
+
+    monkeypatch.setattr(evidence_pack_module, "search_papers", fake_search_papers)
+
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="reference leakage",
+        scoped_dois=["10.1234/refs"],
+    )
+    loaded = read_evidence_pack(_db_path(tmp_path), pack_id=str(receipt["pack_id"]))
+
+    assert receipt["answerable"] is False
+    assert receipt["evidence_count"] == 0
+    assert receipt["covered_dois"] == []
+    assert receipt["missing_scoped_dois"] == ["10.1234/refs"]
+    assert receipt["missing_reasons"]["10.1234/refs"] == "no_non_reference_evidence"
+    assert loaded["pack"]["retrieval_trace"][-1]["rejection_reason"] == "backmatter_section"
+
+
+def test_pack_audit_filters_reference_only_legacy_pack(tmp_path: Path) -> None:
+    save_paper_markdown(
+        "10.1234/refs",
+        "# Reference Only\n\n## References\n\nSmith et al. 2024. Composite damping.",
+        _papers_dir(tmp_path),
+        title="Reference Only",
+        source="fixture",
+        authors=["Smith"],
+        year="2024",
+    )
+    manifest = build_canonical_block_manifest(_papers_dir(tmp_path), doi="10.1234/refs")
+    assert manifest is not None
+    block = manifest.blocks[0]
+    saved = save_evidence_pack(
+        _db_path(tmp_path),
+        EvidencePack(
+            pack_id="pack_legacy_refs",
+            topic="legacy refs",
+            query="legacy refs",
+            subquestions=["legacy refs"],
+            answerable=True,
+            evidence_items=[
+                EvidencePackItem(
+                    canonical_uri=block.canonical_uri,
+                    paper_id=block.paper_id,
+                    safe_doi=block.safe_doi,
+                    block_id=block.block_id,
+                    block_type=block.block_type,
+                    text=block.text,
+                    text_sha256=block.text_sha256,
+                    doi=block.doi,
+                    heading_path=list(block.heading_path),
+                    ordinal=block.ordinal,
+                    source_paragraph_index=block.source_paragraph_index,
+                    doc_sha256=block.doc_sha256,
+                    prev_hash=block.prev_hash,
+                    next_hash=block.next_hash,
+                    title="Reference Only",
+                    authors=["Smith"],
+                    year="2024",
+                )
+            ],
+            pack_sha256="",
+            created_at="2026-05-28T00:00:00+00:00",
+        ),
+    )
+
+    audit = audit_answer_against_pack(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(saved["pack_id"]),
+        draft="Composite damping is supported by this work (Smith, 2024).",
+    )
+
+    assert audit["filtered_evidence_count"] == 1
+    assert audit["claims"][0]["verdict"] == "unverifiable"
+    assert audit["claims"][0]["evidence"] == []
+
+
+def test_prepare_pack_checks_all_scoped_dois_beyond_max_windows(monkeypatch, tmp_path: Path) -> None:
+    _save_demo_paper(tmp_path)
+    save_paper_markdown(
+        "10.1234/second",
+        "# Second Paper\n\n## Results\n\nLayered damping reduced resonance amplitude by 12%.",
+        _papers_dir(tmp_path),
+        title="Second Paper",
+        source="fixture",
+        authors=["Lee"],
+        year="2024",
+    )
+    calls: list[str] = []
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query)
+        doi = kwargs.get("doi", "")
+        calls.append(doi)
+        snippets = {
+            "10.1234/demo": "Composite damping improved vibration attenuation by 18%.",
+            "10.1234/second": "Layered damping reduced resonance amplitude by 12%.",
+        }
+        if doi not in snippets:
+            return []
+        return [
+            PaperSearchResult(
+                doi=doi,
+                safe_doi=safe_doi_filename(doi),
+                title="Scoped Paper",
+                authors=[],
+                year="2025",
+                journal="Composite Structures",
+                section_name="Results",
+                paragraph_start=2,
+                paragraph_count=1,
+                snippet=snippets[doi],
+                score=1.2,
+            )
+        ]
+
+    monkeypatch.setattr(evidence_pack_module, "search_papers", fake_search_papers)
+
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="damping",
+        scoped_dois=["10.1234/demo", "10.1234/second"],
+        max_windows=1,
+    )
+
+    assert calls == ["10.1234/demo", "10.1234/second"]
+    assert receipt["answerable"] is True
+    assert receipt["covered_dois"] == ["10.1234/demo", "10.1234/second"]
+    assert receipt["missing_scoped_dois"] == []
+
+
+def test_prepare_pack_fallback_skips_title_placeholder(monkeypatch, tmp_path: Path) -> None:
+    save_paper_markdown(
+        "10.1234/fallback",
+        (
+            "Fallback Paper\n\n"
+            "## Results\n\n"
+            "Composite damping improved vibration attenuation by 18%."
+        ),
+        _papers_dir(tmp_path),
+        title="Fallback Paper",
+        source="fixture",
+    )
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, limit, kwargs)
+        return []
+
+    monkeypatch.setattr(evidence_pack_module, "search_papers", fake_search_papers)
+
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="fallback damping",
+        scoped_dois=["10.1234/fallback"],
+    )
+    loaded = read_evidence_pack(_db_path(tmp_path), pack_id=str(receipt["pack_id"]))
+
+    assert receipt["answerable"] is True
+    assert receipt["evidence_count"] == 1
+    assert loaded["pack"]["evidence_items"][0]["text"] == (
+        "Composite damping improved vibration attenuation by 18%."
+    )
+
+
+def test_prepare_pack_keeps_one_eligible_item_per_scoped_doi(monkeypatch, tmp_path: Path) -> None:
+    save_paper_markdown(
+        "10.1234/multi",
+        (
+            "# Multi Paper\n\n"
+            "## Results\n\n"
+            "Composite damping improved vibration attenuation by 18%.\n\n"
+            "Layered damping reduced resonance amplitude by 12%."
+        ),
+        _papers_dir(tmp_path),
+        title="Multi Paper",
+        source="fixture",
+    )
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, limit, kwargs)
+        return [
+            PaperSearchResult(
+                doi="10.1234/multi",
+                safe_doi=safe_doi_filename("10.1234/multi"),
+                title="Multi Paper",
+                authors=[],
+                year="2025",
+                journal="Composite Structures",
+                section_name="Results",
+                paragraph_start=2,
+                paragraph_count=1,
+                snippet="Composite damping improved vibration attenuation by 18%.",
+                score=1.2,
+            ),
+            PaperSearchResult(
+                doi="10.1234/multi",
+                safe_doi=safe_doi_filename("10.1234/multi"),
+                title="Multi Paper",
+                authors=[],
+                year="2025",
+                journal="Composite Structures",
+                section_name="Results",
+                paragraph_start=3,
+                paragraph_count=1,
+                snippet="Layered damping reduced resonance amplitude by 12%.",
+                score=1.1,
+            ),
+        ]
+
+    monkeypatch.setattr(evidence_pack_module, "search_papers", fake_search_papers)
+
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="damping",
+        scoped_dois=["10.1234/multi"],
+        max_windows=2,
+    )
+
+    assert receipt["answerable"] is True
+    assert receipt["evidence_count"] == 1
+    assert receipt["covered_dois"] == ["10.1234/multi"]
 
 
 def test_verify_fails_when_canonical_markdown_changes(monkeypatch, tmp_path: Path) -> None:

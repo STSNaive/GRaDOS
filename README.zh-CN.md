@@ -33,9 +33,9 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 外层 agent 可以用自己的 host model 规划查询、筛选候选、重排 anchor、判断支持关系并综合写作。GRaDOS 工具不会直接调用该模型：snippet、score、evidence grid、comparison 和 audit 结果都只是导航材料，只有用 `read_saved_paper` 回读 canonical 段落窗口后，才能作为引用证据。
 
-需要跨对话或交接保持引用依据时，用 `prepare_evidence_pack` 从 `papers/*.md` materialize canonical blocks。只有 `verify_evidence_pack` 返回 `current_valid=true` 的 pack 才能作为当前引用证据；strict pack audit 不会临时全库搜索来悄悄补证。
+需要跨对话或交接保持引用依据时，用 `prepare_evidence_pack` 从 `papers/*.md` materialize canonical blocks，并在计算 DOI 覆盖前过滤 References/backmatter、title-only 和 citation-only 片段。只有 `verify_evidence_pack` 返回 `current_valid=true` 的 pack 才能作为当前引用证据；strict pack audit 会忽略 pack 内非证据项，也不会临时全库搜索来悄悄补证。
 
-启用 external synthesis 时，GRaDOS 可以把 current-valid evidence pack 转成紧凑的 host-side ChatGPT Pro packet，保存返回的 advisory response；如果结果关联了 packet，就按该 packet 审计，否则才退回 source pack。Pro 输出仍只是恢复/评审材料；可接受的 claim 也必须回到 GRaDOS canonical 段落窗口后才能最终引用。
+启用 external synthesis 时，GRaDOS 可以把 current-valid evidence pack 转成紧凑的 host-side ChatGPT Pro packet，保存返回的 advisory response；如果结果关联了 packet，就按该 packet 审计，否则才退回 source pack。存在 scoped DOI 缺口或非证据 anchor 的 packet 不会被标记为 sendable。Pro 输出仍只是恢复/评审材料；可接受的 claim 也必须回到 GRaDOS canonical 段落窗口后才能最终引用。
 
 需要恢复整次研究过程时，`research_run_manifest` 是一次 research run 的轻量目录页，而不是证据来源。它可以串联 search query、候选、extraction/parser receipt、`paper_summary`、`research_checkpoint`、`evidence_checkpoint`、`evidence_pack`、audit result id、canonical anchor 和失败记录；也可以保存 append-only event ledger 与 redacted config/provenance snapshot。修正流程用追加 correction event 的方式表达，不改写旧事件；任何 secret 都不得写入 manifest。最终引用仍必须回读 canonical `papers/*.md` 或 current-valid evidence pack。
 
@@ -58,7 +58,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 把单篇论文保存到当前配置的 Zotero 库，通常用于最终答案里实际引用到的论文。 |
 | GRaDOS | `save_research_artifact` | 把 search snapshot、extraction receipt、evidence grid、compression-safe evidence checkpoint 和 run-linked artifact 等可复用中间产物持久化到本地 SQLite 状态库；传入 `metadata.research_run_id` 可把 artifact 挂到 run manifest。 |
 | GRaDOS | `query_research_artifacts` | 按 id、kind 或关键词查询已保存的 research artifact；`detail=true` 会返回完整内容。 |
-| GRaDOS | `prepare_evidence_pack` | 召回候选 anchor，回读 `papers/*.md` 中的 canonical blocks，并持久化最小 `evidence_pack` artifact，包含 pack hash、block hash、answerability 和 scoped DOI 覆盖状态。 |
+| GRaDOS | `prepare_evidence_pack` | 召回候选 anchor，回读 `papers/*.md` 中的 canonical blocks，过滤非证据片段，并持久化最小 `evidence_pack` artifact，包含 pack hash、block hash、answerability 和 scoped DOI 覆盖状态。 |
 | GRaDOS | `read_evidence_pack` | 通过 pack id 或 artifact id 恢复已保存的 evidence pack。 |
 | GRaDOS | `verify_evidence_pack` | 从当前 `papers/*.md` 重建 canonical block manifest，并报告 snapshot/current validity、missing paper、document change、relocation 和 hash mismatch。 |
 | GRaDOS | `preview_external_synthesis_packet` | 从 current-valid evidence pack dry-run 紧凑 external-synthesis packet，不保存 artifact，也不调用外部服务。 |
@@ -73,8 +73,8 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `get_citation_graph` | 返回本地论文库中的轻量引用关系，包括引用邻居、共同参考文献和反向 citing-paper 查询。 |
 | GRaDOS | `get_papers_full_context` | 为按上下文预算分批的已保存论文返回结构化全文上下文，可先拿 token 估计，也可直接进入 CAG 风格的深读模式。 |
 | GRaDOS | `build_evidence_grid` | 围绕主题或子问题，从本地论文库构建写作前的证据网格；行内带可回读 anchor，供 agent-side reranking 后再核验引用，scoped DOI 调用会报告 requested/covered/missing 覆盖状态。 |
-| GRaDOS | `compare_papers` | 跨多篇已保存论文抽取并行对比材料，聚焦 methods、results 或 full text；返回 excerpt 会带每个对比轴的回读 anchor，并默认避开后置噪声 section。 |
-| GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 first-pass `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，以及候选 evidence snippet、issue type、revision action 和 anchor；`candidate_limit` 控制每条 claim 的候选数。 |
+| GRaDOS | `compare_papers` | 跨多篇已保存论文抽取并行对比材料，聚焦 methods、results 或 full text；返回 excerpt 会带每个对比轴的回读 anchor，默认避开后置噪声 section，并在没有合格 excerpt 时留空该轴。 |
+| GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 first-pass `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，以及合格候选 evidence snippet、issue type、revision action 和 anchor；`candidate_limit` 控制每条 claim 的候选数。 |
 
 ### MCP 资源 📚
 

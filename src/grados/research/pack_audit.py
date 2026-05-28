@@ -20,6 +20,7 @@ from grados.research.draft_audit import (
     _split_claims,
     _strip_citations,
 )
+from grados.research.evidence_eligibility import classify_evidence_rejection
 from grados.research.evidence_pack import (
     EvidencePack,
     EvidencePackItem,
@@ -76,6 +77,21 @@ def _citation_matches_item(marker: Any, item: EvidencePackItem) -> bool:
         return False
     item_authors = [author.lower() for author in item.authors]
     return item.year == marker_year and any(marker_author in author for author in item_authors)
+
+
+def _item_section_name(item: EvidencePackItem) -> str:
+    return item.heading_path[-1] if item.heading_path else ""
+
+
+def _eligible_pack_items(items: list[EvidencePackItem]) -> list[EvidencePackItem]:
+    return [
+        item
+        for item in items
+        if (
+            classify_evidence_rejection(_item_section_name(item), item.text, known_title=item.title)
+            is None
+        )
+    ]
 
 
 def _claim_verdict(
@@ -228,12 +244,13 @@ def audit_answer_against_pack(
     claims = _split_claims(draft)
     audited_claims: list[dict[str, Any]] = []
     verdict_counts: Counter[str] = Counter()
-    item_tokens = [_tokens(item.text) for item in pack.evidence_items]
+    evidence_items = _eligible_pack_items(pack.evidence_items)
+    item_tokens = [_tokens(item.text) for item in evidence_items]
 
     for index, claim in enumerate(claims, 1):
         query_text = _strip_citations(claim)
         markers = _extract_citation_markers(claim, citation_style)
-        ranked = _rank_evidence(query_text, pack.evidence_items, item_tokens)
+        ranked = _rank_evidence(query_text, evidence_items, item_tokens)
         if strict and not pack_is_current:
             verdict_payload = _access_verdict("stale_pack")
         else:
@@ -295,6 +312,7 @@ def audit_answer_against_pack(
         "claims": audited_claims,
         "claim_map": claim_map,
         "verify": verify_result,
+        "filtered_evidence_count": len(pack.evidence_items) - len(evidence_items),
     }
     if include_suggestions:
         result["suggestions"] = suggest_missing_evidence(

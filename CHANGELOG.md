@@ -119,6 +119,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed CI and PyPI publishing preflight to enforce `mypy` strict-mode checks alongside Ruff, pytest, native-TLS package builds, and local wheel smoke installs before release publication.
 
 ### Fixed
+- Fixed evidence-pack preparation so References/backmatter, title-only, citation-only, and too-short fragments are filtered before DOI coverage is counted; scoped DOI lists are no longer truncated by `max_windows`, and missing reasons now report non-reference/non-eligible evidence gaps.
+- Fixed external-synthesis packet preparation so packets with missing scoped DOI coverage or non-evidence anchors are returned as `sendable=false` and are not saved as usable packets.
+- Fixed draft audit, pack-scoped audit, and comparison helpers so standalone citation markers are not audited as claims, References candidates/items cannot support draft claims, and comparison axes return `no_evidence_for_axis` instead of title placeholders.
 - Fixed streamed Elsevier API responses so decoded XML/JSON bodies are cloned without stale compression headers, and Elsevier TDM failures now preserve attempt traces instead of silently falling through to Chrome handoff.
 - Fixed first-time ChatGPT external-synthesis setup so login polling does not navigate away from active OpenAI/Google auth pages, login success requires two stable authenticated probes, `--keep-open` waits without Patchright's default 30s timeout, and `doctor --live` reports logged-out probe details instead of `None`.
 - Fixed Chroma chunk cleanup during paper reindexing to delete by `safe_doi` metadata through the timeout-guarded path and fail visibly instead of leaving stale chunks after a silent cleanup failure.
@@ -144,6 +147,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Removed unused `extract.sci_hub.auto_update_mirror` and `mirror_url_file` config fields; the current `scihub` runtime uses ordered `endpoints` with `fallback_mirror` retained for legacy configs.
 
 ### Tests
+- Added regression coverage for shared evidence eligibility checks, evidence-pack DOI coverage filtering, external-synthesis packet QA, draft-audit citation-marker handling, and comparison title-placeholder rejection.
 - Added regression coverage for metadata-filtered Chroma chunk deletion, bounded local PDF reads, and `setup-browser --keep-open` lock lifetime.
 - Added plugin-manifest drift coverage for the evidence-grounded writing workflow reference, writing profiles, domain profile, and Codex plugin writing prompts.
 - Added regression coverage for idempotent extraction reuse with `force_refresh`, uncapped `indepth` materialization across more than eight candidates, topic-to-packet external synthesis preparation, default save-and-audit behavior, and optional pack-audit suggestions.

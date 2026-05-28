@@ -11,7 +11,7 @@ from grados.browser.chatgpt.types import (
 )
 from grados.config import GRaDOSPaths
 from grados.publisher.common import safe_doi_filename
-from grados.research.evidence_pack import prepare_evidence_pack
+from grados.research.evidence_pack import EvidencePack, EvidencePackItem, prepare_evidence_pack, save_evidence_pack
 from grados.research.external_synthesis import (
     EXTERNAL_SYNTHESIS_PACKET_KIND,
     EXTERNAL_SYNTHESIS_RESULT_KIND,
@@ -23,6 +23,7 @@ from grados.research.external_synthesis import (
     save_external_synthesis_result,
 )
 from grados.research_state import query_research_artifacts
+from grados.storage.canonical_blocks import build_canonical_block_manifest
 from grados.storage.papers import save_paper_markdown
 from grados.storage.vector import PaperSearchResult
 
@@ -201,6 +202,92 @@ def test_prepare_evidence_pack_reports_scoped_doi_coverage(monkeypatch, tmp_path
     assert receipt["missing_scoped_dois"] == ["10.1234/missing"]
     assert receipt["missing_reasons"]["10.1234/missing"] == "missing_paper"
     assert loaded["pack"]["missing_scoped_dois"] == ["10.1234/missing"]
+
+
+def test_external_synthesis_packet_blocks_missing_scoped_doi_coverage(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _save_demo_paper(tmp_path)
+    _patch_search(monkeypatch)
+
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="composite damping",
+        subquestions=["How much attenuation is reported?"],
+        scoped_dois=["10.1234/demo", "10.1234/missing"],
+    )
+    preview = preview_external_synthesis_packet(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+    )
+
+    assert preview["sendable"] is False
+    assert preview["saved"] is False
+    assert "missing_scoped_doi_coverage" in preview["blocked_reasons"]
+    assert {"doi": "10.1234/missing", "reason": "missing_paper"} in preview["blocked_items"]
+
+
+def test_prepare_external_synthesis_packet_blocks_reference_only_item(tmp_path: Path) -> None:
+    save_paper_markdown(
+        "10.1234/refs",
+        "# Reference Only\n\n## References\n\nSmith et al. 2024. DOI 10.1234/source.",
+        _papers_dir(tmp_path),
+        title="Reference Only",
+        source="fixture",
+    )
+    manifest = build_canonical_block_manifest(_papers_dir(tmp_path), doi="10.1234/refs")
+    assert manifest is not None
+    block = manifest.blocks[0]
+    item = EvidencePackItem(
+        canonical_uri=block.canonical_uri,
+        paper_id=block.paper_id,
+        safe_doi=block.safe_doi,
+        block_id=block.block_id,
+        block_type=block.block_type,
+        text=block.text,
+        text_sha256=block.text_sha256,
+        doi=block.doi,
+        heading_path=list(block.heading_path),
+        ordinal=block.ordinal,
+        source_paragraph_index=block.source_paragraph_index,
+        doc_sha256=block.doc_sha256,
+        prev_hash=block.prev_hash,
+        next_hash=block.next_hash,
+        title="Reference Only",
+    )
+    saved = save_evidence_pack(
+        _db_path(tmp_path),
+        EvidencePack(
+            pack_id="pack_reference_only",
+            topic="reference leakage",
+            query="reference leakage",
+            subquestions=["reference leakage"],
+            answerable=True,
+            evidence_items=[item],
+            pack_sha256="",
+            created_at="2026-05-28T00:00:00+00:00",
+        ),
+    )
+
+    packet = prepare_external_synthesis_packet(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(saved["pack_id"]),
+    )
+    saved_packets = query_research_artifacts(
+        _db_path(tmp_path),
+        kind=EXTERNAL_SYNTHESIS_PACKET_KIND,
+        detail=True,
+    )
+
+    assert packet["ok"] is False
+    assert packet["sendable"] is False
+    assert packet["saved"] is False
+    assert packet["blocked_items"][0]["reason"] == "backmatter_section"
+    assert saved_packets["count"] == 0
 
 
 def test_prepare_external_synthesis_packet_rejects_stale_pack(
