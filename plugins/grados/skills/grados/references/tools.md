@@ -212,7 +212,7 @@ Relevant config:
 PDF materialization contract:
 
 - The only managed library PDF artifact for a DOI is `downloads/{safe_doi}.pdf`.
-- Same DOI + same PDF hash reuses, renames, or copies to that managed path. Same DOI + different hash returns a conflict receipt with both hashes/paths and does not overwrite or delete either file.
+- Same DOI + same PDF hash reuses, renames, or copies to that managed path. Same DOI + different hash returns a conflict receipt with both hashes/paths and does not overwrite or delete either file; bytes-only conflict candidates are preserved under `downloads/_conflicts/{safe_doi}.{hash12}.pdf` for manual review.
 - New `papers/*.md` frontmatter does not store `fetch_outcome`, `original_pdf_path`, `copied_pdf_path`, `source_pdf_hash`, or `acquisition_via`. Route information belongs in receipts and `remote_metadata.fetch_via`; parser and PDF materialization provenance belongs in `papers/_parsed/{safe_doi}.json`.
 
 ## MCP Resources

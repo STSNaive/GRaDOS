@@ -513,7 +513,7 @@
 
 ### 决策
 - `papers/*.md` 仍是 canonical reading text；`downloads/*.pdf` 是原始 PDF 归档；`database/chroma/` 和 `database/fts.sqlite3` 是可重建索引。
-- 每篇 DOI 的受管原始 PDF 统一为 `downloads/{safe_doi}.pdf`。同 DOI 同 hash 的候选会复用、rename 或 copy 到该路径；同 DOI 不同 hash 返回 conflict receipt，不覆盖 canonical PDF，也不删除候选。
+- 每篇 DOI 的受管原始 PDF 统一为 `downloads/{safe_doi}.pdf`。同 DOI 同 hash 的候选会复用、rename 或 copy 到该路径；同 DOI 不同 hash 返回 conflict receipt，不覆盖 canonical PDF，也不删除候选。若冲突候选只来自捕获到的 PDF bytes，GRaDOS 会把候选保存到 `downloads/_conflicts/{safe_doi}.{hash12}.pdf` 供人工 review。
 - 新增 `papers/_parsed/{safe_doi}.json` 作为同一轮保存产生的 parser provenance sidecar。
 - Sidecar 最小字段包括 schema version、safe DOI、input PDF path/name/hash、canonical PDF path/hash、materialization action/outcome、parse outcome、canonical Markdown path/hash、parser、parser version、generated time、blocks 和 assets manifest pointer。
 - Markdown frontmatter 保存轻量 `parsed_manifest_path` 指针；`get_saved_paper_structure` 可展示 parser、block count、page range、source PDF hash、canonical Markdown hash 和 asset manifest 状态。
