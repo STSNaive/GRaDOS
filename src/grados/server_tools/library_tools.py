@@ -308,6 +308,94 @@ def _parse_retry_wait_receipt(
     return "\n".join(lines)
 
 
+def _parse_operation_payload(
+    attempt: object,
+    *,
+    next_action: str = "get_operation_status",
+) -> dict[str, object]:
+    return {
+        "doi": str(getattr(attempt, "doi", "") or ""),
+        "safe_doi": str(getattr(attempt, "safe_doi", "") or ""),
+        "input_pdf_path": str(getattr(attempt, "input_pdf_path", "") or ""),
+        "input_pdf_name": str(getattr(attempt, "input_pdf_name", "") or ""),
+        "input_pdf_hash": str(getattr(attempt, "input_pdf_hash", "") or ""),
+        "acquisition_via": str(getattr(attempt, "acquisition_via", "") or ""),
+        "canonical_uri": str(getattr(attempt, "canonical_uri", "") or ""),
+        "next_action": next_action,
+    }
+
+
+def _upsert_parse_operation(
+    db_path: Path,
+    attempt: object,
+    *,
+    status: str = "pending",
+    stage: str | None = None,
+    event_type: str = "",
+    event_payload: dict[str, object] | None = None,
+) -> None:
+    from grados.storage.operations import create_operation, update_operation
+
+    attempt_id = str(getattr(attempt, "attempt_id", "") or "")
+    if not attempt_id:
+        return
+    attempt_status = str(getattr(attempt, "status", "") or "")
+    resolved_stage = stage or attempt_status or "parse_attempt"
+    progress = _parse_operation_payload(attempt)
+    runtime = {
+        "worker_pid": os.getpid(),
+        "worker_thread_name": threading.current_thread().name,
+        "worker_thread_ident": threading.get_ident(),
+    }
+    recovery = {
+        "parse_attempt_id": attempt_id,
+        "next_action": "get_operation_status_or_retry_parse_pdf_file_with_same_file_path",
+    }
+    result = {
+        "result_path": str(getattr(attempt, "paper_path", "") or getattr(attempt, "canonical_pdf_path", "") or ""),
+        "canonical_uri": str(getattr(attempt, "canonical_uri", "") or ""),
+        "next_action": (
+            "read_saved_paper_or_get_saved_paper_structure"
+            if attempt_status == "completed"
+            else "review_parse_failure_or_retry_after_stale_window"
+            if attempt_status == "failed"
+            else "get_operation_status"
+        ),
+    }
+    create_operation(
+        db_path,
+        operation_id=attempt_id,
+        kind="parse_pdf",
+        status=status,
+        stage=resolved_stage,
+        idempotency_key=attempt_id,
+        input_data={
+            "doi": str(getattr(attempt, "doi", "") or ""),
+            "input_pdf_hash": str(getattr(attempt, "input_pdf_hash", "") or ""),
+            "copy_to_library": bool(getattr(attempt, "copy_to_library", False)),
+            "acquisition_via": str(getattr(attempt, "acquisition_via", "") or ""),
+        },
+        progress=progress,
+        runtime=runtime,
+        recovery=recovery,
+        result=result,
+    )
+    update_operation(
+        db_path,
+        attempt_id,
+        status=status,
+        stage=resolved_stage,
+        progress=progress,
+        runtime=runtime,
+        recovery=recovery,
+        result=result,
+        clear_error=status != "failed",
+        heartbeat=status == "pending",
+        event_type=event_type,
+        event_payload=event_payload,
+    )
+
+
 def _append_remote_metadata_warning(result: str, warning: str | None) -> str:
     if not warning:
         return result
@@ -339,6 +427,7 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
         issued_at = str(resume.get("issued_at", "") or "")
         download_watch_dir = str(resume.get("download_watch_dir", "") or "")
         download_max_age_seconds = str(resume.get("download_max_age_seconds", "") or "")
+        operation_id = str(resume.get("operation_id", "") or "")
         next_action = str(resume.get("next_action", "") or _CODEX_HANDOFF_NEXT_ACTION)
         required_host_plugin = str(resume.get("required_host_plugin", "") or "@chrome")
         required_host_backend = str(
@@ -347,6 +436,10 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
         requested_route = str(resume.get("requested_route", "") or "codex_chrome_plugin_extension")
         documentation_url = str(resume.get("documentation_url", "") or "")
         result += "\n\n### Codex Chrome Extension Download\n"
+        if operation_id:
+            result += f"- **Operation ID:** {operation_id}\n"
+            result += "- **Kind:** codex_download_handoff\n"
+            result += "- **Status:** needs_input\n"
         result += f"- **Browser:** {browser}\n"
         result += f"- **Required Host Plugin:** {required_host_plugin}\n"
         result += f"- **Required Host Backend:** {required_host_backend}\n"
@@ -791,6 +884,22 @@ async def extract_paper_full_text(
         )
 
     if fetch_result.outcome not in ("native_full_text", "pdf_obtained"):
+        if isinstance(fetch_result.resume, dict) and str(fetch_result.resume.get("kind") or "") == "codex":
+            operation_id = _codex_handoff_operation_id(doi, fetch_result.resume)
+            fetch_result.resume["operation_id"] = operation_id
+            _record_codex_download_operation(
+                paths,
+                doi=doi,
+                operation_id=operation_id,
+                status="needs_input",
+                stage="host_action_required",
+                resume=fetch_result.resume,
+                result={
+                    "next_action": "download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf",
+                    "result_path": "",
+                },
+                event_type="codex_handoff_created",
+            )
         remote_warning = _record_remote_metadata_update(
             metadata_dir=metadata_dir,
             doi=doi,
@@ -1288,6 +1397,100 @@ def _load_pending_codex_handoff(paths: object, doi: str) -> tuple[object | None,
     return record, resume, ""
 
 
+def _codex_handoff_operation_id(doi: str, resume: Mapping[str, object] | None = None) -> str:
+    payload = {
+        "doi": doi.strip().lower(),
+        "issued_at": str((resume or {}).get("issued_at") or ""),
+        "start_url": str((resume or {}).get("start_url") or ""),
+    }
+    digest = hashlib.sha1(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()[:12]
+    return f"codex_{safe_doi_filename(doi)}_{digest}"
+
+
+def _record_codex_download_operation(
+    paths: object,
+    *,
+    doi: str,
+    operation_id: str,
+    status: str,
+    stage: str,
+    resume: Mapping[str, object] | None = None,
+    candidates: list[dict[str, object]] | None = None,
+    rejected_candidates: list[dict[str, object]] | None = None,
+    result: dict[str, object] | None = None,
+    error: dict[str, object] | None = None,
+    event_type: str = "",
+) -> None:
+    from grados.storage.operations import create_operation, update_operation
+
+    if not operation_id:
+        return
+    resume_payload = {str(key): str(value) for key, value in dict(resume or {}).items() if str(value)}
+    create_operation(
+        getattr(paths, "database_state"),
+        operation_id=operation_id,
+        kind="codex_download_handoff",
+        status=status,
+        stage=stage,
+        idempotency_key=operation_id,
+        input_data={
+            "doi": doi,
+            "start_url": resume_payload.get("start_url", ""),
+            "download_watch_dir": resume_payload.get("download_watch_dir", ""),
+            "allowed_extensions": [".pdf"],
+        },
+        progress={
+            "stage": stage,
+            "candidate_count": len(candidates or []),
+            "rejected_count": len(rejected_candidates or []),
+        },
+        runtime={"worker_pid": os.getpid(), "host_action": "codex_chrome_extension_download"},
+        recovery={
+            "doi": doi,
+            "operation_id": operation_id,
+            "download_watch_dir": resume_payload.get("download_watch_dir", ""),
+            "start_url": resume_payload.get("start_url", ""),
+            "next_action": "ingest_codex_downloaded_pdf_with_downloaded_file_path_or_candidate_hint",
+        },
+        result=result,
+        error=error,
+    )
+    update_operation(
+        getattr(paths, "database_state"),
+        operation_id,
+        status=status,
+        stage=stage,
+        progress={
+            "stage": stage,
+            "candidate_count": len(candidates or []),
+            "rejected_count": len(rejected_candidates or []),
+        },
+        runtime={"worker_pid": os.getpid(), "host_action": "codex_chrome_extension_download"},
+        recovery={
+            "doi": doi,
+            "operation_id": operation_id,
+            "download_watch_dir": resume_payload.get("download_watch_dir", ""),
+            "start_url": resume_payload.get("start_url", ""),
+            "next_action": "ingest_codex_downloaded_pdf_with_downloaded_file_path_or_candidate_hint",
+        },
+        result=result,
+        error=error,
+        clear_error=status == "completed",
+        heartbeat=status in {"pending", "needs_input"},
+        event_type=event_type,
+        event_payload={
+            "doi": doi,
+            "candidate_count": len(candidates or []),
+            "rejected_count": len(rejected_candidates or []),
+            **(result or {}),
+            **(error or {}),
+        },
+    )
+
+
 def _record_codex_ingest_receipt(
     paths: object,
     *,
@@ -1329,6 +1532,10 @@ def _codex_ingest_failure(
     doi: str,
     failure_reason: str,
     message: str,
+    operation_id: str = "",
+    operation_status: str = "failed",
+    operation_stage: str = "ingest_failed",
+    resume: Mapping[str, object] | None = None,
     watch_dir: Path | None = None,
     candidates: list[dict[str, object]] | None = None,
     rejected_candidates: list[dict[str, object]] | None = None,
@@ -1343,6 +1550,21 @@ def _codex_ingest_failure(
     }
     if extra:
         context.update(extra)
+    if operation_id:
+        context["operation_id"] = operation_id
+        _record_codex_download_operation(
+            paths,
+            doi=doi,
+            operation_id=operation_id,
+            status=operation_status,
+            stage=operation_stage,
+            resume=resume,
+            candidates=candidates,
+            rejected_candidates=rejected_candidates,
+            result={"next_action": next_action, "result_path": ""},
+            error={"error": failure_reason, "message": message},
+            event_type="codex_ingest_status",
+        )
     recorded = _record_codex_ingest_receipt(
         paths,
         doi=doi,
@@ -1353,6 +1575,8 @@ def _codex_ingest_failure(
     )
     return {
         "status": "failed",
+        "operation_id": operation_id,
+        "kind": "codex_download_handoff" if operation_id else "",
         "doi": doi,
         "failure_reason": failure_reason,
         "message": message,
@@ -1696,12 +1920,30 @@ async def ingest_codex_downloaded_pdf(
     pending_error = ""
     if not explicit_path:
         _, resume, pending_error = _load_pending_codex_handoff(paths, doi)
+    operation_id = resume.get("operation_id") or _codex_handoff_operation_id(
+        doi,
+        resume or {"start_url": "", "issued_at": downloaded_at or explicit_path},
+    )
+    _record_codex_download_operation(
+        paths,
+        doi=doi,
+        operation_id=operation_id,
+        status="pending",
+        stage="ingest_started",
+        resume=resume,
+        result={"next_action": "validate_download_candidate"},
+        event_type="codex_ingest_started",
+    )
     if pending_error:
         return _codex_ingest_failure(
             paths,
             doi=doi,
             failure_reason=pending_error,
             message="No pending Codex Chrome Extension handoff was found for this DOI.",
+            operation_id=operation_id,
+            operation_status="needs_input",
+            operation_stage="pending_handoff_missing",
+            resume=resume,
             extra={
                 "next_action": _CODEX_INGEST_RECOVERY_NEXT_ACTION,
                 "recovery_hint": (
@@ -1734,6 +1976,10 @@ async def ingest_codex_downloaded_pdf(
                 doi=doi,
                 failure_reason=explicit_reason or _dominant_codex_failure_reason(rejected),
                 message=explicit_message or "downloaded_file_path failed validation.",
+                operation_id=operation_id,
+                operation_status="needs_input",
+                operation_stage="downloaded_file_invalid",
+                resume=resume,
                 watch_dir=watch_dir,
                 rejected_candidates=rejected,
                 extra={
@@ -1765,6 +2011,10 @@ async def ingest_codex_downloaded_pdf(
                 doi=doi,
                 failure_reason=reason or "watch_dir_error",
                 message=message or scan_error,
+                operation_id=operation_id,
+                operation_status="failed",
+                operation_stage="watch_dir_error",
+                resume=resume,
                 watch_dir=watch_dir,
                 rejected_candidates=rejected,
             )
@@ -1795,6 +2045,10 @@ async def ingest_codex_downloaded_pdf(
             doi=doi,
             failure_reason=failure_reason,
             message="No acceptable Codex handoff PDF candidate was found.",
+            operation_id=operation_id,
+            operation_status="needs_input",
+            operation_stage="waiting_for_download",
+            resume=resume,
             watch_dir=watch_dir,
             rejected_candidates=rejected,
             extra={
@@ -1828,8 +2082,25 @@ async def ingest_codex_downloaded_pdf(
                 "next_action": "call_ingest_codex_downloaded_pdf_with_file_name_hint_or_downloaded_file_path",
             },
         )
+        _record_codex_download_operation(
+            paths,
+            doi=doi,
+            operation_id=operation_id,
+            status="needs_input",
+            stage="ambiguous_candidates",
+            resume=resume,
+            candidates=candidates,
+            rejected_candidates=rejected,
+            result={
+                "disambiguation_token": disambiguation_token,
+                "next_action": "call_ingest_codex_downloaded_pdf_with_file_name_hint_or_downloaded_file_path",
+            },
+            event_type="codex_candidates_ambiguous",
+        )
         return {
             "status": "needs_disambiguation",
+            "operation_id": operation_id,
+            "kind": "codex_download_handoff",
             "doi": doi,
             "failure_reason": "multiple_candidates",
             "message": "Multiple acceptable Codex handoff PDF candidates were found; no DOI guess was made.",
@@ -1854,6 +2125,10 @@ async def ingest_codex_downloaded_pdf(
             doi=doi,
             failure_reason="hash_changed",
             message="Codex handoff PDF changed before parse/save.",
+            operation_id=operation_id,
+            operation_status="needs_input",
+            operation_stage="candidate_hash_changed",
+            resume=resume,
             watch_dir=watch_dir,
             candidates=[candidate],
             rejected_candidates=rejected,
@@ -1869,8 +2144,25 @@ async def ingest_codex_downloaded_pdf(
     )
     if parse_receipt.startswith("## PDF Parse Accepted"):
         parse_outcome = _receipt_field(parse_receipt, "Outcome") or "parse_in_progress"
+        _record_codex_download_operation(
+            paths,
+            doi=doi,
+            operation_id=operation_id,
+            status="pending",
+            stage="parse_in_progress",
+            resume=resume,
+            candidates=[candidate],
+            rejected_candidates=rejected,
+            result={
+                "parse_attempt_id": _receipt_field(parse_receipt, "Attempt ID"),
+                "next_action": "get_operation_status_for_parse_attempt_or_retry_ingest_later",
+            },
+            event_type="codex_parse_pending",
+        )
         return {
             "status": "in_progress",
+            "operation_id": operation_id,
+            "kind": "codex_download_handoff",
             "outcome": parse_outcome,
             "doi": doi,
             "source_path": str(source_path),
@@ -1887,8 +2179,28 @@ async def ingest_codex_downloaded_pdf(
         }
     if parse_receipt.startswith("## Paper Already Saved"):
         completed_record = load_paper_record(paths.papers, doi=doi)
+        _record_codex_download_operation(
+            paths,
+            doi=doi,
+            operation_id=operation_id,
+            status="completed",
+            stage="already_saved",
+            resume=resume,
+            candidates=[candidate],
+            rejected_candidates=rejected,
+            result={
+                "result_path": str((paths.papers / f"{completed_record.safe_doi}.md").resolve())
+                if completed_record is not None
+                else "",
+                "canonical_uri": completed_record.canonical_uri if completed_record is not None else "",
+                "next_action": "read_saved_paper_or_get_saved_paper_structure",
+            },
+            event_type="codex_ingest_completed",
+        )
         return {
             "status": "success",
+            "operation_id": operation_id,
+            "kind": "codex_download_handoff",
             "outcome": "background_completed" if completed_record is not None else "already_saved",
             "doi": doi,
             "safe_doi": completed_record.safe_doi if completed_record is not None else "",
@@ -1904,8 +2216,26 @@ async def ingest_codex_downloaded_pdf(
     if not parse_receipt.startswith("## PDF Parsed & Saved"):
         completed_record = load_paper_record(paths.papers, doi=doi)
         if completed_record is not None and completed_record.content_markdown.strip():
+            _record_codex_download_operation(
+                paths,
+                doi=doi,
+                operation_id=operation_id,
+                status="completed",
+                stage="background_completed",
+                resume=resume,
+                candidates=[candidate],
+                rejected_candidates=rejected,
+                result={
+                    "result_path": str((paths.papers / f"{completed_record.safe_doi}.md").resolve()),
+                    "canonical_uri": completed_record.canonical_uri,
+                    "next_action": "read_saved_paper_or_get_saved_paper_structure",
+                },
+                event_type="codex_ingest_completed",
+            )
             return {
                 "status": "success",
+                "operation_id": operation_id,
+                "kind": "codex_download_handoff",
                 "outcome": "background_completed",
                 "doi": doi,
                 "safe_doi": completed_record.safe_doi,
@@ -1920,6 +2250,19 @@ async def ingest_codex_downloaded_pdf(
                 "next_action": "read_saved_paper_or_get_saved_paper_structure",
             }
         if parse_receipt.startswith("## PDF Materialization Conflict"):
+            _record_codex_download_operation(
+                paths,
+                doi=doi,
+                operation_id=operation_id,
+                status="failed",
+                stage="pdf_materialization_conflict",
+                resume=resume,
+                candidates=[candidate],
+                rejected_candidates=rejected,
+                result={"next_action": "review_pdf_conflict_then_force_refresh_or_parse_as_new_version"},
+                error={"error": "pdf_materialization_conflict"},
+                event_type="codex_ingest_conflict",
+            )
             recorded = _record_codex_ingest_receipt(
                 paths,
                 doi=doi,
@@ -1938,6 +2281,8 @@ async def ingest_codex_downloaded_pdf(
             )
             return {
                 "status": "conflict",
+                "operation_id": operation_id,
+                "kind": "codex_download_handoff",
                 "outcome": "pdf_materialization_conflict",
                 "doi": doi,
                 "source_path": str(source_path),
@@ -1954,6 +2299,10 @@ async def ingest_codex_downloaded_pdf(
             doi=doi,
             failure_reason="parse_failed",
             message="Codex handoff PDF candidate was found but parsing or canonical save failed.",
+            operation_id=operation_id,
+            operation_status="failed",
+            operation_stage="parse_failed",
+            resume=resume,
             watch_dir=watch_dir,
             candidates=[candidate],
             rejected_candidates=rejected,
@@ -1965,8 +2314,25 @@ async def ingest_codex_downloaded_pdf(
         )
 
     archived_pdf_path = paths.downloads / f"{safe_doi_filename(doi)}.pdf"
+    _record_codex_download_operation(
+        paths,
+        doi=doi,
+        operation_id=operation_id,
+        status="completed",
+        stage="saved",
+        resume=resume,
+        candidates=[candidate],
+        rejected_candidates=rejected,
+        result={
+            "result_path": str(archived_pdf_path),
+            "next_action": "read_saved_paper_or_get_saved_paper_structure",
+        },
+        event_type="codex_ingest_completed",
+    )
     return {
         "status": "success",
+        "operation_id": operation_id,
+        "kind": "codex_download_handoff",
         "outcome": "saved",
         "doi": doi,
         "source_path": str(source_path),
@@ -2239,6 +2605,7 @@ async def import_local_pdf_library(
         create_research_run_manifest,
         save_research_artifact,
     )
+    from grados.storage.operations import create_operation, fail_operation, update_operation
 
     paths, config = get_paths_and_config()
     if hasattr(paths, "ensure_directories"):
@@ -2253,6 +2620,23 @@ async def import_local_pdf_library(
         pdf_files = []
 
     research_run_id = f"run_{uuid.uuid4().hex[:12]}"
+    create_operation(
+        paths.database_state,
+        operation_id=research_run_id,
+        kind="local_pdf_import",
+        status="pending",
+        stage="accepted",
+        idempotency_key=f"local_pdf_import:{source}:{recursive}:{glob_pattern}:{copy_to_library}",
+        input_data={
+            "source_path": str(source),
+            "recursive": recursive,
+            "glob_pattern": glob_pattern,
+            "copy_to_library": copy_to_library,
+        },
+        progress={"stage": "accepted", "candidate_count": len(pdf_files), "processed": 0},
+        runtime={"worker_pid": os.getpid()},
+        recovery={"research_run_id": research_run_id, "next_action": "get_operation_status"},
+    )
     create_research_run_manifest(
         paths.database_state,
         research_run_id=research_run_id,
@@ -2277,6 +2661,20 @@ async def import_local_pdf_library(
 
     def worker() -> None:
         try:
+            update_operation(
+                paths.database_state,
+                research_run_id,
+                status="pending",
+                stage="worker_started",
+                progress={"stage": "worker_started", "candidate_count": len(pdf_files), "processed": 0},
+                runtime={
+                    "worker_pid": os.getpid(),
+                    "worker_thread_name": threading.current_thread().name,
+                    "worker_thread_ident": threading.get_ident(),
+                },
+                heartbeat=True,
+                event_type="worker_started",
+            )
             append_research_run_event(
                 paths.database_state,
                 research_run_id=research_run_id,
@@ -2293,6 +2691,34 @@ async def import_local_pdf_library(
                     copy_to_library=copy_to_library,
                 )
             )
+            for index, item in enumerate(result.items, start=1):
+                update_operation(
+                    paths.database_state,
+                    research_run_id,
+                    status="pending",
+                    stage="import_running",
+                    progress={
+                        "stage": "import_running",
+                        "candidate_count": len(pdf_files),
+                        "processed": index,
+                        "imported": result.imported,
+                        "skipped": result.skipped,
+                        "failed": result.failed,
+                    },
+                    runtime={
+                        "worker_pid": os.getpid(),
+                        "worker_thread_name": threading.current_thread().name,
+                        "worker_thread_ident": threading.get_ident(),
+                    },
+                    heartbeat=True,
+                    event_type="import_item_processed",
+                    event_payload={
+                        "source_path": item.source_path,
+                        "status": item.status,
+                        "doi": item.doi,
+                        "safe_doi": item.safe_doi,
+                    },
+                )
             content = asdict(result)
             artifact = save_research_artifact(
                 paths.database_state,
@@ -2332,7 +2758,34 @@ async def import_local_pdf_library(
                     "failed": result.failed,
                 },
             )
+            update_operation(
+                paths.database_state,
+                research_run_id,
+                status="completed",
+                stage="import_run_completed",
+                progress={
+                    "stage": "import_run_completed",
+                    "candidate_count": len(pdf_files),
+                    "processed": result.scanned,
+                    "scanned": result.scanned,
+                    "imported": result.imported,
+                    "skipped": result.skipped,
+                    "failed": result.failed,
+                },
+                result={
+                    "artifact_id": str(artifact.get("artifact_id") or ""),
+                    "result_artifact_id": str(artifact.get("artifact_id") or ""),
+                    "next_action": "read_import_summary_artifact",
+                },
+                event_type="import_run_completed",
+            )
         except Exception as exc:
+            fail_operation(
+                paths.database_state,
+                research_run_id,
+                stage="import_run_failed",
+                error={"message": f"{exc.__class__.__name__}: {exc}"},
+            )
             append_research_run_event(
                 paths.database_state,
                 research_run_id=research_run_id,
@@ -2558,38 +3011,73 @@ def _run_parse_pdf_file_attempt_sync(
         )
     except Exception as exc:
         receipt = f"PDF parse attempt failed for {path}: {exc.__class__.__name__}: {exc}"
-        fail_parse_attempt(
+        failed = fail_parse_attempt(
             db_path,
             attempt_id,
             receipt_text=receipt,
             failure_reason="parse_failed",
             error_message=f"{exc.__class__.__name__}: {exc}",
         )
+        if failed is not None:
+            _upsert_parse_operation(
+                db_path,
+                failed,
+                status="failed",
+                stage="parse_failed",
+                event_type="parse_failed",
+                event_payload={"error": f"{exc.__class__.__name__}: {exc}"},
+            )
         return receipt
 
     if receipt.startswith("## PDF Parsed & Saved") or receipt.startswith("## Paper Already Saved"):
-        complete_parse_attempt(
+        completed = complete_parse_attempt(
             db_path,
             attempt_id,
             receipt_text=receipt,
             **_parse_attempt_completion_metadata(paths, doi),
         )
+        if completed is not None:
+            _upsert_parse_operation(
+                db_path,
+                completed,
+                status="completed",
+                stage="parse_completed",
+                event_type="parse_completed",
+            )
     elif receipt.startswith("## PDF Materialization Conflict"):
-        fail_parse_attempt(
+        failed = fail_parse_attempt(
             db_path,
             attempt_id,
             receipt_text=receipt,
             failure_reason="pdf_materialization_conflict",
             error_message="PDF materialization conflict",
         )
+        if failed is not None:
+            _upsert_parse_operation(
+                db_path,
+                failed,
+                status="failed",
+                stage="pdf_materialization_conflict",
+                event_type="parse_failed",
+                event_payload={"failure_reason": "pdf_materialization_conflict"},
+            )
     else:
-        fail_parse_attempt(
+        failed = fail_parse_attempt(
             db_path,
             attempt_id,
             receipt_text=receipt,
             failure_reason="parse_failed",
             error_message=receipt.splitlines()[0] if receipt else "parse failed",
         )
+        if failed is not None:
+            _upsert_parse_operation(
+                db_path,
+                failed,
+                status="failed",
+                stage="parse_failed",
+                event_type="parse_failed",
+                event_payload={"failure_reason": "parse_failed"},
+            )
     return receipt
 
 
@@ -2786,6 +3274,14 @@ async def parse_pdf_file(
         expected_title=expected_title or "",
         parser_config=parser_config,
     )
+    _upsert_parse_operation(
+        db_path,
+        attempt,
+        status="pending" if attempt.status not in {"completed", "failed"} else attempt.status,
+        stage=attempt.status or "parse_attempt",
+        event_type="parse_attempt_created" if created else "parse_attempt_reused",
+        event_payload={"created": created, "attempt_status": attempt.status},
+    )
     foreground_wait_seconds = float(getattr(config.extract.parsing, "foreground_wait_seconds", 90.0))
     attempt_stale_seconds = float(getattr(config.extract.parsing, "attempt_stale_seconds", 1800.0))
     with _PARSE_ATTEMPT_LOCK:
@@ -2797,12 +3293,21 @@ async def parse_pdf_file(
         active_future = None
 
     if attempt.status == "completed" and attempt.receipt_text:
+        _upsert_parse_operation(db_path, attempt, status="completed", stage="parse_completed")
         return attempt.receipt_text
     should_start = created
     if attempt.status == "failed" and attempt.receipt_text:
         if _parse_attempt_failure_is_terminal(attempt):
+            _upsert_parse_operation(db_path, attempt, status="failed", stage=attempt.failure_reason or "parse_failed")
             return attempt.receipt_text
         if not _parse_attempt_is_stale(attempt, stale_seconds=attempt_stale_seconds):
+            _upsert_parse_operation(
+                db_path,
+                attempt,
+                status="waiting_retry",
+                stage="retry_wait",
+                event_type="parse_retry_wait",
+            )
             return _parse_retry_wait_receipt(
                 doi=doi,
                 attempt=attempt,
@@ -2811,12 +3316,26 @@ async def parse_pdf_file(
         restarted = restart_parse_attempt(db_path, attempt_id)
         if restarted is not None:
             attempt = restarted
+            _upsert_parse_operation(
+                db_path,
+                attempt,
+                status="pending",
+                stage="parse_restarted",
+                event_type="parse_restarted",
+            )
             should_start = True
 
     if attempt.status == "interrupted":
         restarted = restart_parse_attempt(db_path, attempt_id)
         if restarted is not None:
             attempt = restarted
+            _upsert_parse_operation(
+                db_path,
+                attempt,
+                status="pending",
+                stage="parse_restarted",
+                event_type="parse_restarted",
+            )
             should_start = True
     if attempt.status == "running" and active_future is None and not should_start:
         if _parse_attempt_is_stale(attempt, stale_seconds=attempt_stale_seconds):
@@ -2828,8 +3347,22 @@ async def parse_pdf_file(
             restarted = restart_parse_attempt(db_path, attempt_id)
             if restarted is not None:
                 attempt = restarted
+                _upsert_parse_operation(
+                    db_path,
+                    attempt,
+                    status="pending",
+                    stage="stale_running_restarted",
+                    event_type="parse_restarted",
+                )
             should_start = True
         else:
+            _upsert_parse_operation(
+                db_path,
+                attempt,
+                status="pending",
+                stage="parse_in_progress",
+                event_type="parse_pending_returned",
+            )
             return _parse_in_progress_receipt(
                 doi=doi,
                 attempt=attempt,
@@ -2853,15 +3386,37 @@ async def parse_pdf_file(
             paths=paths,
             config=config,
         )
+        _upsert_parse_operation(
+            db_path,
+            attempt,
+            status="pending",
+            stage="parse_worker_started",
+            event_type="parse_worker_started",
+        )
 
     completed_receipt = await _await_parse_attempt_future(
         future,
         timeout_seconds=foreground_wait_seconds,
     )
     if completed_receipt is not None:
+        refreshed_completed = get_parse_attempt(db_path, attempt_id) or attempt
+        final_status = "completed" if refreshed_completed.status == "completed" else "failed"
+        _upsert_parse_operation(
+            db_path,
+            refreshed_completed,
+            status=final_status,
+            stage="parse_completed" if final_status == "completed" else "parse_failed",
+        )
         return completed_receipt
 
     refreshed = get_parse_attempt(db_path, attempt_id) or attempt
+    _upsert_parse_operation(
+        db_path,
+        refreshed,
+        status="pending",
+        stage="parse_in_progress",
+        event_type="parse_pending_returned",
+    )
     return _parse_in_progress_receipt(
         doi=doi,
         attempt=refreshed,
@@ -2926,7 +3481,9 @@ def register_library_tools(mcp: FastMCP) -> None:
         description=(
             "Complete a Codex Chrome Extension handoff by conservatively scanning the "
             "configured watch directory for one completed PDF, or by validating downloaded_file_path when the "
-            "absolute PDF path is known, then save it through the same codex parse/canonical-storage path."
+            "absolute PDF path is known, then save it through the same codex parse/canonical-storage path. "
+            "Ambiguous, missing, invalid, pending, and completed handoff states are tracked as "
+            "codex_download_handoff operations."
         )
     )(ingest_codex_downloaded_pdf)
 

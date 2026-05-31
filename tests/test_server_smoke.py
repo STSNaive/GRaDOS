@@ -35,6 +35,7 @@ from grados.server import (
     search_saved_papers,
 )
 from grados.storage.frontmatter import read_frontmatter_metadata_from_file
+from grados.storage.operations import get_operation
 from grados.storage.papers import PaperListEntry, load_paper_record, save_paper_markdown
 from grados.storage.vector import PaperSearchResult
 
@@ -292,6 +293,8 @@ def test_search_academic_papers_indepth_writes_checkpoint_and_summary(tmp_path: 
     from grados.storage.papers import save_paper_markdown
 
     home = tmp_path / "grados-home"
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    GRaDOSPaths(home).ensure_directories()
     paths = SimpleNamespace(
         papers=home / "papers",
         database_chroma=home / "database" / "chroma",
@@ -372,7 +375,13 @@ def test_search_academic_papers_indepth_writes_checkpoint_and_summary(tmp_path: 
         time.sleep(0.02)
     assert "Indepth Operation Pending" in result
     assert "Operation ID:" in result
+    operation_id = next(line for line in result.splitlines() if line.startswith("- Operation ID:")).split("`")[1]
     assert checkpoint_files
+    operation = get_operation(home / "database" / "research.sqlite3", operation_id)
+    assert operation is not None
+    assert operation.kind == "indepth_search"
+    assert operation.status == "completed"
+    assert operation.result["result_path"]
     assert (paths.paper_summaries / f"{safe_doi_filename('10.1234/indepth')}.json").is_file()
     checkpoint = checkpoint_files[0].read_text(encoding="utf-8")
     assert "paper_summary_id" in checkpoint
@@ -384,6 +393,8 @@ def test_search_academic_papers_indepth_records_failed_extraction(tmp_path: Path
     import grados.storage.remote_metadata as remote_metadata
 
     home = tmp_path / "grados-home"
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    GRaDOSPaths(home).ensure_directories()
     paths = SimpleNamespace(
         papers=home / "papers",
         database_chroma=home / "database" / "chroma",
@@ -462,6 +473,8 @@ def test_search_academic_papers_indepth_uses_search_limit_without_hidden_cap(
     from grados.storage.papers import save_paper_markdown
 
     home = tmp_path / "grados-home"
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+    GRaDOSPaths(home).ensure_directories()
     paths = SimpleNamespace(
         papers=home / "papers",
         database_chroma=home / "database" / "chroma",
@@ -532,11 +545,23 @@ def test_search_academic_papers_indepth_uses_search_limit_without_hidden_cap(
     monkeypatch.setattr(remote_metadata, "get_remote_metadata_by_doi", lambda *args, **kwargs: None)
 
     result = asyncio.run(search_academic_papers("composite damping", limit=10))
+    operation_id = next(line for line in result.splitlines() if line.startswith("- Operation ID:")).split("`")[1]
 
     deadline = time.monotonic() + 2.0
+    status = {}
     while time.monotonic() < deadline and len(extracted) < 10:
         time.sleep(0.02)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        status = asyncio.run(get_operation_status(operation_id=operation_id, detail=True))
+        if status.get("status") == "completed":
+            break
+        time.sleep(0.02)
     assert len(extracted) == 10
+    assert status["status"] == "completed"
+    assert status["kind"] == "indepth_search"
+    assert status["progress"]["candidate_count"] == 10
+    assert status["progress"]["processed"] == 10
     assert "0/10 candidates dispatched" in result
     assert "first 8" not in result
 
@@ -698,7 +723,11 @@ def test_import_local_pdf_library_tool_returns_summary(tmp_path: Path, monkeypat
             break
         time.sleep(0.02)
     assert status["status"] == "completed"
+    assert status["kind"] == "local_pdf_import"
+    assert status["progress"]["processed"] == 3
     assert status["result_artifact_id"]
+    status_again = asyncio.run(get_operation_status(operation_id=str(result["operation_id"]), detail=True))
+    assert len(status_again["events"]) == len(status["events"])
 
 
 def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path, monkeypatch) -> None:
@@ -1072,6 +1101,13 @@ def test_extract_paper_full_text_returns_pending_for_pdf_parse(
     assert result.startswith("## PDF Parse Accepted")
     assert "Extraction Operation" in result
     assert "Operation ID:**" in result
+    operation_id = next(line for line in result.splitlines() if line.startswith("- **Operation ID:**")).split(
+        ":**", 1
+    )[1].strip()
+    status = asyncio.run(get_operation_status(operation_id=operation_id, detail=True))
+    assert status["kind"] == "parse_pdf"
+    assert status["status"] == "pending"
+    assert status["progress"]["doi"] == "10.1234/remote-pdf"
     assert remote_calls[0]["fetch_status"] == "parse_in_progress"
     assert remote_calls[0]["fetch_trace"] == [{"via": "browser", "state": "ok"}]
     release.set()
@@ -1081,6 +1117,9 @@ def test_extract_paper_full_text_returns_pending_for_pdf_parse(
             break
         time.sleep(0.02)
     assert load_paper_record(paths.papers, doi="10.1234/remote-pdf") is not None
+    completed_status = asyncio.run(get_operation_status(operation_id=operation_id, detail=True))
+    assert completed_status["status"] == "completed"
+    assert completed_status["result_path"]
 
 
 def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, monkeypatch) -> None:
@@ -1284,6 +1323,8 @@ def test_extract_paper_full_text_returns_codex_action(
     result = asyncio.run(extract_paper_full_text(doi="10.1234/demo"))
 
     assert "Codex Chrome Extension Download" in result
+    assert "Kind:** codex_download_handoff" in result
+    assert "Status:** needs_input" in result
     assert "Google Chrome" in result
     assert "Required Host Plugin:** @chrome" in result
     assert "Required Host Backend:** Codex Chrome plugin extension backend" in result
@@ -1299,6 +1340,10 @@ def test_extract_paper_full_text_returns_codex_action(
     assert calls[0]["fetch_manual"] is True
     assert isinstance(calls[0]["fetch_resume"], dict)
     assert calls[0]["fetch_resume"]["kind"] == "codex"
+    assert calls[0]["fetch_resume"]["operation_id"]
+    status = asyncio.run(get_operation_status(operation_id=str(calls[0]["fetch_resume"]["operation_id"])))
+    assert status["kind"] == "codex_download_handoff"
+    assert status["status"] == "needs_input"
     assert calls[0]["fetch_resume"]["browser"] == "Google Chrome"
     assert (
         calls[0]["fetch_resume"]["next_action"]

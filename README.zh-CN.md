@@ -39,6 +39,8 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 需要恢复整次研究过程时，`research_run_manifest` 是一次 research run 的轻量目录页，而不是证据来源。它可以串联 search query、候选、extraction/parser receipt、`paper_summary`、`research_checkpoint`、`evidence_checkpoint`、`evidence_pack`、audit result id、canonical anchor 和失败记录；也可以保存 append-only event ledger 与 redacted config/provenance snapshot。修正流程用追加 correction event 的方式表达，不改写旧事件；任何 secret 都不得写入 manifest。最终引用仍必须回读 canonical `papers/*.md` 或 current-valid evidence pack。
 
+需要恢复长操作时，Operation Registry 是 GRaDOS 状态数据库里的轻量 SQLite 控制面。它把 external synthesis session、DOI-bound parse attempt、indepth run、本地 import run 和 Codex download handoff 统一成 `operation_id`、`kind`、`status`、`stage`、`progress`、`next_action` 与 recovery metadata，同时保留各自领域 store 的可恢复性。`get_operation_status(detail=true)` 可以返回 lifecycle events 和 debug bundle，指向相关 session/run/parse/artifact；这些记录只是运行元数据，不是引用证据。
+
 面向论文、综述、实验流程和实验报告写作时，内置 skill 会用 `references/paper_writing.md` 作为 workflow router。它会把 agent 引到实验/仿真 protocol、literature review、experiment report、manuscript 等细分 profile，并在力学、弹性/声学/机械超材料、phononic crystal、band gap 等主题上加载对应 domain profile。这些 profile 只负责规划、claim matrix、section gate 和交付检查，不会成为第二套证据源，也不会把写作阶段拆成一组新的 MCP tools。
 
 ### MCP 工具 🔧
@@ -53,8 +55,8 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `read_paper_asset` | 列出或读取已保存论文的 parser assets，包括图片、表格、公式、页面图和 debug/source 文件。图片只在显式请求且低于尺寸上限时内联返回。 |
 | GRaDOS | `import_local_pdf_library` | 扫描本地 PDF 文件或目录，然后把逐 PDF 解析/导入作为后台 import run 推进。返回 `operation_id`、进度和 `get_operation_status` 下一步。 |
 | GRaDOS | `parse_pdf_file` | 把本地 PDF 解析为 markdown。未提供 DOI 时返回截断预览；提供 DOI 时会保存进 canonical 论文库，并在 `copy_to_library=true` 时 materialize 受管 PDF；长解析可先返回 `parse_in_progress`，GRaDOS 后台继续同一个 durable parse attempt。 |
-| GRaDOS | `get_operation_status` | 查询 pending external synthesis、DOI-bound PDF parse、indepth search 或本地 PDF import operation。`detail=true` 可在不重复发送 prompt 的情况下恢复 ChatGPT browser 响应。 |
-| GRaDOS | `ingest_codex_downloaded_pdf` | 完成 `codex` Chrome extension handoff：校验 `downloaded_file_path` 或 watch dir 中唯一候选 PDF，然后复用同一条 canonical parse/save 路径；歧义、缺失或失败会记录为可恢复失败，长解析中的候选会返回 in-progress 而不是 parse failure。 |
+| GRaDOS | `get_operation_status` | 查询 pending external synthesis、DOI-bound PDF parse、indepth search、本地 PDF import 或 Codex download handoff operation。`detail=true` 可在不重复发送 prompt 的情况下恢复 ChatGPT browser 响应，并返回 registry events/debug 指针。 |
+| GRaDOS | `ingest_codex_downloaded_pdf` | 完成 `codex` Chrome extension handoff：校验 `downloaded_file_path` 或 watch dir 中唯一候选 PDF，然后复用同一条 canonical parse/save 路径；歧义、缺失或失败会记录为可恢复的 `codex_download_handoff` operation，长解析中的候选会返回 in-progress 而不是 parse failure。 |
 | GRaDOS | `plan_library_pdf_cleanup` | dry-run 扫描 `downloads/` 中与 DOI 受管 `downloads/{safe_doi}.pdf` hash 相同的非 canonical publisher-name PDF，只生成报告，不删除文件。 |
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 把单篇论文保存到当前配置的 Zotero 库，通常用于最终答案里实际引用到的论文。 |
 | GRaDOS | `save_research_artifact` | 把 search snapshot、extraction receipt、evidence grid、compression-safe evidence checkpoint 和 run-linked artifact 等可复用中间产物持久化到本地 SQLite 状态库；传入 `metadata.research_run_id` 可把 artifact 挂到 run manifest。 |
@@ -363,7 +365,7 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 1. `GRADOS_HOME`
 2. `~/GRaDOS`
 
-`parse_pdf_file`、`ingest_codex_downloaded_pdf(downloaded_file_path=...)` 和 `import_local_pdf_library` 这类本地 PDF 工具会从可信本地 MCP/CLI 会话读取主机文件路径，并在加载前和加载过程中执行 `extract.security.max_local_pdf_bytes` 限制。长 parser、indepth、import 和 external-synthesis 工作会返回带 `operation_id` 的 durable pending receipt；应轮询 `get_operation_status`，不要重复提交原始长任务。
+`parse_pdf_file`、`ingest_codex_downloaded_pdf(downloaded_file_path=...)` 和 `import_local_pdf_library` 这类本地 PDF 工具会从可信本地 MCP/CLI 会话读取主机文件路径，并在加载前和加载过程中执行 `extract.security.max_local_pdf_bytes` 限制。长 parser、indepth、import、external-synthesis 和 Codex handoff 工作会返回带 `operation_id` 的 durable pending 或 needs-input receipt；应轮询 `get_operation_status`，不要重复提交原始长任务。
 
 ### API Keys 🔑
 
@@ -420,7 +422,7 @@ Unpaywall 是可选的 DOI 到 OA location resolver，不是下载路径。`extr
 
 `browser` 是机构权限访问 publisher 全文的一等路径。它使用 GRaDOS 托管的 publisher profile（`browser/profile`）、profile lock、`browser/pdf-sessions` 下的 operational PDF browser session records，以及 response/download/CDP/backfill PDF capture。browser acquisition 不会直接写 `papers/*.md`：它只返回 PDF bytes 或 challenge 以及 browser capture metadata，随后由 `extract_paper_full_text` materialize PDF，并把 DOI-bound parsing 交给 durable parse attempt。保留的浏览器窗口会保住 manual/challenge 页，每个 DOI 使用自己的 job-owned page。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
 
-`codex` 默认关闭。启用并放入 `extract.fetch_strategy.order` 后，它会在该顺序位置作为 Codex Chrome extension host-agent handoff：`extract_paper_full_text` 返回 Chrome 下载 receipt，外层 agent 使用 Codex `@chrome` 插件 / Chrome 中的 [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) 作为 acquisition route。若 host 已知道 PDF 绝对路径，调用 `ingest_codex_downloaded_pdf(doi=..., downloaded_file_path=...)` 或 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`；否则 `ingest_codex_downloaded_pdf` 只扫描 `extract.codex_handoff.download_watch_dir`。这个 watch dir 只是 ingest 扫描目录，不会配置 Chrome；扫描为空时应传真实路径，而不是再次点击 publisher 下载按钮。若 DOI-bound 本地解析超过 `extract.parsing.foreground_wait_seconds`，GRaDOS 会返回 `parse_in_progress` receipt，继续在后台运行同一个 parse attempt，并在后续同 DOI + PDF hash 调用中恢复/对账；不要因为前台先返回就重新下载 PDF。若 Unpaywall 找到 OA URL，receipt 会优先从该 URL 开始，而不是 `https://doi.org/{doi}`。
+`codex` 默认关闭。启用并放入 `extract.fetch_strategy.order` 后，它会在该顺序位置作为 Codex Chrome extension host-agent handoff：`extract_paper_full_text` 返回带 `codex_download_handoff` operation 的 Chrome 下载 receipt，外层 agent 使用 Codex `@chrome` 插件 / Chrome 中的 [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) 作为 acquisition route。若 host 已知道 PDF 绝对路径，调用 `ingest_codex_downloaded_pdf(doi=..., downloaded_file_path=...)` 或 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`；否则 `ingest_codex_downloaded_pdf` 只扫描 `extract.codex_handoff.download_watch_dir`。这个 watch dir 只是 ingest 扫描目录，不会配置 Chrome；扫描为空时应传真实路径，而不是再次点击 publisher 下载按钮。若同时发现多个可信 PDF，GRaDOS 会返回 needs-input disambiguation，而不是猜测哪一个属于 DOI。若 DOI-bound 本地解析超过 `extract.parsing.foreground_wait_seconds`，GRaDOS 会返回 `parse_in_progress` receipt，继续在后台运行同一个 parse attempt，并在后续同 DOI + PDF hash 调用中恢复/对账；不要因为前台先返回就重新下载 PDF。若 Unpaywall 找到 OA URL，receipt 会优先从该 URL 开始，而不是 `https://doi.org/{doi}`。
 
 所有会拷入论文库的 PDF acquisition 路径共用同一个 materialization 边界。每个 DOI 的受管原始 PDF 是 `downloads/{safe_doi}.pdf`；publisher 文件名和外部本地 PDF 只是 acquisition input。同 DOI 同 hash 会复用、rename 或 copy 到受管路径；同 DOI 不同 hash 会返回 conflict receipt，保留已有 canonical PDF 和候选输入；如果冲突候选只来自已捕获的 PDF bytes，GRaDOS 会把它保存在 `downloads/_conflicts/{safe_doi}.{hash12}.pdf` 供人工 review。PDF fetch 会先解析并通过 QA 后才作为普通 `fulltext` 成功；parser QA 失败会继续尝试配置的 parser/fetch fallback，最终仍未通过时只保存为 `partial_success`。新写入的 `papers/*.md` frontmatter 只保留阅读元数据和 `parsed_manifest_path` / `assets_manifest_path` 这类指针；PDF 路径、hash、acquisition route、parser/materialization provenance 进入 receipt、`remote_metadata.fetch_via` 和 `papers/_parsed/{safe_doi}.json`。
 

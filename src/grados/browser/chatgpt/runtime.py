@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from grados.browser.chatgpt.capture import capture_final_response
@@ -43,6 +44,13 @@ from grados.browser.manager import (
     resolve_browser_executable,
 )
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
+from grados.storage.operations import (
+    OPERATION_STATUS_FAILED,
+    OPERATION_STATUS_PENDING,
+    create_operation,
+    fail_operation,
+    update_operation,
+)
 
 
 async def run_chatgpt_browser_session(
@@ -62,6 +70,7 @@ async def run_chatgpt_browser_session(
     """Run or recover one ChatGPT browser session."""
     store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
     session_id = recover_session_id or new_session_id()
+    operation_db_path = paths.database_state
     if recover_session_id and not is_valid_chatgpt_session_id(recover_session_id):
         return _error_result(
             session_id,
@@ -105,6 +114,12 @@ async def run_chatgpt_browser_session(
         pack_id = str(record.get("pack_id") or pack_id)
         packet_artifact_id = str(record.get("packet_artifact_id") or packet_artifact_id)
         prompt_hash = str(record.get("prompt_hash") or prompt_hash)
+        _record_chatgpt_operation_recovery(
+            operation_db_path,
+            session_id=session_id,
+            record=record,
+            paths=paths,
+        )
     else:
         record = store.create(
             session_id=session_id,
@@ -114,6 +129,13 @@ async def run_chatgpt_browser_session(
             prompt=prompt,
             mode=mode,
             metadata={**(metadata or {}), "browser_mode_version": BROWSER_MODE_VERSION},
+        )
+        _create_chatgpt_operation(
+            operation_db_path,
+            session_id=session_id,
+            record=record,
+            paths=paths,
+            prompt_path=str(store.prompt_path(session_id)),
         )
 
     try:
@@ -133,6 +155,7 @@ async def run_chatgpt_browser_session(
                     prompt=prompt,
                     recover=bool(recover_session_id),
                     record=record,
+                    operation_db_path=operation_db_path,
                     assistant_timeout_seconds=assistant_timeout_seconds,
                 )
                 final_record = store.read(session_id) or record
@@ -170,6 +193,29 @@ async def run_chatgpt_browser_session(
     except ChatGPTBrowserError as exc:
         status = "incomplete_capture" if exc.code in {"assistant_timeout", "capture_failed"} else "failed"
         store.update(session_id, status=status, error=exc.to_dict())
+        if status == "incomplete_capture":
+            update_operation(
+                operation_db_path,
+                session_id,
+                status=OPERATION_STATUS_PENDING,
+                stage=status,
+                error=exc.to_dict(),
+                recovery={
+                    "next_action": "get_operation_status_detail_true",
+                    "browser_session_id": session_id,
+                    "session_record": str(store.session_json(session_id)),
+                },
+                event_type="browser_wait_incomplete",
+                event_payload=exc.to_dict(),
+            )
+        else:
+            fail_operation(
+                operation_db_path,
+                session_id,
+                stage=status,
+                error=exc.to_dict(),
+                result={"next_action": "inspect_browser_error_and_retry_when_fixed"},
+            )
         return _error_result(session_id, exc, status=status, session_record_path=str(store.session_json(session_id)))
     except Exception as exc:
         error = ChatGPTBrowserError(
@@ -178,6 +224,13 @@ async def run_chatgpt_browser_session(
             message=str(exc),
         )
         store.update(session_id, status="failed", error=error.to_dict())
+        fail_operation(
+            operation_db_path,
+            session_id,
+            stage="failed",
+            error=error.to_dict(),
+            result={"next_action": "inspect_browser_error_and_retry_when_fixed"},
+        )
         return _error_result(
             session_id,
             error,
@@ -194,6 +247,7 @@ async def _run_page_flow(
     prompt: str,
     recover: bool,
     record: dict[str, Any],
+    operation_db_path: Any | None = None,
     assistant_timeout_seconds: float | None = None,
 ) -> None:
     if recover:
@@ -205,30 +259,88 @@ async def _run_page_flow(
                 message="Saved ChatGPT browser session has no conversation URL to recover.",
                 details={"session_id": session_id},
             )
-        store.update(session_id, status="recovering", recovery_attempted=True)
+        _update_chatgpt_session_operation(
+            store,
+            operation_db_path,
+            session_id,
+            status="recovering",
+            stage="recovering",
+            recovery_attempted=True,
+            recovery={"conversation_url": conversation_url, "next_action": "wait_for_assistant_capture"},
+            event_type="recovery_started",
+            event_payload={"conversation_url": conversation_url},
+        )
         await page.goto(conversation_url, wait_until="domcontentloaded", timeout=60_000)
         await ensure_chatgpt_logged_in(page)
-        store.update(session_id, status="waiting_for_assistant")
+        _update_chatgpt_session_operation(
+            store,
+            operation_db_path,
+            session_id,
+            status="waiting_for_assistant",
+            stage="waiting_for_assistant",
+            progress={"response_captured": False},
+            event_type="assistant_wait_started",
+        )
         await wait_for_assistant_done(
             page,
             timeout_seconds=assistant_timeout_seconds or 900.0,
         )
     else:
-        store.update(session_id, status="opening_chat")
+        _update_chatgpt_session_operation(
+            store,
+            operation_db_path,
+            session_id,
+            status="opening_chat",
+            stage="opening_chat",
+            event_type="chat_opening",
+        )
         await open_new_chat(page)
         await ensure_chatgpt_logged_in(page)
         model = await ensure_latest_pro_model(page)
-        store.update(session_id, model_selection=model.to_dict())
+        _update_chatgpt_session_operation(
+            store,
+            operation_db_path,
+            session_id,
+            model_selection=model.to_dict(),
+            runtime={"model_selection": model.to_dict()},
+            event_type="model_confirmed",
+            event_payload=model.to_dict(),
+        )
         thinking = await ensure_pro_extended_thinking(page)
-        store.update(session_id, thinking_selection=thinking.to_dict())
+        _update_chatgpt_session_operation(
+            store,
+            operation_db_path,
+            session_id,
+            thinking_selection=thinking.to_dict(),
+            runtime={"thinking_selection": thinking.to_dict()},
+            event_type="thinking_confirmed",
+            event_payload=thinking.to_dict(),
+        )
         await clear_prompt_composer(page)
         baseline_turns = await read_conversation_turn_count(page)
         await paste_prompt(page, prompt)
-        store.update(session_id, status="submitting")
+        _update_chatgpt_session_operation(
+            store,
+            operation_db_path,
+            session_id,
+            status="submitting",
+            stage="submitting",
+            event_type="prompt_submit_started",
+        )
         min_turn_index = await submit_prompt(page, prompt, baseline_turns=baseline_turns)
-        store.update(
+        _update_chatgpt_session_operation(
+            store,
+            operation_db_path,
             session_id,
             status="waiting_for_assistant",
+            stage="waiting_for_assistant",
+            progress={"response_captured": False, "min_turn_index": min_turn_index},
+            recovery={
+                "conversation_url": str(getattr(page, "url", "")),
+                "next_action": "get_operation_status_detail_true",
+            },
+            event_type="prompt_submitted_once",
+            event_payload={"conversation_url": str(getattr(page, "url", "")), "min_turn_index": min_turn_index},
             conversation_url=str(getattr(page, "url", "")),
             min_turn_index=min_turn_index,
         )
@@ -240,15 +352,139 @@ async def _run_page_flow(
 
     capture = await capture_final_response(page)
     response_path = store.save_response(session_id, capture.response_text)
-    store.update(
+    _update_chatgpt_session_operation(
+        store,
+        operation_db_path,
         session_id,
         status="captured",
+        stage="captured",
+        progress={"response_captured": True, "result_saved": False},
+        result={"response_path": response_path, "next_action": "save_external_synthesis_result"},
+        event_type="response_captured",
+        event_payload={"response_path": response_path, "method": capture.method},
         conversation_url=str(getattr(page, "url", "")),
         response_text=capture.response_text,
         response_path=response_path,
         capture_method=capture.method,
         capture_warnings=capture.warnings,
     )
+
+
+def _create_chatgpt_operation(
+    db_path: Any,
+    *,
+    session_id: str,
+    record: dict[str, Any],
+    paths: GRaDOSPaths,
+    prompt_path: str,
+) -> None:
+    create_operation(
+        db_path,
+        operation_id=session_id,
+        kind="external_synthesis",
+        status=OPERATION_STATUS_PENDING,
+        stage="session_created",
+        idempotency_key=str(record.get("prompt_hash") or ""),
+        input_data={
+            "pack_id": str(record.get("pack_id") or ""),
+            "packet_artifact_id": str(record.get("packet_artifact_id") or ""),
+            "prompt_hash": str(record.get("prompt_hash") or ""),
+            "mode": str(record.get("mode") or ""),
+        },
+        progress={"response_captured": False, "result_saved": False},
+        runtime={
+            "worker_pid": os.getpid(),
+            "profile_path": str(paths.chatgpt_browser_profile),
+            "browser_mode_version": BROWSER_MODE_VERSION,
+        },
+        recovery={
+            "browser_session_id": session_id,
+            "session_record": str(ChatGPTSessionStore(paths.chatgpt_browser_sessions).session_json(session_id)),
+            "prompt_path": prompt_path,
+            "next_action": "get_operation_status_detail_true",
+        },
+    )
+
+
+def _record_chatgpt_operation_recovery(
+    db_path: Any,
+    *,
+    session_id: str,
+    record: dict[str, Any],
+    paths: GRaDOSPaths,
+) -> None:
+    existing, created = create_operation(
+        db_path,
+        operation_id=session_id,
+        kind="external_synthesis",
+        status=OPERATION_STATUS_PENDING,
+        stage="recovering",
+        idempotency_key=str(record.get("prompt_hash") or ""),
+        input_data={
+            "pack_id": str(record.get("pack_id") or ""),
+            "packet_artifact_id": str(record.get("packet_artifact_id") or ""),
+            "prompt_hash": str(record.get("prompt_hash") or ""),
+            "mode": str(record.get("mode") or ""),
+        },
+        progress={"response_captured": bool(record.get("response_text") or record.get("response_path"))},
+        runtime={
+            "worker_pid": os.getpid(),
+            "profile_path": str(paths.chatgpt_browser_profile),
+            "browser_mode_version": BROWSER_MODE_VERSION,
+        },
+        recovery={
+            "browser_session_id": session_id,
+            "conversation_url": str(record.get("conversation_url") or ""),
+            "session_record": str(ChatGPTSessionStore(paths.chatgpt_browser_sessions).session_json(session_id)),
+            "next_action": "get_operation_status_detail_true",
+        },
+    )
+    if not created and existing.status != OPERATION_STATUS_FAILED:
+        update_operation(
+            db_path,
+            session_id,
+            status=OPERATION_STATUS_PENDING,
+            stage="recovering",
+            heartbeat=True,
+            recovery={
+                "conversation_url": str(record.get("conversation_url") or ""),
+                "next_action": "get_operation_status_detail_true",
+            },
+            event_type="recovery_requested",
+        )
+
+
+def _update_chatgpt_session_operation(
+    store: ChatGPTSessionStore,
+    db_path: Any | None,
+    session_id: str,
+    *,
+    stage: str | None = None,
+    progress: dict[str, Any] | None = None,
+    runtime: dict[str, Any] | None = None,
+    recovery: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    event_type: str = "",
+    event_payload: dict[str, Any] | None = None,
+    **updates: Any,
+) -> dict[str, Any]:
+    record = store.update(session_id, **updates)
+    if db_path is None:
+        return record
+    update_operation(
+        db_path,
+        session_id,
+        status=OPERATION_STATUS_PENDING,
+        stage=stage,
+        progress=progress,
+        runtime=runtime,
+        recovery=recovery,
+        result=result,
+        heartbeat=True,
+        event_type=event_type,
+        event_payload=event_payload,
+    )
+    return record
 
 
 async def open_chatgpt_login_setup(

@@ -705,14 +705,16 @@
 
 ### 决策
 - 长耗时或用户接管 workflow 先返回 durable receipt，而不是依赖单个 MCP 调用跑到最终完成。Receipt 至少包含 `operation_id` 或兼容 id、`kind`、`status`、`progress`、`next_action`、result/error pointer 和恢复建议。
-- `get_operation_status(operation_id, detail=false)` 是统一状态/恢复入口。它可以读取或桥接 external synthesis session、DOI-bound parse attempt、indepth research run 和 local PDF import run；`detail=true` 可用于 ChatGPT browser session capture/recovery，但不得重新发送原 prompt。
+- Operation Registry 是轻量 SQLite 控制面，记录 normalized lifecycle row、bounded event ledger、idempotency key、runtime/recovery metadata、heartbeat/stale 状态和 debug bundle 指针；各领域 store 仍保留自己的恢复真值。
+- `get_operation_status(operation_id, detail=false)` 是统一状态/恢复入口。它优先读取 Operation Registry，并可兼容桥接 external synthesis session、DOI-bound parse attempt、indepth research run、local PDF import run 和 Codex download handoff；`detail=true` 可用于 ChatGPT browser session capture/recovery，但不得重新发送原 prompt。
 - `run_external_synthesis` 必须先持久化 packet/session/prompt hash 与 submit-once metadata，再等待 ChatGPT；前台等待耗尽时返回 `pending`，后续 status/recovery 只捕获、保存和审计同一次回答。
 - `extract_paper_full_text` 的 PDF-obtained 路径先 materialize PDF，再复用 DOI-bound parse attempt；already-saved、metadata-only、native full text 和普通 local read 等短路径保持同步返回。
-- `search_academic_papers(indepth=true)` 和 `import_local_pdf_library` 以 run manifest / event ledger 推进批处理；单个 DOI 或文件失败不能吞掉整个 run 的状态。
+- `search_academic_papers(indepth=true)` 和 `import_local_pdf_library` 以 run manifest / operation event ledger 推进批处理；单个 DOI 或文件失败不能吞掉整个 run 的状态。
+- `codex_download_handoff` 使用 `needs_input` operation 表达 host-action 状态、watch-dir scan-only 语义、候选 PDF hash/size/mtime、disambiguation token、parse progress 和完成/失败恢复路径；多候选时不按 DOI 猜测。
 - Operation/session/parse/run metadata 是控制面和恢复信息，不是 citation evidence，不写入 canonical Markdown 正文，也不能替代 `papers/*.md` 或 current-valid evidence pack。
 - MCP progress 和 cancellation 可以作为体验增强，但 timeout 安全来自 durable receipt + status/recovery，而不是来自更长前台等待。
 
 ### 结果与影响
 - Host agent 收到 pending 时应 poll `get_operation_status`，不要通过重新发送 ChatGPT prompt、重新点击下载、重新导入目录或重复解析同一 PDF 来恢复。
-- 现有各领域 store 继续是当前实现真值；未来可以用 Operation Registry 统一 lifecycle/event schema，但必须保持现有 receipt 和兼容 id 可恢复。
-- README、CHANGELOG、skill tool reference 和 MCP schema drift tests 共同维护用户可见合同；TODO 只保留未完成的 Operation Registry、browser runtime 和写作流水线后续项。
+- 现有各领域 store 继续是当前实现真值；Operation Registry 是跨工具状态面和调试控制面，必须保持现有 receipt 和兼容 id 可恢复。
+- README、CHANGELOG、skill tool reference 和 MCP schema drift tests 共同维护用户可见合同；TODO 只保留未完成的 browser runtime、写作流水线和后续压力验证项。

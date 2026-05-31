@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
 from pydantic import Field
@@ -159,9 +159,264 @@ async def get_operation_status(
     from grados.browser.chatgpt.session_store import is_valid_chatgpt_session_id
     from grados.research_state import read_research_run_manifest
     from grados.research_tools import get_external_synthesis_operation_status as external_status
+    from grados.storage.operations import (
+        build_operation_debug_bundle,
+        complete_operation,
+        create_operation,
+        fail_operation,
+        get_operation,
+        list_operation_events,
+        operation_status_payload,
+        update_operation,
+    )
     from grados.storage.parse_attempts import get_parse_attempt
 
     paths, config = get_paths_and_config()
+    registry_record = get_operation(paths.database_state, operation_id)
+
+    def mirror_parse_attempt(parse_attempt: Any) -> None:
+        completed = parse_attempt.status == "completed"
+        failed = parse_attempt.status == "failed"
+        create_operation(
+            paths.database_state,
+            operation_id=operation_id,
+            kind="parse_pdf",
+            status="completed" if completed else "failed" if failed else "pending",
+            stage=parse_attempt.status,
+            idempotency_key=operation_id,
+            input_data={
+                "doi": parse_attempt.doi,
+                "input_pdf_hash": parse_attempt.input_pdf_hash,
+                "copy_to_library": parse_attempt.copy_to_library,
+                "acquisition_via": parse_attempt.acquisition_via,
+            },
+            progress={
+                "stage": parse_attempt.status,
+                "doi": parse_attempt.doi,
+                "input_pdf_name": parse_attempt.input_pdf_name,
+                "canonical_uri": parse_attempt.canonical_uri,
+            },
+            recovery={
+                "parse_attempt_id": operation_id,
+                "next_action": (
+                    "read_saved_paper_or_get_saved_paper_structure"
+                    if completed
+                    else "review_parse_failure_or_retry_after_stale_window"
+                    if failed
+                    else "retry_parse_pdf_file_or_get_operation_status_later"
+                ),
+            },
+            result={
+                "result_path": parse_attempt.paper_path or parse_attempt.canonical_pdf_path,
+                "canonical_uri": parse_attempt.canonical_uri,
+                "next_action": (
+                    "read_saved_paper_or_get_saved_paper_structure"
+                    if completed
+                    else "review_parse_failure_or_retry_after_stale_window"
+                    if failed
+                    else "retry_parse_pdf_file_or_get_operation_status_later"
+                ),
+            },
+            error={"message": parse_attempt.error_message, "failure_reason": parse_attempt.failure_reason}
+            if failed
+            else {},
+        )
+        update_operation(
+            paths.database_state,
+            operation_id,
+            status="completed" if completed else "failed" if failed else "pending",
+            stage=parse_attempt.status,
+            progress={
+                "stage": parse_attempt.status,
+                "doi": parse_attempt.doi,
+                "input_pdf_name": parse_attempt.input_pdf_name,
+                "canonical_uri": parse_attempt.canonical_uri,
+            },
+            result={
+                "result_path": parse_attempt.paper_path or parse_attempt.canonical_pdf_path,
+                "canonical_uri": parse_attempt.canonical_uri,
+            },
+            error={"message": parse_attempt.error_message, "failure_reason": parse_attempt.failure_reason}
+            if failed
+            else {},
+            clear_error=not failed,
+            heartbeat=not completed and not failed,
+        )
+
+    def mirror_research_run(run_status: dict[str, object]) -> None:
+        manifest = run_status.get("manifest")
+        manifest = manifest if isinstance(manifest, dict) else {}
+        manifest_events = [event for event in manifest.get("event_ledger", []) if isinstance(event, dict)]
+        artifact_index = [item for item in manifest.get("artifact_index", []) if isinstance(item, dict)]
+        last_event: dict[str, Any] = manifest_events[-1] if manifest_events else {}
+        stage = str(last_event.get("event_type") or "run_started")
+        completed_events = {
+            "run_completed",
+            "research_checkpoint_written",
+            "import_run_completed",
+            "import_summary_written",
+        }
+        failed_events = {"run_failed", "import_run_failed"}
+        status = "completed" if stage in completed_events else "failed" if stage in failed_events else "pending"
+        result_path = ""
+        result_artifact_id = ""
+        for artifact in reversed(artifact_index):
+            candidate_path = str(artifact.get("path") or "")
+            if candidate_path and not result_path:
+                result_path = candidate_path
+            if artifact.get("artifact_id") and not result_artifact_id:
+                result_artifact_id = str(artifact.get("artifact_id") or "")
+        kind = str(run_status.get("kind") or "research_run_manifest")
+        raw_metadata = manifest.get("metadata")
+        metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+        if str(metadata.get("mode") or "") == "indepth":
+            kind = "indepth_search"
+        elif str(metadata.get("mode") or "") == "local_pdf_import":
+            kind = "local_pdf_import"
+        create_operation(
+            paths.database_state,
+            operation_id=operation_id,
+            kind=kind,
+            status=status,
+            stage=stage,
+            input_data={
+                "user_question": str(manifest.get("user_question") or ""),
+                "search_queries": list(manifest.get("search_queries") or []),
+            },
+            progress={"stage": stage, "event_count": len(manifest_events), "artifact_count": len(artifact_index)},
+            recovery={"research_run_id": operation_id, "next_action": "get_operation_status"},
+            result={
+                "result_artifact_id": result_artifact_id,
+                "result_path": result_path,
+                "next_action": (
+                    "read_linked_artifact_or_continue_canonical_reread"
+                    if status == "completed"
+                    else "inspect_failure_event"
+                    if status == "failed"
+                    else "call_get_operation_status_later"
+                ),
+            },
+        )
+        current_record = get_operation(paths.database_state, operation_id)
+        if status == "completed":
+            terminal_progress = {
+                "stage": stage,
+                "event_count": len(manifest_events),
+                "artifact_count": len(artifact_index),
+            }
+            terminal_result = {"result_artifact_id": result_artifact_id, "result_path": result_path}
+            if (
+                current_record is not None
+                and current_record.status == "completed"
+                and current_record.stage == stage
+            ):
+                update_operation(
+                    paths.database_state,
+                    operation_id,
+                    status="completed",
+                    stage=stage,
+                    progress=terminal_progress,
+                    result=terminal_result,
+                    clear_error=True,
+                )
+            else:
+                complete_operation(
+                    paths.database_state,
+                    operation_id,
+                    stage=stage,
+                    progress=terminal_progress,
+                    result=terminal_result,
+                )
+        elif status == "failed":
+            terminal_error = {"message": str(last_event.get("payload") or {})}
+            terminal_result = {"result_artifact_id": result_artifact_id, "result_path": result_path}
+            if current_record is not None and current_record.status == "failed" and current_record.stage == stage:
+                update_operation(
+                    paths.database_state,
+                    operation_id,
+                    status="failed",
+                    stage=stage,
+                    error=terminal_error,
+                    result=terminal_result,
+                    clear_error=True,
+                )
+            else:
+                fail_operation(
+                    paths.database_state,
+                    operation_id,
+                    stage=stage,
+                    error=terminal_error,
+                    result=terminal_result,
+                )
+        else:
+            update_operation(
+                paths.database_state,
+                operation_id,
+                status="pending",
+                stage=stage,
+                progress={"stage": stage, "event_count": len(manifest_events), "artifact_count": len(artifact_index)},
+                result={"result_artifact_id": result_artifact_id, "result_path": result_path},
+                heartbeat=True,
+            )
+
+    if registry_record is not None:
+        if registry_record.kind == "external_synthesis" and detail and is_valid_chatgpt_session_id(operation_id):
+            external_payload = await external_status(
+                paths.database_state,
+                paths.papers,
+                paths,
+                operation_id=operation_id,
+                detail=True,
+                browser_config=config.extract.headless_browser,
+            )
+            if external_payload.get("status") == "completed":
+                completed_stage = str(external_payload.get("stage") or "external_synthesis_saved")
+                completed_progress = dict(external_payload.get("progress") or {})
+                completed_result = {
+                    "result_artifact_id": str(external_payload.get("result_artifact_id") or ""),
+                    "result_path": str(external_payload.get("result_path") or ""),
+                    "next_action": str(external_payload.get("next_action") or ""),
+                }
+                current_record = get_operation(paths.database_state, operation_id)
+                if (
+                    current_record is not None
+                    and current_record.status == "completed"
+                    and current_record.stage == completed_stage
+                ):
+                    update_operation(
+                        paths.database_state,
+                        operation_id,
+                        status="completed",
+                        stage=completed_stage,
+                        progress=completed_progress,
+                        result=completed_result,
+                        clear_error=True,
+                    )
+                else:
+                    complete_operation(
+                        paths.database_state,
+                        operation_id,
+                        stage=completed_stage,
+                        progress=completed_progress,
+                        result=completed_result,
+                    )
+            registry_record = get_operation(paths.database_state, operation_id) or registry_record
+        elif registry_record.kind == "parse_pdf":
+            parse_attempt = get_parse_attempt(paths.database_state, operation_id)
+            if parse_attempt is not None:
+                mirror_parse_attempt(parse_attempt)
+                registry_record = get_operation(paths.database_state, operation_id) or registry_record
+        elif registry_record.kind in {"indepth_search", "local_pdf_import", "research_run_manifest"}:
+            run_status = read_research_run_manifest(paths.database_state, research_run_id=operation_id)
+            if run_status.get("found"):
+                mirror_research_run(run_status)
+                registry_record = get_operation(paths.database_state, operation_id) or registry_record
+        operation_events = list_operation_events(paths.database_state, operation_id) if detail else []
+        payload = operation_status_payload(registry_record, events=operation_events, detail=detail)
+        if detail:
+            payload["debug_bundle"] = build_operation_debug_bundle(paths.database_state, operation_id)
+        return payload
+
     if is_valid_chatgpt_session_id(operation_id):
         return await external_status(
             paths.database_state,
@@ -174,6 +429,7 @@ async def get_operation_status(
 
     parse_attempt = get_parse_attempt(paths.database_state, operation_id)
     if parse_attempt is not None:
+        mirror_parse_attempt(parse_attempt)
         status = parse_attempt.status
         completed = status == "completed"
         failed = status == "failed"
@@ -207,11 +463,12 @@ async def get_operation_status(
 
     run_status = read_research_run_manifest(paths.database_state, research_run_id=operation_id)
     if run_status.get("found"):
+        mirror_research_run(run_status)
         manifest = run_status.get("manifest")
         manifest = manifest if isinstance(manifest, dict) else {}
-        events = [event for event in manifest.get("event_ledger", []) if isinstance(event, dict)]
+        manifest_events = [event for event in manifest.get("event_ledger", []) if isinstance(event, dict)]
         artifact_index = [item for item in manifest.get("artifact_index", []) if isinstance(item, dict)]
-        last_event = events[-1] if events else {}
+        last_event: dict[str, Any] = manifest_events[-1] if manifest_events else {}
         stage = str(last_event.get("event_type") or "run_started")
         completed_events = {
             "run_completed",
@@ -239,7 +496,7 @@ async def get_operation_status(
             "updated_at": str(manifest.get("updated_at") or ""),
             "progress": {
                 "stage": stage,
-                "event_count": len(events),
+                "event_count": len(manifest_events),
                 "artifact_count": len(artifact_index),
                 "last_event": last_event if detail else {},
             },
@@ -992,8 +1249,9 @@ def register_research_tools_api(mcp: FastMCP) -> None:
         description=(
             "Inspect a durable long-running operation returned by GRaDOS tools. "
             "Use this for pending external synthesis sessions, DOI-bound PDF parse attempts, "
-            "indepth search runs, and local PDF import runs; `detail=true` may recover a "
-            "ChatGPT browser response without resending the prompt."
+            "indepth search runs, local PDF import runs, and Codex download handoffs; "
+            "`detail=true` may recover a ChatGPT browser response without resending the prompt "
+            "and returns registry events/debug pointers."
         )
     )(get_operation_status)
 

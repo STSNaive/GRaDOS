@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import threading
 import uuid
@@ -212,6 +213,7 @@ async def _run_indepth_for_results(
         link_research_run_artifact,
     )
     from grados.server_tools import library_tools
+    from grados.storage.operations import append_operation_event, complete_operation, heartbeat_operation
     from grados.storage.remote_metadata import record_remote_fetch_result
 
     warnings: list[str] = []
@@ -246,7 +248,7 @@ async def _run_indepth_for_results(
     summaries_written = 0
     fulltext_count = 0
 
-    for paper in candidates:
+    for index, paper in enumerate(candidates, start=1):
         doi = normalize_doi(str(getattr(paper, "doi", "") or ""))
         safe_doi = safe_doi_filename(doi)
         title = str(getattr(paper, "title", "") or "")
@@ -266,6 +268,13 @@ async def _run_indepth_for_results(
                 "already_saved": bool(state.get("already_saved")),
                 "fetch_status": fetch_status,
             },
+        )
+        append_operation_event(
+            state_db,
+            operation_id=research_run_id,
+            event_type="candidate_seen",
+            stage="extracting_candidates",
+            payload={"doi": doi, "title": title, "index": index, "candidate_count": len(candidates)},
         )
 
         if not state.get("already_saved"):
@@ -288,6 +297,13 @@ async def _run_indepth_for_results(
                     research_run_id=research_run_id,
                     event_type="extract_finished",
                     source="extract_paper_full_text",
+                    payload={"doi": doi, "fetch_status": fetch_status},
+                )
+                append_operation_event(
+                    state_db,
+                    operation_id=research_run_id,
+                    event_type="extract_finished",
+                    stage="extracting_candidates",
                     payload={"doi": doi, "fetch_status": fetch_status},
                 )
             except Exception as exc:
@@ -340,6 +356,13 @@ async def _run_indepth_for_results(
                         research_run_id=research_run_id,
                         event_type="summary_written",
                         source="generate_paper_summary",
+                        payload={"doi": doi, "paper_summary_id": paper_summary_id},
+                    )
+                    append_operation_event(
+                        state_db,
+                        operation_id=research_run_id,
+                        event_type="summary_written",
+                        stage="summarizing_candidates",
                         payload={"doi": doi, "paper_summary_id": paper_summary_id},
                     )
                     findings.extend(paper_summary.key_findings[:2])
@@ -408,6 +431,23 @@ async def _run_indepth_for_results(
                     failure_reason=failure_reason,
                 )
             )
+        heartbeat_operation(
+            state_db,
+            research_run_id,
+            stage="indepth_running",
+            progress={
+                "stage": "indepth_running",
+                "candidate_count": len(candidates),
+                "processed": index,
+                "fulltext_count": fulltext_count,
+                "summaries_written": summaries_written,
+            },
+            runtime={
+                "worker_pid": os.getpid(),
+                "worker_thread_name": threading.current_thread().name,
+                "worker_thread_ident": threading.get_ident(),
+            },
+        )
 
     checkpoint = make_research_checkpoint(
         research_run_id=research_run_id,
@@ -444,6 +484,24 @@ async def _run_indepth_for_results(
         source="write_research_checkpoint",
         artifact_id=checkpoint.conversation_id,
         payload={"path": str(checkpoint_path)},
+    )
+    complete_operation(
+        state_db,
+        research_run_id,
+        stage="run_completed",
+        progress={
+            "stage": "run_completed",
+            "candidate_count": len(candidates),
+            "processed": len(candidates),
+            "fulltext_count": fulltext_count,
+            "summaries_written": summaries_written,
+        },
+        result={
+            "result_path": str(checkpoint_path),
+            "artifact_id": checkpoint.conversation_id,
+            "result_artifact_id": checkpoint.conversation_id,
+            "next_action": "read_research_checkpoint_then_reread_canonical_papers",
+        },
     )
     append_research_run_event(
         state_db,
@@ -488,6 +546,7 @@ def _start_indepth_run_for_results(
         build_research_run_config_lock,
         create_research_run_manifest,
     )
+    from grados.storage.operations import create_operation, fail_operation, update_operation
 
     if paths is None:
         return ["indepth skipped because GRaDOS paths were unavailable."], ""
@@ -495,6 +554,19 @@ def _start_indepth_run_for_results(
     candidates = [paper for paper in papers[:limit] if normalize_doi(str(getattr(paper, "doi", "") or ""))]
     state_db = _research_state_db_path(paths)
     research_run_id = _new_run_id()
+    candidate_dois = ",".join(str(getattr(paper, "doi", "") or "") for paper in candidates)
+    create_operation(
+        state_db,
+        operation_id=research_run_id,
+        kind="indepth_search",
+        status="pending",
+        stage="accepted",
+        idempotency_key=f"indepth:{query}:{limit}:{candidate_dois}",
+        input_data={"query": query, "limit": limit, "candidate_count": len(candidates)},
+        progress={"stage": "accepted", "candidate_count": len(candidates), "processed": 0},
+        runtime={"worker_pid": os.getpid()},
+        recovery={"research_run_id": research_run_id, "next_action": "get_operation_status"},
+    )
     create_research_run_manifest(
         state_db,
         research_run_id=research_run_id,
@@ -513,6 +585,20 @@ def _start_indepth_run_for_results(
 
     def worker() -> None:
         try:
+            update_operation(
+                state_db,
+                research_run_id,
+                status="pending",
+                stage="worker_started",
+                progress={"stage": "worker_started", "candidate_count": len(candidates), "processed": 0},
+                runtime={
+                    "worker_pid": os.getpid(),
+                    "worker_thread_name": threading.current_thread().name,
+                    "worker_thread_ident": threading.get_ident(),
+                },
+                heartbeat=True,
+                event_type="worker_started",
+            )
             asyncio.run(
                 _run_indepth_for_results(
                     query=query,
@@ -525,6 +611,12 @@ def _start_indepth_run_for_results(
                 )
             )
         except Exception as exc:
+            fail_operation(
+                state_db,
+                research_run_id,
+                stage="run_failed",
+                error={"message": f"{exc.__class__.__name__}: {exc}"},
+            )
             append_research_run_event(
                 state_db,
                 research_run_id=research_run_id,

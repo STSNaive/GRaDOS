@@ -13,6 +13,7 @@ from grados.config import GRaDOSPaths, generate_default_config
 from grados.publisher.common import safe_doi_filename
 from grados.server_tools import library_tools
 from grados.storage.frontmatter import read_frontmatter_metadata_from_file
+from grados.storage.operations import get_operation
 from grados.storage.papers import load_paper_record, save_paper_markdown
 
 
@@ -117,12 +118,18 @@ def test_ingest_codex_downloaded_pdf_saves_unique_candidate(
     result = asyncio.run(library_tools.ingest_codex_downloaded_pdf(doi=doi, expected_title="Codex Ingest"))
 
     assert result["status"] == "success"
+    assert result["kind"] == "codex_download_handoff"
+    assert result["operation_id"]
     assert result["source_path"] == str(pdf_path)
     assert Path(str(result["archived_pdf_path"])).is_file()
     assert result["source_pdf_hash"]
     assert "PDF Parsed & Saved" in str(result["parse_receipt"])
     assert captured["remote_metadata"]["fetch_status"] == "fulltext"
     assert captured["remote_metadata"]["fetch_via"] == "codex"
+    operation = get_operation(GRaDOSPaths(home).database_state, str(result["operation_id"]))
+    assert operation is not None
+    assert operation.status == "completed"
+    assert operation.stage == "saved"
 
 
 def test_ingest_codex_downloaded_pdf_returns_already_saved_without_pending(
@@ -247,10 +254,16 @@ def test_ingest_codex_downloaded_pdf_treats_slow_parse_as_in_progress(
 
         assert started.wait(timeout=1.0)
         assert result["status"] == "in_progress"
+        assert result["kind"] == "codex_download_handoff"
+        assert result["operation_id"]
         assert result["outcome"] == "parse_in_progress"
         assert result["attempt_id"]
         assert result["source_path"] == str(pdf_path)
         assert "parse_failed" not in json.dumps(result)
+        operation = get_operation(GRaDOSPaths(home).database_state, str(result["operation_id"]))
+        assert operation is not None
+        assert operation.status == "pending"
+        assert operation.stage == "parse_in_progress"
         release.set()
         deadline = time.monotonic() + 2.0
         paths = GRaDOSPaths(home)
@@ -288,8 +301,13 @@ def test_ingest_codex_downloaded_pdf_requires_pending_codex_handoff(
     result = asyncio.run(library_tools.ingest_codex_downloaded_pdf(doi=doi))
 
     assert result["status"] == "failed"
+    assert result["kind"] == "codex_download_handoff"
     assert result["failure_reason"] == "no_pending_handoff"
     assert "downloaded_file_path" in result["next_action"]
+    operation = get_operation(GRaDOSPaths(home).database_state, str(result["operation_id"]))
+    assert operation is not None
+    assert operation.status == "needs_input"
+    assert operation.stage == "pending_handoff_missing"
 
 
 def test_ingest_codex_downloaded_pdf_rejects_missing_watch_dir(
@@ -440,8 +458,45 @@ def test_ingest_codex_downloaded_pdf_returns_disambiguation_for_multiple_candida
 
     assert result["status"] == "needs_disambiguation"
     assert result["failure_reason"] == "multiple_candidates"
+    assert result["kind"] == "codex_download_handoff"
+    assert result["operation_id"]
     assert result["disambiguation_token"]
     assert len(result["candidates"]) == 2
+    operation = get_operation(GRaDOSPaths(home).database_state, str(result["operation_id"]))
+    assert operation is not None
+    assert operation.status == "needs_input"
+    assert operation.stage == "ambiguous_candidates"
+
+
+def test_codex_download_handoff_can_record_cancelled_operation(tmp_path: Path) -> None:
+    doi = "10.1234/cancel-codex"
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    resume = {
+        "doi": doi,
+        "issued_at": "2026-05-31T00:00:00+00:00",
+        "start_url": "https://doi.org/10.1234/cancel-codex",
+        "download_watch_dir": str(tmp_path / "Downloads"),
+    }
+    operation_id = library_tools._codex_handoff_operation_id(doi, resume)
+
+    library_tools._record_codex_download_operation(
+        paths,
+        doi=doi,
+        operation_id=operation_id,
+        status="cancelled",
+        stage="cancelled",
+        resume=resume,
+        result={"next_action": ""},
+        event_type="codex_handoff_cancelled",
+    )
+
+    operation = get_operation(paths.database_state, operation_id)
+    assert operation is not None
+    assert operation.kind == "codex_download_handoff"
+    assert operation.status == "cancelled"
+    assert operation.stage == "cancelled"
 
 
 def test_file_name_hint_narrows_candidates_without_bypassing_pdf_validation(

@@ -26,6 +26,7 @@ from grados.research.external_synthesis import (
 )
 from grados.research_state import query_research_artifacts
 from grados.storage.canonical_blocks import build_canonical_block_manifest
+from grados.storage.operations import get_operation
 from grados.storage.papers import save_paper_markdown
 from grados.storage.vector import PaperSearchResult
 
@@ -644,6 +645,11 @@ def test_run_external_synthesis_returns_recoverable_timeout_receipt(
     assert result["operation_id"] == "chatgpt-timeout"
     assert result["status"] == "pending"
     assert result["stage"] == "incomplete_capture"
+    operation = get_operation(_db_path(tmp_path), "chatgpt-timeout")
+    assert operation is not None
+    assert operation.kind == "external_synthesis"
+    assert operation.status == "pending"
+    assert operation.recovery["browser_session_record"] == str(tmp_path / "session.json")
 
 
 def test_external_synthesis_operation_status_saves_captured_session_once(

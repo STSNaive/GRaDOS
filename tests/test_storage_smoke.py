@@ -16,6 +16,20 @@ from grados.storage.assets import (
 )
 from grados.storage.chunking import extract_reference_dois, split_paragraphs
 from grados.storage.frontmatter import read_frontmatter_metadata
+from grados.storage.operations import (
+    OPERATION_STATUS_PENDING,
+    append_operation_event,
+    build_operation_debug_bundle,
+    complete_operation,
+    create_operation,
+    fail_operation,
+    find_operation_by_idempotency_key,
+    get_operation,
+    list_operation_events,
+    mark_operation_stale,
+    operation_is_stale,
+    update_operation,
+)
 from grados.storage.papers import (
     PaperListEntry,
     get_paper_structure,
@@ -420,6 +434,101 @@ def test_parse_attempt_upsert_reuses_concurrent_insert(tmp_path: Path) -> None:
     assert record is not None
     assert record.status == "running"
     assert sum(1 for created in created_flags if created) == 1
+
+
+def test_operation_registry_records_lifecycle_events_and_debug_bundle(tmp_path: Path) -> None:
+    db_path = tmp_path / "database" / "research.sqlite3"
+
+    record, created = create_operation(
+        db_path,
+        operation_id="op-test-1",
+        kind="parse_pdf",
+        status=OPERATION_STATUS_PENDING,
+        stage="accepted",
+        idempotency_key="doi:10.1234/demo",
+        input_data={"doi": "10.1234/demo", "api_key": "secret-value"},
+        recovery={"parse_attempt_id": "attempt-1", "next_action": "get_operation_status"},
+    )
+    append_operation_event(
+        db_path,
+        operation_id=record.operation_id,
+        event_type="worker_started",
+        stage="running",
+        payload={"path": "/tmp/demo.pdf", "session_id": "session-1", "token": "secret"},
+    )
+    completed = complete_operation(
+        db_path,
+        record.operation_id,
+        stage="completed",
+        result={"result_path": "/tmp/demo.md", "next_action": "read_saved_paper"},
+    )
+
+    assert created is True
+    assert completed is not None
+    assert completed.status == "completed"
+    assert completed.result == {"next_action": "read_saved_paper", "result_path": "/tmp/demo.md"}
+    assert find_operation_by_idempotency_key(db_path, "doi:10.1234/demo") is not None
+    assert operation_is_stale(completed, stale_seconds=0.0) is False
+
+    loaded = get_operation(db_path, "op-test-1")
+    events = list_operation_events(db_path, "op-test-1")
+    bundle = build_operation_debug_bundle(db_path, "op-test-1")
+
+    assert loaded is not None
+    assert loaded.input == {"api_key": "<redacted>", "doi": "10.1234/demo"}
+    assert events[-1].event_type == "operation_completed"
+    assert events[1].payload == {"path": "/tmp/demo.pdf", "session_id": "session-1", "token": "<redacted>"}
+    assert bundle["found"] is True
+    assert bundle["linked_paths"]["result_path"] == "/tmp/demo.md"
+
+    stale_record, _ = create_operation(
+        db_path,
+        operation_id="op-stale-1",
+        kind="indepth_search",
+        status=OPERATION_STATUS_PENDING,
+        stage="running",
+    )
+    assert operation_is_stale(stale_record, stale_seconds=0.0) is True
+    marked = mark_operation_stale(db_path, stale_record.operation_id, message="test stale heartbeat")
+    assert marked is not None
+    assert marked.status == "stale"
+    assert marked.error == {"message": "test stale heartbeat"}
+
+    recoverable_record, _ = create_operation(
+        db_path,
+        operation_id="op-recovered-1",
+        kind="external_synthesis",
+        status=OPERATION_STATUS_PENDING,
+        stage="waiting_for_assistant",
+    )
+    failed = fail_operation(
+        db_path,
+        recoverable_record.operation_id,
+        stage="browser_wait_incomplete",
+        error={"message": "temporary timeout"},
+    )
+    assert failed is not None
+    assert failed.error == {"message": "temporary timeout"}
+    recovered = complete_operation(
+        db_path,
+        recoverable_record.operation_id,
+        stage="external_synthesis_saved",
+        result={"result_artifact_id": "artifact-1"},
+    )
+    assert recovered is not None
+    assert recovered.status == "completed"
+    assert recovered.error == {}
+
+    refreshed_error = update_operation(
+        db_path,
+        recoverable_record.operation_id,
+        status=OPERATION_STATUS_PENDING,
+        stage="needs_more_input",
+        error={"message": "current issue"},
+        clear_error=True,
+    )
+    assert refreshed_error is not None
+    assert refreshed_error.error == {"message": "current issue"}
 
 
 def test_save_paper_markdown_surfaces_index_failure_without_blocking_canonical_write(

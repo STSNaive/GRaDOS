@@ -543,6 +543,55 @@ def _operation_lookup_sha256(operation_id: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _ensure_external_operation(
+    db_path: Path,
+    *,
+    operation_id: str,
+    pack_id: str,
+    packet_artifact_id: str,
+    prompt_hash: str,
+    mode: str,
+    status: str,
+    stage: str,
+    recovery: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> None:
+    from grados.storage.operations import create_operation, update_operation
+
+    if not operation_id:
+        return
+    create_operation(
+        db_path,
+        operation_id=operation_id,
+        kind="external_synthesis",
+        status=status,
+        stage=stage,
+        idempotency_key=prompt_hash,
+        input_data={
+            "pack_id": pack_id,
+            "packet_artifact_id": packet_artifact_id,
+            "prompt_hash": prompt_hash,
+            "mode": mode,
+        },
+        progress={"response_captured": bool(result and result.get("response_path")), "result_saved": False},
+        recovery=recovery,
+        result=result,
+        error=error,
+    )
+    update_operation(
+        db_path,
+        operation_id,
+        status=status,
+        stage=stage,
+        recovery=recovery,
+        result=result,
+        error=error,
+        event_type="external_synthesis_status",
+        event_payload={"status": status, "stage": stage, "pack_id": pack_id},
+    )
+
+
 def _find_external_result_for_session(
     db_path: Path,
     *,
@@ -704,6 +753,34 @@ def _save_captured_session_result(
     )
 
 
+def _mark_external_operation_saved(
+    db_path: Path,
+    *,
+    operation_id: str,
+    saved: dict[str, Any],
+    record: dict[str, Any],
+) -> None:
+    from grados.storage.operations import complete_operation
+
+    if not operation_id or not saved.get("saved"):
+        return
+    complete_operation(
+        db_path,
+        operation_id,
+        stage="external_synthesis_saved",
+        progress={"response_captured": True, "result_saved": True},
+        result={
+            "artifact_id": str(saved.get("artifact_id") or ""),
+            "result_artifact_id": str(saved.get("artifact_id") or ""),
+            "result_path": str(record.get("response_path") or ""),
+            "pack_id": str(record.get("pack_id") or ""),
+            "packet_artifact_id": str(record.get("packet_artifact_id") or ""),
+            "prompt_hash": str(record.get("prompt_hash") or ""),
+            "next_action": saved.get("next_action", "audit_external_synthesis_result"),
+        },
+    )
+
+
 async def get_external_synthesis_operation_status(
     db_path: Path,
     papers_dir: Path,
@@ -760,6 +837,7 @@ async def get_external_synthesis_operation_status(
             session_record_path=session_record_path,
         )
         if saved.get("saved"):
+            _mark_external_operation_saved(db_path, operation_id=operation_id, saved=saved, record=record)
             existing = query_research_artifacts(
                 db_path,
                 artifact_id=str(saved.get("artifact_id") or ""),
@@ -802,6 +880,7 @@ async def get_external_synthesis_operation_status(
                 session_record_path=session_record_path,
             )
             if saved.get("saved"):
+                _mark_external_operation_saved(db_path, operation_id=operation_id, saved=saved, record=refreshed)
                 existing = query_research_artifacts(
                     db_path,
                     artifact_id=str(saved.get("artifact_id") or ""),
@@ -933,6 +1012,26 @@ async def run_external_synthesis(
         }
         operation_status = "pending" if recoverable else "failed"
         packet_sendable = bool(packet.get("sendable")) if packet else bool(recover_session_id)
+        _ensure_external_operation(
+            db_path,
+            operation_id=browser_result.session_id,
+            pack_id=source_pack_id,
+            packet_artifact_id=packet_artifact_id,
+            prompt_hash=prompt_hash,
+            mode=resolved_mode,
+            status=operation_status,
+            stage=browser_result.status,
+            recovery={
+                "recover_session_id": browser_result.session_id,
+                "packet_artifact_id": packet_artifact_id,
+                "prompt_hash": prompt_hash,
+                "browser_session_record": browser_result.session_record_path,
+                "conversation_url": browser_result.conversation_url,
+                "next_action": "get_operation_status_detail_true" if recoverable else "",
+            },
+            result={"result_path": "", "result_artifact_id": "", "next_action": ""},
+            error={"error": browser_result.error_code or "chatgpt_browser_failed", "message": browser_result.error},
+        )
         return {
             "ok": False,
             "sendable": packet_sendable,
@@ -1022,6 +1121,49 @@ async def run_external_synthesis(
         metadata=save_metadata,
         audit=True,
     )
+    from grados.storage.operations import complete_operation, fail_operation
+
+    operation_result = {
+        "artifact_id": str(saved.get("artifact_id") or ""),
+        "result_artifact_id": str(saved.get("artifact_id") or ""),
+        "result_path": str(browser_payload.get("metadata", {}).get("response_path", "")),
+        "pack_id": source_pack_id,
+        "packet_artifact_id": packet_artifact_id,
+        "prompt_hash": prompt_hash,
+        "next_action": saved.get("next_action", "audit_external_synthesis_result"),
+    }
+    _ensure_external_operation(
+        db_path,
+        operation_id=browser_result.session_id,
+        pack_id=source_pack_id,
+        packet_artifact_id=packet_artifact_id,
+        prompt_hash=prompt_hash,
+        mode=resolved_mode,
+        status="pending",
+        stage="captured",
+        recovery={
+            "recover_session_id": browser_result.session_id,
+            "conversation_url": browser_result.conversation_url,
+            "browser_session_record": browser_result.session_record_path,
+        },
+        result=operation_result,
+    )
+    if saved.get("saved"):
+        complete_operation(
+            db_path,
+            browser_result.session_id,
+            stage="external_synthesis_saved",
+            progress={"response_captured": True, "result_saved": True},
+            result=operation_result,
+        )
+    else:
+        fail_operation(
+            db_path,
+            browser_result.session_id,
+            stage="external_synthesis_save_failed",
+            result=operation_result,
+            error={"message": str(saved.get("error") or "external_synthesis_save_failed")},
+        )
     return {
         "ok": bool(saved.get("ok")),
         "sendable": True,
