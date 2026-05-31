@@ -14,7 +14,7 @@ def _load_release_module():
     return module
 
 
-def test_build_release_commit_message_uses_release_subject() -> None:
+def test_build_release_commit_message_describes_manifest_updates() -> None:
     module = _load_release_module()
 
     changed = [
@@ -22,4 +22,9 @@ def test_build_release_commit_message_uses_release_subject() -> None:
         module.REPO / "plugins" / "grados" / ".codex-plugin" / "plugin.json",
     ]
 
-    assert module.build_release_commit_message("0.6.10", changed) == "chore: release v0.6.10"
+    assert module.build_release_commit_message("0.6.10", changed) == (
+        "chore: release v0.6.10\n"
+        "\n"
+        "- Update .claude-plugin/plugin.json version metadata to 0.6.10\n"
+        "- Update plugins/grados/.codex-plugin/plugin.json version metadata to 0.6.10"
+    )

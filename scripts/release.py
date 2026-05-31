@@ -44,7 +44,11 @@ def _run(cmd: list[str], **kw: object) -> None:
 
 def build_release_commit_message(version: str, changed: list[Path]) -> str:
     """Build a conventional commit message for the release manifest bump."""
-    return f"chore: release v{version}"
+    bullets = [
+        f"- Update {path.relative_to(REPO).as_posix()} version metadata to {version}"
+        for path in changed
+    ]
+    return "\n".join([f"chore: release v{version}", "", *bullets])
 
 
 def _commit(message: str) -> None:
