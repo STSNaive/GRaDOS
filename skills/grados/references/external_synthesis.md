@@ -28,8 +28,10 @@ Default workflow:
 
 1. Prefer `run_external_synthesis` for enabled external synthesis. From a topic, it prepares a fresh evidence pack and packet; from a pack id, it verifies and packets that pack.
 2. GRaDOS opens the private ChatGPT profile, verifies that the page is signed in, opens a fresh conversation for the workflow, opens the model picker, confirms GRaDOS-validated Pro model route (`gpt-5.5-pro`), confirms the Pro Extended thinking route, and only then sends the packet.
-3. GRaDOS captures the final response, saves it with `save_external_synthesis_result(audit=true)`, and returns the audit result plus the canonical reread next action.
-4. Use `preview_external_synthesis_packet`, `prepare_external_synthesis_from_topic`, `prepare_external_synthesis_packet`, `save_external_synthesis_result`, and `audit_external_synthesis_result` only for dry runs, recovery, and explicit reruns. Lower-level packet preparation persists `research_artifacts(kind="external_synthesis_packet")`.
+3. GRaDOS persists the session id, packet id, prompt hash, conversation URL when available, status, and recovery metadata before waiting for completion.
+4. GRaDOS captures the final response, saves it with `save_external_synthesis_result(audit=true)`, and returns the audit result plus the canonical reread next action. If generation is still running after the foreground wait, it returns `status=pending`, `operation_id`, `browser_session_id`, and `next_action=get_operation_status`.
+5. For pending runs, call `get_operation_status(operation_id=..., detail=true)` to reattach and capture the final response without resending the prompt. `recover_session_id` remains a compatibility recovery path.
+6. Use `preview_external_synthesis_packet`, `prepare_external_synthesis_from_topic`, `prepare_external_synthesis_packet`, `save_external_synthesis_result`, and `audit_external_synthesis_result` only for dry runs, recovery, and explicit reruns. Lower-level packet preparation persists `research_artifacts(kind="external_synthesis_packet")`.
 
 `external_synthesis_packet` and `external_synthesis_result` artifacts are recovery and audit material only. They are not final citation evidence.
 
@@ -40,5 +42,7 @@ Evidence sent to ChatGPT Pro should be minimal and verified. Each item should in
 Request structured output with `claims`, `anchor_ids`, `confidence`, `caveat`, and `missing_evidence` / `gaps`. ChatGPT Pro must not add papers, DOIs, facts, or citations that were not in the provided packet. `audit_external_synthesis_result` treats structured `claims[].anchor_ids` as the primary handoff contract, flags unknown anchors/locators and outside DOIs, and keeps prose audit output as a risk scan; final citations may only use verified canonical paragraph windows.
 
 This browser route replaces the old Codex Chrome extension/manual ChatGPT path for `research.external_synthesis`. It does not remove the separate optional `codex` Chrome-extension download route for PDF acquisition.
+
+MCP progress or cancellation is only UI polish. The timeout-safety contract is durable session state plus pending receipts and `get_operation_status`; do not solve long generations by resending the same packet or only increasing a timeout.
 
 Stop and report rather than silently degrading when the private profile is not initialized, ChatGPT login is missing, the GRaDOS-validated Pro model route cannot be confirmed, Pro Extended thinking cannot be confirmed, the conversation cannot be recovered, ChatGPT adds outside evidence, the evidence packet is too large, or `verify_evidence_pack` returns `current_valid=false`.

@@ -369,8 +369,10 @@ def test_chatgpt_recovery_waits_for_assistant_before_capture(
     )
 
     assert events == [
+        "update:recovering",
         "goto:https://chatgpt.com/c/demo",
         "login",
+        "update:waiting_for_assistant",
         "wait_done",
         "capture",
         "save_response",

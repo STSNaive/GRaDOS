@@ -20,6 +20,7 @@ from grados.server import (
     compare_papers,
     extract_paper_full_text,
     get_citation_graph,
+    get_operation_status,
     get_papers_full_context,
     get_saved_paper_structure,
     import_local_pdf_library,
@@ -50,6 +51,7 @@ def test_server_registers_expected_tools() -> None:
         "compare_papers",
         "extract_paper_full_text",
         "get_citation_graph",
+        "get_operation_status",
         "get_papers_full_context",
         "get_saved_paper_structure",
         "import_local_pdf_library",
@@ -361,8 +363,15 @@ def test_search_academic_papers_indepth_writes_checkpoint_and_summary(tmp_path: 
 
     result = asyncio.run(search_academic_papers("composite damping", limit=1))
 
-    checkpoint_files = list(paths.research_checkpoints.glob("*/checkpoint.json"))
-    assert "Indepth Checkpoint" in result
+    deadline = time.monotonic() + 2.0
+    checkpoint_files = []
+    while time.monotonic() < deadline:
+        checkpoint_files = list(paths.research_checkpoints.glob("*/checkpoint.json"))
+        if checkpoint_files:
+            break
+        time.sleep(0.02)
+    assert "Indepth Operation Pending" in result
+    assert "Operation ID:" in result
     assert checkpoint_files
     assert (paths.paper_summaries / f"{safe_doi_filename('10.1234/indepth')}.json").is_file()
     checkpoint = checkpoint_files[0].read_text(encoding="utf-8")
@@ -427,8 +436,14 @@ def test_search_academic_papers_indepth_records_failed_extraction(tmp_path: Path
 
     result = asyncio.run(search_academic_papers("composite damping", limit=1))
 
-    checkpoint_files = list(paths.research_checkpoints.glob("*/checkpoint.json"))
-    assert "indepth extraction failed for 10.1234/failed-indepth" in result
+    deadline = time.monotonic() + 2.0
+    checkpoint_files = []
+    while time.monotonic() < deadline:
+        checkpoint_files = list(paths.research_checkpoints.glob("*/checkpoint.json"))
+        if checkpoint_files:
+            break
+        time.sleep(0.02)
+    assert "Indepth Operation Pending" in result
     assert checkpoint_files
     checkpoint = checkpoint_files[0].read_text(encoding="utf-8")
     assert "failed" in checkpoint
@@ -518,8 +533,11 @@ def test_search_academic_papers_indepth_uses_search_limit_without_hidden_cap(
 
     result = asyncio.run(search_academic_papers("composite damping", limit=10))
 
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and len(extracted) < 10:
+        time.sleep(0.02)
     assert len(extracted) == 10
-    assert "Candidates processed: 10" in result
+    assert "0/10 candidates dispatched" in result
     assert "first 8" not in result
 
 
@@ -669,9 +687,18 @@ def test_import_local_pdf_library_tool_returns_summary(tmp_path: Path, monkeypat
 
     result = asyncio.run(import_local_pdf_library(source_path="/tmp/papers"))
 
-    assert result["imported"] == 2
-    assert result["warnings"] == ["paper-b.pdf: QA validation failed, imported with warning."]
-    assert result["items"][0]["safe_doi"] == "10_1234_demo_a"
+    assert result["status"] == "pending"
+    assert result["kind"] == "local_pdf_import"
+    assert result["operation_id"]
+    deadline = time.monotonic() + 2.0
+    status = {}
+    while time.monotonic() < deadline:
+        status = asyncio.run(get_operation_status(operation_id=str(result["operation_id"]), detail=True))
+        if status.get("status") == "completed":
+            break
+        time.sleep(0.02)
+    assert status["status"] == "completed"
+    assert status["result_artifact_id"]
 
 
 def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path, monkeypatch) -> None:
@@ -986,6 +1013,74 @@ def test_extract_paper_full_text_repairs_qa_failure_with_next_fetch_route(
     assert record.authors == ["Alice Smith"]
     assert record.year == "2026"
     assert record.journal == "Composite Structures"
+
+
+def test_extract_paper_full_text_returns_pending_for_pdf_parse(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "grados-home"
+    paths = GRaDOSPaths(home)
+    paths.ensure_directories()
+    config = generate_default_config(paths)
+    config["extract"]["parsing"]["foreground_wait_seconds"] = 0.01
+    paths.config_file.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setenv("GRADOS_HOME", str(home))
+
+    import grados.extract.fetch as fetch_module
+    import grados.extract.parse as parse_module
+    import grados.extract.qa as qa_module
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    started = threading.Event()
+    release = threading.Event()
+    remote_calls: list[dict[str, object]] = []
+
+    async def fake_fetch_paper(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        return fetch_module.FetchResult(
+            outcome="pdf_obtained",
+            source="Browser",
+            via="browser",
+            state="ok",
+            pdf_buffer=b"%PDF-1.4\n%remote",
+            trace=[{"via": "browser", "state": "ok"}],
+        )
+
+    async def fake_parse_pdf(*args, **kwargs):  # noqa: ANN002, ANN003
+        started.set()
+        release.wait(timeout=2.0)
+        return parse_module.ParsePipelineResult(
+            markdown="# Remote PDF\n\n## Abstract\n\n" + ("durable parser content. " * 80),
+            parser_used="MinerU",
+        )
+
+    monkeypatch.setattr(fetch_module, "fetch_paper", fake_fetch_paper)
+    monkeypatch.setattr(parse_module, "parse_pdf_with_diagnostics", fake_parse_pdf)
+    monkeypatch.setattr(qa_module, "is_valid_paper_content", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        remote_metadata,
+        "record_remote_fetch_result",
+        lambda metadata_dir, **kwargs: remote_calls.append({"metadata_dir": metadata_dir, **kwargs}) or 1,
+    )
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+
+    result = asyncio.run(extract_paper_full_text(doi="10.1234/remote-pdf"))
+
+    assert started.wait(timeout=1.0)
+    assert result.startswith("## PDF Parse Accepted")
+    assert "Extraction Operation" in result
+    assert "Operation ID:**" in result
+    assert remote_calls[0]["fetch_status"] == "parse_in_progress"
+    assert remote_calls[0]["fetch_trace"] == [{"via": "browser", "state": "ok"}]
+    release.set()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if load_paper_record(paths.papers, doi="10.1234/remote-pdf") is not None:
+            break
+        time.sleep(0.02)
+    assert load_paper_record(paths.papers, doi="10.1234/remote-pdf") is not None
 
 
 def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, monkeypatch) -> None:

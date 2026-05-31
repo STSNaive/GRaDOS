@@ -380,6 +380,66 @@ def test_prepare_pack_fallback_skips_title_placeholder(monkeypatch, tmp_path: Pa
     )
 
 
+def test_prepare_pack_fallback_skips_author_and_metadata_blocks(monkeypatch, tmp_path: Path) -> None:
+    save_paper_markdown(
+        "10.1234/meta",
+        (
+            "# Metadata Paper\n\n"
+            "Authors: Alice Smith, Bob Lee\n\n"
+            "DOI: 10.1234/meta\n\n"
+            "Journal: Composite Structures\n\n"
+            "## Results\n\n"
+            "Composite damping improved vibration attenuation by 18%."
+        ),
+        _papers_dir(tmp_path),
+        title="Metadata Paper",
+        source="fixture",
+        authors=["Alice Smith", "Bob Lee"],
+        year="2026",
+        journal="Composite Structures",
+    )
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, limit, kwargs)
+        return [
+            PaperSearchResult(
+                doi="10.1234/meta",
+                safe_doi=safe_doi_filename("10.1234/meta"),
+                title="Metadata Paper",
+                authors=["Alice Smith", "Bob Lee"],
+                year="2026",
+                journal="Composite Structures",
+                section_name="Metadata Paper",
+                paragraph_start=1,
+                paragraph_count=1,
+                snippet="Authors: Alice Smith, Bob Lee",
+                score=1.2,
+            )
+        ]
+
+    monkeypatch.setattr(evidence_pack_module, "search_papers", fake_search_papers)
+
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="metadata leakage",
+        scoped_dois=["10.1234/meta"],
+    )
+    loaded = read_evidence_pack(_db_path(tmp_path), pack_id=str(receipt["pack_id"]))
+
+    assert receipt["answerable"] is True
+    assert receipt["evidence_count"] == 1
+    assert loaded["pack"]["evidence_items"][0]["text"] == (
+        "Composite damping improved vibration attenuation by 18%."
+    )
+    filtered = [
+        trace
+        for trace in loaded["pack"]["retrieval_trace"]
+        if trace.get("eligibility") == "rejected"
+    ]
+    assert any(trace.get("rejection_reason") in {"author_line", "doi_only", "journal_only"} for trace in filtered)
+
+
 def test_prepare_pack_keeps_one_eligible_item_per_scoped_doi(monkeypatch, tmp_path: Path) -> None:
     save_paper_markdown(
         "10.1234/multi",

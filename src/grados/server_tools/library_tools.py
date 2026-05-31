@@ -11,6 +11,7 @@ import stat
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -249,16 +250,20 @@ def _parse_in_progress_receipt(
         "## PDF Parse Accepted",
         "",
         f"- **DOI:** {doi}",
+        f"- **Operation ID:** {getattr(attempt, 'attempt_id', '')}",
+        "- **Kind:** parse_pdf",
         "- **Status:** in_progress",
         "- **Outcome:** parse_in_progress",
         f"- **Attempt ID:** {getattr(attempt, 'attempt_id', '')}",
+        "- **Progress:** parser_running",
+        "- **Result Path:** ",
         f"- **Input PDF:** {getattr(attempt, 'input_pdf_path', '')}",
         f"- **Input PDF Name:** {getattr(attempt, 'input_pdf_name', '')}",
         f"- **Source PDF Hash:** {getattr(attempt, 'input_pdf_hash', '')}",
         f"- **Action:** {action}",
         f"- **Foreground Wait Seconds:** {foreground_wait_seconds:g}",
         f"- **Attempt Stale Seconds:** {attempt_stale_seconds:g}",
-        "- **Next Action:** retry_parse_pdf_file_or_ingest_codex_downloaded_pdf_with_same_file_path",
+        "- **Next Action:** get_operation_status_or_retry_parse_pdf_file_with_same_file_path",
         "",
         (
             "GRaDOS is still parsing this local PDF in a durable DOI-bound attempt. "
@@ -279,16 +284,20 @@ def _parse_retry_wait_receipt(
         "## PDF Parse Accepted",
         "",
         f"- **DOI:** {doi}",
+        f"- **Operation ID:** {getattr(attempt, 'attempt_id', '')}",
+        "- **Kind:** parse_pdf",
         "- **Status:** retry_wait",
         "- **Outcome:** parse_retry_wait",
         f"- **Attempt ID:** {getattr(attempt, 'attempt_id', '')}",
+        "- **Progress:** retry_wait",
+        "- **Result Path:** ",
         f"- **Input PDF:** {getattr(attempt, 'input_pdf_path', '')}",
         f"- **Input PDF Name:** {getattr(attempt, 'input_pdf_name', '')}",
         f"- **Source PDF Hash:** {getattr(attempt, 'input_pdf_hash', '')}",
         f"- **Previous Failure Reason:** {getattr(attempt, 'failure_reason', '')}",
         f"- **Previous Error:** {getattr(attempt, 'error_message', '')}",
         f"- **Attempt Stale Seconds:** {attempt_stale_seconds:g}",
-        "- **Next Action:** retry_parse_pdf_file_or_ingest_codex_downloaded_pdf_with_same_file_path_after_stale_window",
+        "- **Next Action:** get_operation_status_or_retry_parse_pdf_file_with_same_file_path_after_stale_window",
         "",
         (
             "GRaDOS recorded a previous retryable parse failure for this DOI and PDF hash. "
@@ -670,6 +679,89 @@ async def extract_paper_full_text(
 
     metadata = normalized_fetch_metadata(fetch_result)
 
+    async def parse_obtained_pdf_with_attempt(fetch_candidate: Any) -> str:
+        candidate_metadata = normalized_fetch_metadata(fetch_candidate)
+        pdf_materialization = materialize_library_pdf(
+            doi=doi,
+            paths=paths,
+            input_path=None,
+            pdf_bytes=fetch_candidate.pdf_buffer,
+            copy_to_library=True,
+        )
+        if pdf_materialization.outcome == "conflict":
+            remote_warning = _record_remote_metadata_update(
+                metadata_dir=metadata_dir,
+                doi=doi,
+                fetch_status="failed",
+                has_fulltext=True,
+                source=fetch_candidate.source,
+                title=expected_title or (candidate_metadata.title if candidate_metadata is not None else ""),
+                metadata=candidate_metadata,
+                fetch_via=fetch_candidate.via,
+                fetch_state="pdf_materialization_conflict",
+                fetch_host=fetch_candidate.host,
+                fetch_resume=fetch_candidate.resume,
+                fetch_manual=fetch_candidate.manual,
+                fetch_trace=fetch_candidate.trace,
+                indexing_config=indexing_config,
+            )
+            return _append_remote_metadata_warning(
+                _pdf_materialization_conflict_receipt(doi, pdf_materialization),
+                remote_warning,
+            )
+
+        pdf_path = pdf_materialization.copied_pdf_path or pdf_materialization.canonical_pdf_path
+        parse_receipt = await parse_pdf_file(
+            file_path=pdf_path,
+            expected_title=expected_title,
+            doi=doi,
+            copy_to_library=True,
+            acquisition_via=fetch_candidate.via or fetch_candidate.source or "pdf_fetch",
+        )
+        outcome = _receipt_field(parse_receipt, "Outcome")
+        status = _receipt_field(parse_receipt, "Status")
+        fetch_status = _receipt_field(parse_receipt, "Fetch Status")
+        has_fulltext = parse_receipt.startswith("## PDF Parsed & Saved") or parse_receipt.startswith(
+            "## Paper Already Saved"
+        )
+        if parse_receipt.startswith("## PDF Parse Accepted"):
+            fetch_status = outcome or status or "parse_in_progress"
+        elif not fetch_status:
+            fetch_status = "failed"
+        remote_warning = _record_remote_metadata_update(
+            metadata_dir=metadata_dir,
+            doi=doi,
+            fetch_status=fetch_status,
+            has_fulltext=has_fulltext,
+            source=fetch_candidate.source,
+            title=expected_title or (candidate_metadata.title if candidate_metadata is not None else ""),
+            metadata=candidate_metadata,
+            fetch_via=fetch_candidate.via,
+            fetch_state=status or outcome or fetch_candidate.state,
+            fetch_host=fetch_candidate.host,
+            fetch_resume=fetch_candidate.resume,
+            fetch_manual=fetch_candidate.manual,
+            fetch_trace=fetch_candidate.trace,
+            indexing_config=indexing_config,
+        )
+        result = parse_receipt
+        if parse_receipt.startswith("## PDF Parse Accepted"):
+            operation_id = _receipt_field(parse_receipt, "Operation ID") or _receipt_field(parse_receipt, "Attempt ID")
+            result += (
+                "\n\n### Extraction Operation\n"
+                f"- **Operation ID:** {operation_id}\n"
+                "- **Kind:** extract_paper_full_text\n"
+                "- **Status:** pending\n"
+                "- **Progress:** pdf_materialized_parse_running\n"
+                "- **Result Path:** \n"
+                "- **Next Action:** call_get_operation_status_with_operation_id_or_retry_extract_later\n"
+                "- **PDF Materialization:** "
+                f"{pdf_materialization.action}\n"
+                "- **Canonical PDF:** "
+                f"{pdf_materialization.canonical_pdf_path}\n"
+            )
+        return _append_remote_metadata_warning(result, remote_warning)
+
     if fetch_result.outcome == "metadata_only":
         remote_warning = _record_remote_metadata_update(
             metadata_dir=metadata_dir,
@@ -724,6 +816,9 @@ async def extract_paper_full_text(
             remote_warning,
         )
 
+    if fetch_result.outcome == "pdf_obtained":
+        return await parse_obtained_pdf_with_attempt(fetch_result)
+
     async def build_artifact_for_fetch(candidate: Any) -> Any:
         if candidate.outcome == "native_full_text":
             return await build_library_document_artifact(
@@ -769,6 +864,8 @@ async def extract_paper_full_text(
     pdf_materialization = None
 
     while True:
+        if fetch_result.outcome == "pdf_obtained":
+            return await parse_obtained_pdf_with_attempt(fetch_result)
         artifact = await build_artifact_for_fetch(fetch_result)
         if not artifact.markdown:
             remaining_order = _remaining_fetch_order_after(configured_fetch_order, fetch_result.via)
@@ -2136,40 +2233,143 @@ async def import_local_pdf_library(
 ) -> dict[str, object]:
     """Import a local PDF library into GRaDOS canonical storage."""
     from grados.importing import import_local_pdf_library as run_import
-
-    paths, _ = get_paths_and_config()
-    result = await run_import(
-        source_path=Path(source_path),
-        paths=paths,
-        recursive=recursive,
-        glob_pattern=glob_pattern,
-        copy_to_library=copy_to_library,
+    from grados.research_state import (
+        append_research_run_event,
+        build_research_run_config_lock,
+        create_research_run_manifest,
+        save_research_artifact,
     )
 
-    item_limit = 25
-    items = [
-        {
-            "source_path": item.source_path,
-            "status": item.status,
-            "doi": item.doi,
-            "safe_doi": item.safe_doi,
-            "title": item.title,
-            "detail": item.detail,
-            "copied_pdf_path": item.copied_pdf_path,
-            "warnings": item.warnings,
-            "debug": item.debug,
-        }
-        for item in result.items[:item_limit]
-    ]
+    paths, config = get_paths_and_config()
+    if hasattr(paths, "ensure_directories"):
+        paths.ensure_directories()
+    source = Path(source_path).expanduser()
+    if source.is_file():
+        pdf_files = [source] if source.suffix.lower() == ".pdf" else []
+    elif source.is_dir():
+        iterator = source.rglob(glob_pattern) if recursive else source.glob(glob_pattern)
+        pdf_files = sorted(path.resolve() for path in iterator if path.is_file() and path.suffix.lower() == ".pdf")
+    else:
+        pdf_files = []
+
+    research_run_id = f"run_{uuid.uuid4().hex[:12]}"
+    create_research_run_manifest(
+        paths.database_state,
+        research_run_id=research_run_id,
+        title=f"Local PDF import: {source}",
+        user_question=f"Import local PDF library: {source}",
+        config_lock=build_research_run_config_lock(config, paths=paths),
+        metadata={"source": "import_local_pdf_library", "mode": "local_pdf_import", "status": "pending"},
+    )
+    append_research_run_event(
+        paths.database_state,
+        research_run_id=research_run_id,
+        event_type="import_run_pending",
+        source="import_local_pdf_library",
+        payload={
+            "source_path": str(source),
+            "recursive": recursive,
+            "glob_pattern": glob_pattern,
+            "copy_to_library": copy_to_library,
+            "candidate_count": len(pdf_files),
+        },
+    )
+
+    def worker() -> None:
+        try:
+            append_research_run_event(
+                paths.database_state,
+                research_run_id=research_run_id,
+                event_type="import_run_started",
+                source="import_local_pdf_library",
+                payload={"candidate_count": len(pdf_files)},
+            )
+            result = asyncio.run(
+                run_import(
+                    source_path=source,
+                    paths=paths,
+                    recursive=recursive,
+                    glob_pattern=glob_pattern,
+                    copy_to_library=copy_to_library,
+                )
+            )
+            content = asdict(result)
+            artifact = save_research_artifact(
+                paths.database_state,
+                kind="local_pdf_import_summary",
+                title=f"Local PDF import summary: {source}",
+                content=content,
+                metadata={
+                    "research_run_id": research_run_id,
+                    "research_run_role": "import_summary",
+                    "source": "import_local_pdf_library",
+                    "status": "completed",
+                },
+            )
+            append_research_run_event(
+                paths.database_state,
+                research_run_id=research_run_id,
+                event_type="import_summary_written",
+                source="import_local_pdf_library",
+                artifact_id=str(artifact.get("artifact_id") or ""),
+                payload={
+                    "scanned": result.scanned,
+                    "imported": result.imported,
+                    "skipped": result.skipped,
+                    "failed": result.failed,
+                    "warning_count": len(result.warnings),
+                },
+            )
+            append_research_run_event(
+                paths.database_state,
+                research_run_id=research_run_id,
+                event_type="import_run_completed",
+                source="import_local_pdf_library",
+                payload={
+                    "scanned": result.scanned,
+                    "imported": result.imported,
+                    "skipped": result.skipped,
+                    "failed": result.failed,
+                },
+            )
+        except Exception as exc:
+            append_research_run_event(
+                paths.database_state,
+                research_run_id=research_run_id,
+                event_type="import_run_failed",
+                source="import_local_pdf_library",
+                payload={"error": f"{exc.__class__.__name__}: {exc}"},
+            )
+
+    threading.Thread(
+        target=worker,
+        name=f"grados-import-run-{research_run_id[-8:]}",
+        daemon=True,
+    ).start()
+
     return {
-        "source_path": result.source_path,
-        "scanned": result.scanned,
-        "imported": result.imported,
-        "skipped": result.skipped,
-        "failed": result.failed,
-        "warnings": result.warnings,
-        "items": items,
-        "truncated_items": max(0, len(result.items) - item_limit),
+        "operation_id": research_run_id,
+        "kind": "local_pdf_import",
+        "status": "pending",
+        "created_at": "",
+        "updated_at": "",
+        "progress": {
+            "stage": "accepted",
+            "scanned": len(pdf_files),
+            "processed": 0,
+            "candidate_count": len(pdf_files),
+        },
+        "source_path": str(source),
+        "scanned": len(pdf_files),
+        "imported": 0,
+        "skipped": 0,
+        "failed": 0,
+        "warnings": [],
+        "items": [],
+        "truncated_items": 0,
+        "result_artifact_id": "",
+        "result_path": "",
+        "next_action": "get_operation_status",
     }
 
 
@@ -2680,7 +2880,8 @@ def register_library_tools(mcp: FastMCP) -> None:
             "Fetch, parse, and save one paper's canonical full text by DOI. "
             "If canonical Markdown is already saved, returns an already-saved receipt unless `force_refresh=true`. "
             "Returns a compact save receipt with URI, file path, section headings, "
-            "and warnings rather than the full paper text."
+            "and warnings rather than the full paper text. PDF-obtained parser work may return a pending "
+            "operation receipt; poll get_operation_status instead of resending extraction."
         )
     )(extract_paper_full_text)
 
@@ -2708,8 +2909,9 @@ def register_library_tools(mcp: FastMCP) -> None:
 
     mcp.tool(
         description=(
-            "Import a local PDF file or directory into GRaDOS canonical storage and the retrieval index. "
-            "Returns a summary plus the first 25 item results."
+            "Scan a local PDF file or directory, then import PDFs into GRaDOS canonical storage and the "
+            "retrieval index as a background import run. Returns operation_id and progress; poll "
+            "get_operation_status for the final summary artifact."
         )
     )(import_local_pdf_library)
 
@@ -2733,6 +2935,7 @@ def register_library_tools(mcp: FastMCP) -> None:
             "Parse a local PDF into markdown. "
             "Without a DOI it returns a truncated preview; with a DOI it saves canonical markdown "
             "and returns a save receipt. Use copy_to_library=true for host-agent downloaded PDFs "
-            "that should be archived under downloads/."
+            "that should be archived under downloads/. Long DOI-bound saves return parse_in_progress with "
+            "operation_id for get_operation_status."
         )
     )(parse_pdf_file)

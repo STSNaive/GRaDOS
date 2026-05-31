@@ -165,6 +165,50 @@ def test_compare_papers_returns_empty_axis_when_only_title_placeholder(
     assert "| Paper A (2025) |  |" in comparison.rendered
 
 
+def test_compare_papers_returns_empty_axis_when_only_author_metadata(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        compare_module,
+        "_resolve_documents",
+        lambda chroma_dir, dois: (
+            [
+                SimpleNamespace(
+                    doi="10.1234/demo",
+                    safe_doi="10_1234_demo",
+                    title="Paper A",
+                    year="2025",
+                    journal="Composite Structures",
+                )
+            ],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        compare_module,
+        "_select_sections",
+        lambda record, focus="methods": [
+            {
+                "name": "Methods",
+                "text": "Authors: Alice Smith, Bob Lee",
+                "paragraph_start": 3,
+                "paragraph_count": 1,
+            }
+        ],
+    )
+
+    comparison = compare_papers(
+        tmp_path / "chroma",
+        dois=["10.1234/demo"],
+        focus="methods",
+        comparison_axes=["method"],
+    )
+
+    assert comparison.papers[0].comparisons["method"] == ""
+    assert comparison.papers[0].evidence[0].warning == "no_evidence_for_axis"
+
+
 def test_compare_papers_escapes_markdown_table_cells(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         compare_module,

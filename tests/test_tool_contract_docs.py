@@ -87,6 +87,8 @@ def test_skill_tool_reference_mirrors_selected_live_schema_guardrails() -> None:
         ("read_paper_asset", "limit", "maximum", 100, "list-mode `limit` range 1-100"),
         ("read_paper_asset", "offset", "minimum", 0, "`offset` minimum 0"),
         ("query_research_artifacts", "limit", "maximum", 50, "`limit` range 1-50"),
+        ("get_operation_status", "operation_id", "minLength", 1, "`operation_id` minLength=1"),
+        ("get_operation_status", "detail", "default", False, "`detail` defaults to false"),
         ("get_papers_full_context", "dois", "minItems", 1, "`dois` minItems=1"),
         ("get_papers_full_context", "max_total_tokens", "maximum", 128000, "`max_total_tokens` range 1000-128000"),
         ("build_evidence_grid", "max_papers", "minimum", 1, "`max_papers` range 1-12"),

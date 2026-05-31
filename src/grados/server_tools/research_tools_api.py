@@ -16,6 +16,7 @@ __all__ = [
     "build_evidence_grid",
     "compare_papers",
     "get_citation_graph",
+    "get_operation_status",
     "get_papers_full_context",
     "manage_failure_cases",
     "prepare_evidence_pack",
@@ -131,6 +132,137 @@ async def query_research_artifacts(
         detail=detail,
         limit=limit,
     )
+
+
+async def get_operation_status(
+    operation_id: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Durable operation id returned by a pending long-running tool. "
+                "Accepts ChatGPT browser session ids, DOI-bound parse attempt ids, and research_run_id values."
+            ),
+        ),
+    ],
+    detail: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, attempt safe recovery/capture for recoverable external synthesis sessions. "
+                "This never resends the original ChatGPT prompt."
+            )
+        ),
+    ] = False,
+) -> dict[str, object]:
+    """Inspect or recover a durable long-running GRaDOS operation."""
+    from grados.browser.chatgpt.session_store import is_valid_chatgpt_session_id
+    from grados.research_state import read_research_run_manifest
+    from grados.research_tools import get_external_synthesis_operation_status as external_status
+    from grados.storage.parse_attempts import get_parse_attempt
+
+    paths, config = get_paths_and_config()
+    if is_valid_chatgpt_session_id(operation_id):
+        return await external_status(
+            paths.database_state,
+            paths.papers,
+            paths,
+            operation_id=operation_id,
+            detail=detail,
+            browser_config=config.extract.headless_browser,
+        )
+
+    parse_attempt = get_parse_attempt(paths.database_state, operation_id)
+    if parse_attempt is not None:
+        status = parse_attempt.status
+        completed = status == "completed"
+        failed = status == "failed"
+        return {
+            "found": True,
+            "operation_id": operation_id,
+            "kind": "parse_pdf",
+            "status": "completed" if completed else "failed" if failed else "pending",
+            "stage": status,
+            "created_at": parse_attempt.started_at,
+            "updated_at": parse_attempt.updated_at,
+            "progress": {
+                "stage": status,
+                "doi": parse_attempt.doi,
+                "input_pdf_name": parse_attempt.input_pdf_name,
+                "canonical_uri": parse_attempt.canonical_uri,
+            },
+            "next_action": (
+                "read_saved_paper_or_get_saved_paper_structure"
+                if completed
+                else "review_parse_failure_or_retry_after_stale_window"
+                if failed
+                else "retry_parse_pdf_file_or_get_operation_status_later"
+            ),
+            "result_artifact_id": "",
+            "result_path": parse_attempt.paper_path or parse_attempt.canonical_pdf_path,
+            "doi": parse_attempt.doi,
+            "attempt": asdict(parse_attempt) if detail else {},
+            "error": parse_attempt.error_message,
+        }
+
+    run_status = read_research_run_manifest(paths.database_state, research_run_id=operation_id)
+    if run_status.get("found"):
+        manifest = run_status.get("manifest")
+        manifest = manifest if isinstance(manifest, dict) else {}
+        events = [event for event in manifest.get("event_ledger", []) if isinstance(event, dict)]
+        artifact_index = [item for item in manifest.get("artifact_index", []) if isinstance(item, dict)]
+        last_event = events[-1] if events else {}
+        stage = str(last_event.get("event_type") or "run_started")
+        completed_events = {
+            "run_completed",
+            "research_checkpoint_written",
+            "import_run_completed",
+            "import_summary_written",
+        }
+        failed_events = {"run_failed", "import_run_failed"}
+        status = "completed" if stage in completed_events else "failed" if stage in failed_events else "pending"
+        result_path = ""
+        result_artifact_id = ""
+        for artifact in reversed(artifact_index):
+            candidate_path = str(artifact.get("path") or "")
+            if candidate_path and not result_path:
+                result_path = candidate_path
+            if artifact.get("artifact_id") and not result_artifact_id:
+                result_artifact_id = str(artifact.get("artifact_id") or "")
+        return {
+            "found": True,
+            "operation_id": operation_id,
+            "kind": str(run_status.get("kind") or "research_run_manifest"),
+            "status": status,
+            "stage": stage,
+            "created_at": str(manifest.get("created_at") or ""),
+            "updated_at": str(manifest.get("updated_at") or ""),
+            "progress": {
+                "stage": stage,
+                "event_count": len(events),
+                "artifact_count": len(artifact_index),
+                "last_event": last_event if detail else {},
+            },
+            "next_action": (
+                "read_linked_artifact_or_continue_canonical_reread"
+                if status == "completed"
+                else "inspect_failure_event"
+                if status == "failed"
+                else "call_get_operation_status_later"
+            ),
+            "result_artifact_id": result_artifact_id,
+            "result_path": result_path,
+            "manifest": manifest if detail else {},
+            "error": "",
+        }
+
+    return {
+        "found": False,
+        "operation_id": operation_id,
+        "kind": "unknown",
+        "status": "not_found",
+        "error": "operation_not_found",
+    }
 
 
 async def prepare_evidence_pack(
@@ -858,6 +990,15 @@ def register_research_tools_api(mcp: FastMCP) -> None:
 
     mcp.tool(
         description=(
+            "Inspect a durable long-running operation returned by GRaDOS tools. "
+            "Use this for pending external synthesis sessions, DOI-bound PDF parse attempts, "
+            "indepth search runs, and local PDF import runs; `detail=true` may recover a "
+            "ChatGPT browser response without resending the prompt."
+        )
+    )(get_operation_status)
+
+    mcp.tool(
+        description=(
             "Prepare a citation-grade evidence pack by materializing retrieved candidate anchors "
             "back into canonical paragraph blocks from `papers/*.md`. Returns a compact receipt, "
             "`pack_id`, `pack_sha256`, and answerability flags."
@@ -886,7 +1027,8 @@ def register_research_tools_api(mcp: FastMCP) -> None:
             "evidence pack, creates a packet, uses the private GRaDOS ChatGPT Chrome profile, "
             "verifies GRaDOS-validated Pro model and Pro Extended thinking route before sending, "
             "captures the response, saves it as advisory output, and audits it before "
-            "returning the canonical reread next action."
+            "returning the canonical reread next action. Long generations return pending operation receipts; "
+            "poll get_operation_status(detail=true) instead of resending the packet."
         )
     )(run_external_synthesis)
 

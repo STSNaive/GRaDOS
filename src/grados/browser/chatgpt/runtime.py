@@ -205,13 +205,16 @@ async def _run_page_flow(
                 message="Saved ChatGPT browser session has no conversation URL to recover.",
                 details={"session_id": session_id},
             )
+        store.update(session_id, status="recovering", recovery_attempted=True)
         await page.goto(conversation_url, wait_until="domcontentloaded", timeout=60_000)
         await ensure_chatgpt_logged_in(page)
+        store.update(session_id, status="waiting_for_assistant")
         await wait_for_assistant_done(
             page,
             timeout_seconds=assistant_timeout_seconds or 900.0,
         )
     else:
+        store.update(session_id, status="opening_chat")
         await open_new_chat(page)
         await ensure_chatgpt_logged_in(page)
         model = await ensure_latest_pro_model(page)
@@ -221,8 +224,14 @@ async def _run_page_flow(
         await clear_prompt_composer(page)
         baseline_turns = await read_conversation_turn_count(page)
         await paste_prompt(page, prompt)
+        store.update(session_id, status="submitting")
         min_turn_index = await submit_prompt(page, prompt, baseline_turns=baseline_turns)
-        store.update(session_id, conversation_url=str(getattr(page, "url", "")))
+        store.update(
+            session_id,
+            status="waiting_for_assistant",
+            conversation_url=str(getattr(page, "url", "")),
+            min_turn_index=min_turn_index,
+        )
         await wait_for_assistant_done(
             page,
             min_turn_index=min_turn_index,

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import threading
+import uuid
 from os import PathLike
 from pathlib import Path
 from typing import Annotated
@@ -154,6 +157,10 @@ def _format_local_state_line(state: dict[str, object]) -> str:
 
 def _receipt_fetch_status(receipt: str) -> str:
     lowered = receipt.lower()
+    if "parse_in_progress" in lowered or "pdf parse accepted" in lowered:
+        return "parse_in_progress"
+    if "parse_retry_wait" in lowered:
+        return "parse_retry_wait"
     if "paper extracted with partial success" in lowered:
         return "partial_success"
     if "paper extracted successfully" in lowered:
@@ -188,6 +195,7 @@ async def _run_indepth_for_results(
     paths: GRaDOSPaths | None,
     config: GRaDOSConfig,
     metadata_dir: Path | None,
+    research_run_id: str = "",
 ) -> tuple[list[str], str]:
     from grados.publisher.common import normalize_doi, safe_doi_filename
     from grados.research_checkpoint import (
@@ -215,6 +223,7 @@ async def _run_indepth_for_results(
     state_db = _research_state_db_path(paths)
     run_manifest = create_research_run_manifest(
         state_db,
+        research_run_id=research_run_id,
         user_question=query,
         search_queries=[query],
         config_lock=build_research_run_config_lock(config, paths=paths),
@@ -436,6 +445,17 @@ async def _run_indepth_for_results(
         artifact_id=checkpoint.conversation_id,
         payload={"path": str(checkpoint_path)},
     )
+    append_research_run_event(
+        state_db,
+        research_run_id=research_run_id,
+        event_type="run_completed",
+        source="search_academic_papers",
+        payload={
+            "candidate_count": len(candidates),
+            "fulltext_count": fulltext_count,
+            "summaries_written": summaries_written,
+        },
+    )
     summary = (
         "### Indepth Checkpoint\n"
         f"- Research Run ID: `{research_run_id}`\n"
@@ -447,6 +467,90 @@ async def _run_indepth_for_results(
         "- Note: checkpoint and paper_summary content is navigation material; cite only after `read_saved_paper`."
     )
     return warnings, summary
+
+
+def _new_run_id() -> str:
+    return f"run_{uuid.uuid4().hex[:12]}"
+
+
+def _start_indepth_run_for_results(
+    *,
+    query: str,
+    limit: int,
+    papers: list[object],
+    paths: GRaDOSPaths | None,
+    config: GRaDOSConfig,
+    metadata_dir: Path | None,
+) -> tuple[list[str], str]:
+    from grados.publisher.common import normalize_doi
+    from grados.research_state import (
+        append_research_run_event,
+        build_research_run_config_lock,
+        create_research_run_manifest,
+    )
+
+    if paths is None:
+        return ["indepth skipped because GRaDOS paths were unavailable."], ""
+
+    candidates = [paper for paper in papers[:limit] if normalize_doi(str(getattr(paper, "doi", "") or ""))]
+    state_db = _research_state_db_path(paths)
+    research_run_id = _new_run_id()
+    create_research_run_manifest(
+        state_db,
+        research_run_id=research_run_id,
+        user_question=query,
+        search_queries=[query],
+        config_lock=build_research_run_config_lock(config, paths=paths),
+        metadata={"source": "search_academic_papers", "mode": "indepth", "status": "pending"},
+    )
+    append_research_run_event(
+        state_db,
+        research_run_id=research_run_id,
+        event_type="run_pending",
+        source="search_academic_papers",
+        payload={"query": query, "limit": limit, "candidate_count": len(candidates), "mode": "indepth"},
+    )
+
+    def worker() -> None:
+        try:
+            asyncio.run(
+                _run_indepth_for_results(
+                    query=query,
+                    limit=limit,
+                    papers=papers,
+                    paths=paths,
+                    config=config,
+                    metadata_dir=metadata_dir,
+                    research_run_id=research_run_id,
+                )
+            )
+        except Exception as exc:
+            append_research_run_event(
+                state_db,
+                research_run_id=research_run_id,
+                event_type="run_failed",
+                source="search_academic_papers",
+                payload={"error": f"{exc.__class__.__name__}: {exc}"},
+            )
+
+    threading.Thread(
+        target=worker,
+        name=f"grados-indepth-run-{research_run_id[-8:]}",
+        daemon=True,
+    ).start()
+
+    summary = (
+        "### Indepth Operation Pending\n"
+        f"- Operation ID: `{research_run_id}`\n"
+        "- Kind: `indepth_search`\n"
+        "- Status: `pending`\n"
+        f"- Progress: `0/{len(candidates)} candidates dispatched`\n"
+        "- Result Artifact ID: ``\n"
+        "- Result Path: ``\n"
+        "- Next Action: `get_operation_status(operation_id=..., detail=false)`\n"
+        "- Note: metadata search results are returned now; extraction and summaries continue in the run manifest."
+    )
+    return [], summary
 
 
 def _dedupe_keep_order(values: list[str]) -> list[str]:
@@ -520,7 +624,7 @@ async def search_academic_papers(
 
     indepth_summary = ""
     if _resolved_indepth_enabled(config, indepth):
-        indepth_warnings, indepth_summary = await _run_indepth_for_results(
+        indepth_warnings, indepth_summary = _start_indepth_run_for_results(
             query=query,
             limit=limit,
             papers=list(result.results),
@@ -727,7 +831,8 @@ def register_search_tools(mcp: FastMCP) -> None:
             "Search remote academic databases for paper metadata only. "
             "Returns deduplicated titles, abstracts, DOIs, and a continuation token when more results are available; "
             "also exposes local saved/full-text/summary state. "
-            "Use `indepth=true` only when you want GRaDOS to materialize returned candidates immediately."
+            "Use `indepth=true` only when you want GRaDOS to start a background materialization run for "
+            "returned candidates; poll get_operation_status with the returned operation id."
         )
     )(search_academic_papers)
 

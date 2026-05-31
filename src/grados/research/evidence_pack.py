@@ -253,6 +253,12 @@ def _item_section_name(item: EvidencePackItem) -> str:
 def _missing_reason_for_rejection(reason: str) -> str:
     if reason == "backmatter_section":
         return "no_non_reference_evidence"
+    if reason in {"author_line", "doi_only", "journal_only", "metadata_only", "title_only"}:
+        return "no_substantive_body_evidence"
+    if reason == "administrative_section":
+        return "no_administrative_evidence"
+    if reason == "citation_fragment":
+        return "no_citation_only_evidence"
     return "no_eligible_evidence"
 
 

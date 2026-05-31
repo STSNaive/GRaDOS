@@ -12,6 +12,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Updated the locked Python dependency graph for vulnerable networking, XML, auth, multipart, and parser-adjacent packages, including `authlib`, `cryptography`, `lxml`, `python-multipart`, `urllib3`, and Docling parser dependencies.
 
 ### Added
+- Added `get_operation_status`, a generic MCP status/recovery tool for pending external synthesis sessions, DOI-bound PDF parse attempts, indepth search runs, and local PDF import runs.
 - Added a durable DOI-bound local PDF parse-attempt ledger plus `extract.parsing.foreground_wait_seconds` and `extract.parsing.attempt_stale_seconds`, allowing `parse_pdf_file(..., doi=...)` to return `parse_in_progress` while long parser runs continue in the background.
 - Added `plan_library_pdf_cleanup`, a dry-run report for noncanonical `downloads/` PDFs that duplicate managed `downloads/{safe_doi}.pdf` artifacts by hash.
 - Added `downloaded_file_path` support to `ingest_codex_downloaded_pdf` so a host-known Chrome download path can be validated and ingested without relying on pending/watch-dir state.
@@ -49,11 +50,14 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed evidence eligibility gating to reject author-line, DOI-only, journal-only, metadata-only, title-only, reference, and administrative fragments before helper surfaces can count them as usable evidence.
+- Changed `run_external_synthesis` to persist session/packet/prompt recovery state before waiting and to return a pending operation receipt before host tool timeouts; status recovery can capture/save/audit the final response without resending the prompt.
+- Changed `extract_paper_full_text` PDF-obtained paths to materialize the PDF and reuse DOI-bound parse attempts, preserving fetch trace and remote metadata while long parser work continues in the background.
+- Changed `search_academic_papers(indepth=true)` and `import_local_pdf_library` to return fast operation receipts and advance work through research-run manifests instead of blocking one MCP call on all extraction/import work.
 - Changed publisher browser reuse so retained interactive windows keep manual/challenge pages open while each DOI fetch uses a job-owned page and only tracks explicitly owned popup/download pages.
 - Changed `extract_paper_full_text` so parser QA failures continue through configured parser/fetch fallbacks and unresolved QA failures are saved as `partial_success` instead of ordinary `fulltext`.
 - Changed evidence packs and scoped evidence grids to report requested, covered, and missing DOI coverage with missing reasons.
 - Changed `compare_papers` to exclude References, CRediT, acknowledgements, funding, declarations, and similar backmatter sections from default comparison evidence.
-- Changed `run_external_synthesis` to return a recoverable browser-session receipt when ChatGPT generation exceeds the foreground wait, allowing later recovery with `recover_session_id`.
 - Changed `search_academic_papers(indepth=true)` receipts/tool description to state that indepth is a one-pass materialization of the current search candidates, not autonomous query expansion.
 - Changed `ingest_codex_downloaded_pdf` to treat `parse_in_progress` and background-completed canonical saves as recoverable non-failure states instead of recording `parse_failed` after a foreground tool timeout.
 - Changed DOI-bound local PDF parse attempts so retryable `parse_failed` receipts are not permanent caches: repeated calls wait for the stale window and then restart from the same PDF, while PDF materialization conflicts remain terminal.

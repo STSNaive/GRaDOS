@@ -34,6 +34,7 @@ __all__ = [
     "prepare_external_synthesis_from_topic",
     "prepare_external_synthesis_packet",
     "preview_external_synthesis_packet",
+    "get_external_synthesis_operation_status",
     "run_external_synthesis",
     "save_external_synthesis_result",
 ]
@@ -41,7 +42,7 @@ __all__ = [
 EXTERNAL_SYNTHESIS_PACKET_KIND = "external_synthesis_packet"
 EXTERNAL_SYNTHESIS_RESULT_KIND = "external_synthesis_result"
 EXTERNAL_SYNTHESIS_PROTOCOL_VERSION = "external-synthesis-v1"
-DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS = 120.0
+DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS = 75.0
 
 ExternalSynthesisMode = Literal["review", "synthesize"]
 
@@ -266,28 +267,47 @@ def _packet_section_name(item: dict[str, Any]) -> str:
 def _validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
     blocked_items: list[dict[str, Any]] = []
     blocked_reasons: list[str] = []
+    warning_items: list[dict[str, Any]] = []
     for item in packet.get("items", []):
         if not isinstance(item, dict):
             continue
         anchor_id = str(item.get("anchor_id") or "")
         section_name = _packet_section_name(item)
-        text = str(item.get("short_excerpt") or item.get("candidate_claim") or "")
-        reason = classify_evidence_rejection(
+        known_title = str(item.get("title") or "")
+        excerpt_reason = classify_evidence_rejection(
             section_name,
-            text,
-            known_title=str(item.get("title") or ""),
+            str(item.get("short_excerpt") or ""),
+            known_title=known_title,
         )
-        if reason is None:
-            continue
-        blocked_items.append(
-            {
-                "anchor_id": anchor_id,
-                "doi": str(item.get("doi") or ""),
-                "section_name": section_name,
-                "reason": reason,
-            }
+        claim_reason = classify_evidence_rejection(
+            section_name,
+            str(item.get("candidate_claim") or ""),
+            known_title=known_title,
         )
-        blocked_reasons.append(f"{anchor_id or 'anchor'}:{reason}:{section_name or 'unknown_section'}")
+        if claim_reason is not None:
+            warning_items.append(
+                {
+                    "anchor_id": anchor_id,
+                    "doi": str(item.get("doi") or ""),
+                    "section_name": section_name,
+                    "reason": claim_reason,
+                    "field": "candidate_claim",
+                }
+            )
+        if excerpt_reason is not None:
+            blocked_items.append(
+                {
+                    "anchor_id": anchor_id,
+                    "doi": str(item.get("doi") or ""),
+                    "section_name": section_name,
+                    "reason": excerpt_reason,
+                    "excerpt_rejection_reason": excerpt_reason,
+                    "candidate_claim_rejection_reason": claim_reason or "",
+                }
+            )
+            blocked_reasons.append(
+                f"{anchor_id or 'anchor'}:{excerpt_reason}:{section_name or 'unknown_section'}"
+            )
 
     missing_reasons = packet.get("missing_reasons")
     missing_reason_map = missing_reasons if isinstance(missing_reasons, dict) else {}
@@ -311,6 +331,7 @@ def _validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
         "sendable": not blocked_reasons,
         "blocked_reasons": blocked_reasons,
         "blocked_items": blocked_items,
+        "warning_items": warning_items,
     }
 
 
@@ -335,6 +356,7 @@ def _packet_preview(
         "verify": packet["verify"],
         "blocked_reasons": list(validation.get("blocked_reasons", [])),
         "blocked_items": list(validation.get("blocked_items", [])),
+        "warning_items": list(validation.get("warning_items", [])),
         "prompt_skeleton": (
             "Send the packet to ChatGPT Pro only after the gate is enabled. Ask for claims, "
             "anchor_ids, confidence, caveats, missing_evidence, and forbidden_or_outside_content."
@@ -507,6 +529,305 @@ def prepare_external_synthesis_from_topic(
     }
 
 
+def _selection_label(record: dict[str, Any], key: str) -> str:
+    raw = record.get(key)
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("resolved_label") or "")
+
+
+def _operation_lookup_sha256(operation_id: str) -> str:
+    value = operation_id.strip()
+    if not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _find_external_result_for_session(
+    db_path: Path,
+    *,
+    session_id: str,
+    prompt_hash: str = "",
+    allow_prompt_hash_fallback: bool = False,
+) -> dict[str, Any] | None:
+    artifacts = query_research_artifacts(
+        db_path,
+        kind=EXTERNAL_SYNTHESIS_RESULT_KIND,
+        detail=True,
+        limit=100,
+    )
+    for artifact in artifacts.get("items", []):
+        if not isinstance(artifact, dict):
+            continue
+        metadata = artifact.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        content = artifact.get("content")
+        if not isinstance(content, dict):
+            content = {}
+        if session_id and str(metadata.get("browser_session_id") or "") == session_id:
+            return artifact
+        session_hash = _operation_lookup_sha256(session_id)
+        if session_hash and session_hash in {
+            str(metadata.get("operation_lookup_sha256") or ""),
+            str(content.get("operation_lookup_sha256") or ""),
+        }:
+            return artifact
+        if (
+            allow_prompt_hash_fallback
+            and prompt_hash
+            and str(content.get("prompt_hash") or metadata.get("prompt_hash") or "") == prompt_hash
+        ):
+            if str(metadata.get("runtime") or "") == "grados_chatgpt_browser":
+                return artifact
+    return None
+
+
+def _external_operation_status_payload(
+    *,
+    operation_id: str,
+    record: dict[str, Any],
+    result_artifact: dict[str, Any] | None = None,
+    error: str = "",
+) -> dict[str, Any]:
+    session_status = str(record.get("status") or "unknown")
+    completed = result_artifact is not None
+    failed = session_status == "failed" and not completed
+    operation_status = "completed" if completed else "failed" if failed else "pending"
+    prompt_hash = str(record.get("prompt_hash") or "")
+    packet_artifact_id = str(record.get("packet_artifact_id") or "")
+    conversation_url = str(record.get("conversation_url") or "")
+    return {
+        "found": True,
+        "operation_id": operation_id,
+        "kind": "external_synthesis",
+        "status": operation_status,
+        "stage": session_status,
+        "created_at": str(record.get("created_at") or ""),
+        "updated_at": str(record.get("updated_at") or ""),
+        "progress": {
+            "stage": session_status,
+            "conversation_url_available": bool(conversation_url),
+            "response_captured": bool(record.get("response_text") or record.get("response_path")),
+            "result_saved": completed,
+        },
+        "next_action": (
+            "read_saved_external_synthesis_result_or_audit"
+            if completed
+            else "call_get_operation_status_with_detail_true_after_chatgpt_finishes"
+            if operation_status == "pending"
+            else "inspect_browser_session_record_and_retry_after_fixing_error"
+        ),
+        "result_artifact_id": str(result_artifact.get("artifact_id") or "") if result_artifact else "",
+        "result_path": str(record.get("response_path") or ""),
+        "pack_id": str(record.get("pack_id") or ""),
+        "packet_artifact_id": packet_artifact_id,
+        "prompt_hash": prompt_hash,
+        "conversation_url": conversation_url,
+        "browser_session_id": operation_id,
+        "browser_session_record": str(record.get("session_record") or ""),
+        "recovery_metadata": {
+            "recover_session_id": operation_id,
+            "packet_artifact_id": packet_artifact_id,
+            "prompt_hash": prompt_hash,
+            "conversation_url": conversation_url,
+        },
+        "error": error,
+    }
+
+
+def _save_captured_session_result(
+    db_path: Path,
+    papers_dir: Path,
+    *,
+    operation_id: str,
+    record: dict[str, Any],
+    session_record_path: str,
+) -> dict[str, Any]:
+    response_text = str(record.get("response_text") or "")
+    response_path = str(record.get("response_path") or "")
+    if not response_text and response_path:
+        try:
+            response_text = Path(response_path).read_text(encoding="utf-8")
+        except OSError:
+            response_text = ""
+    if not response_text:
+        return {
+            "ok": False,
+            "saved": False,
+            "error": "chatgpt_response_not_captured",
+            "message": "The ChatGPT session has no captured response text yet.",
+        }
+
+    pack_id = str(record.get("pack_id") or "")
+    if not pack_id:
+        return {
+            "ok": False,
+            "saved": False,
+            "error": "browser_session_pack_missing",
+            "message": "Saved ChatGPT browser session has no linked evidence pack id.",
+        }
+
+    structured_response = _structured_response_from_text(response_text)
+    structured_claims = None
+    structured_gaps = None
+    if isinstance(structured_response, dict):
+        raw_claims = structured_response.get("claims")
+        if isinstance(raw_claims, list):
+            structured_claims = [dict(item) for item in raw_claims if isinstance(item, dict)]
+        structured_gaps = _coerce_string_list(
+            structured_response.get("missing_evidence") or structured_response.get("gaps")
+        )
+    return save_external_synthesis_result(
+        db_path,
+        papers_dir,
+        pack_id=pack_id,
+        response=response_text,
+        packet_artifact_id=str(record.get("packet_artifact_id") or ""),
+        prompt_hash=str(record.get("prompt_hash") or ""),
+        conversation_url=str(record.get("conversation_url") or ""),
+        model_label=_selection_label(record, "model_selection"),
+        thinking_label=_selection_label(record, "thinking_selection"),
+        mode=str(record.get("mode") or "review"),
+        claims=structured_claims,
+        gaps=structured_gaps,
+        metadata={
+            "runtime": "grados_chatgpt_browser",
+            "browser_session_id": operation_id,
+            "browser_session_record": session_record_path,
+            "capture": {
+                "method": str(record.get("capture_method") or ""),
+                "warnings": list(record.get("capture_warnings") or []),
+            },
+        },
+        audit=True,
+    )
+
+
+async def get_external_synthesis_operation_status(
+    db_path: Path,
+    papers_dir: Path,
+    paths: GRaDOSPaths,
+    *,
+    operation_id: str,
+    detail: bool = False,
+    browser_config: HeadlessBrowserConfig | None = None,
+) -> dict[str, Any]:
+    """Inspect or recover one durable ChatGPT external-synthesis operation."""
+    from grados.browser.chatgpt.runtime import run_chatgpt_browser_session
+    from grados.browser.chatgpt.session_store import ChatGPTSessionStore, is_valid_chatgpt_session_id
+
+    if not is_valid_chatgpt_session_id(operation_id):
+        return {
+            "found": False,
+            "operation_id": operation_id,
+            "kind": "external_synthesis",
+            "status": "not_found",
+            "error": "invalid_browser_session_id",
+        }
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    record = store.read(operation_id)
+    if not record:
+        return {
+            "found": False,
+            "operation_id": operation_id,
+            "kind": "external_synthesis",
+            "status": "not_found",
+            "error": "browser_session_not_found",
+        }
+    session_record_path = str(store.session_json(operation_id))
+    record["session_record"] = session_record_path
+    prompt_hash = str(record.get("prompt_hash") or "")
+    existing = _find_external_result_for_session(
+        db_path,
+        session_id=operation_id,
+        prompt_hash=prompt_hash,
+        allow_prompt_hash_fallback=False,
+    )
+    if existing is not None:
+        return _external_operation_status_payload(
+            operation_id=operation_id,
+            record=record,
+            result_artifact=existing,
+        )
+
+    if detail and str(record.get("status") or "") == "captured":
+        saved = _save_captured_session_result(
+            db_path,
+            papers_dir,
+            operation_id=operation_id,
+            record=record,
+            session_record_path=session_record_path,
+        )
+        if saved.get("saved"):
+            existing = query_research_artifacts(
+                db_path,
+                artifact_id=str(saved.get("artifact_id") or ""),
+                detail=True,
+                limit=1,
+            ).get("items", [None])[0]
+            if isinstance(existing, dict):
+                return _external_operation_status_payload(
+                    operation_id=operation_id,
+                    record=store.read(operation_id) or record,
+                    result_artifact=existing,
+                )
+        return _external_operation_status_payload(
+            operation_id=operation_id,
+            record=record,
+            error=str(saved.get("error") or "external_synthesis_save_failed"),
+        )
+
+    if detail and str(record.get("conversation_url") or ""):
+        browser_result = await run_chatgpt_browser_session(
+            paths,
+            browser_config or HeadlessBrowserConfig(),
+            prompt="",
+            pack_id=str(record.get("pack_id") or ""),
+            packet_artifact_id=str(record.get("packet_artifact_id") or ""),
+            prompt_hash=prompt_hash,
+            mode=str(record.get("mode") or "review"),
+            metadata=dict(record.get("metadata") or {}),
+            recover_session_id=operation_id,
+            assistant_timeout_seconds=DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS,
+        )
+        refreshed = store.read(operation_id) or record
+        refreshed["session_record"] = session_record_path
+        if browser_result.ok:
+            saved = _save_captured_session_result(
+                db_path,
+                papers_dir,
+                operation_id=operation_id,
+                record=refreshed,
+                session_record_path=session_record_path,
+            )
+            if saved.get("saved"):
+                existing = query_research_artifacts(
+                    db_path,
+                    artifact_id=str(saved.get("artifact_id") or ""),
+                    detail=True,
+                    limit=1,
+                ).get("items", [None])[0]
+                if isinstance(existing, dict):
+                    return _external_operation_status_payload(
+                        operation_id=operation_id,
+                        record=refreshed,
+                        result_artifact=existing,
+                    )
+            return _external_operation_status_payload(
+                operation_id=operation_id,
+                record=refreshed,
+                error=str(saved.get("error") or "external_synthesis_save_failed"),
+            )
+        return _external_operation_status_payload(
+            operation_id=operation_id,
+            record=refreshed,
+            error=browser_result.error_code or browser_result.error,
+        )
+
+    return _external_operation_status_payload(operation_id=operation_id, record=record)
+
+
 async def run_external_synthesis(
     chroma_dir: Path,
     db_path: Path,
@@ -610,20 +931,44 @@ async def run_external_synthesis(
             "assistant_timeout",
             "capture_failed",
         }
+        operation_status = "pending" if recoverable else "failed"
+        packet_sendable = bool(packet.get("sendable")) if packet else bool(recover_session_id)
         return {
             "ok": False,
-            "sendable": False,
+            "sendable": packet_sendable,
+            "packet_sendable": packet_sendable,
             "saved": False,
+            "operation_id": browser_result.session_id,
+            "kind": "external_synthesis",
+            "status": operation_status,
+            "stage": browser_result.status,
+            "progress": {
+                "stage": browser_result.status,
+                "response_captured": False,
+                "result_saved": False,
+            },
             "error": browser_result.error_code or "chatgpt_browser_failed",
             "message": browser_result.error,
             "recoverable": recoverable,
             "browser_session_id": browser_result.session_id,
             "browser_session_record": browser_result.session_record_path,
+            "conversation_url": browser_result.conversation_url,
+            "packet_artifact_id": packet_artifact_id,
+            "prompt_hash": prompt_hash,
+            "result_artifact_id": "",
+            "result_path": "",
             "next_action": (
-                "retry run_external_synthesis with recover_session_id after ChatGPT finishes"
+                "call get_operation_status with detail=true after ChatGPT finishes"
                 if recoverable
                 else "inspect browser error and retry when fixed"
             ),
+            "recovery_metadata": {
+                "recover_session_id": browser_result.session_id,
+                "packet_artifact_id": packet_artifact_id,
+                "prompt_hash": prompt_hash,
+                "browser_session_record": browser_result.session_record_path,
+                "conversation_url": browser_result.conversation_url,
+            },
             "browser": browser_payload,
             "packet": packet,
         }
@@ -680,9 +1025,21 @@ async def run_external_synthesis(
     return {
         "ok": bool(saved.get("ok")),
         "sendable": True,
+        "packet_sendable": True,
         "saved": bool(saved.get("saved")),
         "audited": bool(saved.get("audited")),
+        "operation_id": browser_result.session_id,
+        "kind": "external_synthesis",
+        "status": "completed" if saved.get("saved") else "failed",
+        "stage": "captured",
+        "progress": {
+            "stage": "captured",
+            "response_captured": True,
+            "result_saved": bool(saved.get("saved")),
+        },
         "artifact_id": saved.get("artifact_id", ""),
+        "result_artifact_id": saved.get("artifact_id", ""),
+        "result_path": str(browser_payload.get("metadata", {}).get("response_path", "")),
         "pack_id": source_pack_id,
         "packet_artifact_id": packet_artifact_id,
         "prompt_hash": prompt_hash,
@@ -789,6 +1146,10 @@ def save_external_synthesis_result(
     verify_result = verify_evidence_pack(db_path, papers_dir, pack_id=pack.pack_id)
     text = _response_text(response)
     response_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    raw_metadata = metadata or {}
+    operation_lookup_sha256 = _operation_lookup_sha256(
+        str(raw_metadata.get("browser_session_id") or raw_metadata.get("recover_session_id") or "")
+    )
     structured_claims = claims
     if structured_claims is None and isinstance(response, dict):
         response_claims = response.get("claims")
@@ -819,6 +1180,8 @@ def save_external_synthesis_result(
         "advisory_only": True,
         "next_action": "audit_external_synthesis_result",
     }
+    if operation_lookup_sha256:
+        content_payload["operation_lookup_sha256"] = operation_lookup_sha256
     if packet_content is not None:
         content_payload["packet"] = {
             "artifact_id": packet_artifact_id,
@@ -826,7 +1189,7 @@ def save_external_synthesis_result(
             "item_count": packet_content.get("item_count"),
         }
     artifact_metadata = {
-        **(metadata or {}),
+        **raw_metadata,
         "protocol": EXTERNAL_SYNTHESIS_PROTOCOL_VERSION,
         "pack_id": pack.pack_id,
         "pack_sha256": pack.pack_sha256,
@@ -838,6 +1201,8 @@ def save_external_synthesis_result(
         "thinking_label": thinking_label,
         "conversation_url": conversation_url,
     }
+    if operation_lookup_sha256:
+        artifact_metadata["operation_lookup_sha256"] = operation_lookup_sha256
     receipt = save_research_artifact(
         db_path,
         kind=EXTERNAL_SYNTHESIS_RESULT_KIND,

@@ -441,6 +441,7 @@
 - `papers/*.md` 继续是唯一 citation-grade full-text source。
 - 新增 canonical block registry：从当前 canonical Markdown 生成稳定 paragraph blocks，包含 `block_id`、`block_type`、`heading_path`、`ordinal`、`text_sha256`、`prev_hash`、`next_hash` 和 `doc_sha256`；MVP 先支持 paragraph，保留表格、图注、公式等扩展位。
 - `prepare_evidence_pack` 只能把候选 retrieval anchor materialize 成 canonical block snapshot 后再保存 pack；retrieval score、RRF rank 和 selection trace 只能进入 trace/metadata，不进入证据层。
+- 共享 evidence eligibility gate 必须在 pack、external synthesis packet、compare/audit 等 helper surface 计入证据前过滤 title-only、author-line、DOI-only、journal-only、metadata-only、citation-only、References 和 administrative fragments。找不到正文证据时应报告 missing reason，而不是用元数据占位。
 - Evidence pack 复用 `research_artifacts(kind="evidence_pack")`，不新增并行状态库。
 - `verify_evidence_pack` 必须重新读取当前 `papers/*.md` 并重建 block registry；不得读取 Chroma、FTS 或旧 pack 自身来判断 current validity。
 - `audit_answer_against_pack(strict=true)` 只使用 pack 内 evidence items，不全库搜索补证；缺口通过 `suggest_missing_evidence` 暴露为后续动作。
@@ -689,3 +690,29 @@
 - Host 前台 timeout 不再被误导为 parse failure；长解析会返回可恢复 receipt，并且后续重复调用能复用 running/completed attempt。
 - 用户可按环境调整前台等待和 stale 判定，但单个 parser 自己的 timeout 仍由 `mineru_timeout`、`marker_timeout` 等既有配置决定。
 - `download_watch_dir` 继续只是 ingest scan-only 配置；已知文件路径仍应传 `downloaded_file_path` 或直接调用 `parse_pdf_file(file_path=...)`。
+
+---
+
+## ADR-026：长耗时 MCP workflow 返回 durable receipt 并通过统一状态面恢复
+
+- 状态：Accepted
+- 日期：2026-05-31
+
+### 背景
+- Codex host / MCP 前台等待窗口短于 ChatGPT Pro 长回答、MinerU/Docling 解析、indepth 多 DOI 抽取和本地 PDF 批量导入等真实任务耗时。
+- 仅延长单次工具等待或发送 MCP progress/cancel 不能解决核心问题：host 超时后仍需要知道任务是否还在运行、是否已完成、能否恢复，以及是否会重复提交 prompt 或重复解析同一个 PDF。
+- GRaDOS 已经有多条 durable 状态来源：ChatGPT session record、DOI-bound `parse_attempts`、`research_run_manifest` 和导入 run 事件。需要一个用户/agent 可见的状态面把这些状态合并成稳定恢复合同。
+
+### 决策
+- 长耗时或用户接管 workflow 先返回 durable receipt，而不是依赖单个 MCP 调用跑到最终完成。Receipt 至少包含 `operation_id` 或兼容 id、`kind`、`status`、`progress`、`next_action`、result/error pointer 和恢复建议。
+- `get_operation_status(operation_id, detail=false)` 是统一状态/恢复入口。它可以读取或桥接 external synthesis session、DOI-bound parse attempt、indepth research run 和 local PDF import run；`detail=true` 可用于 ChatGPT browser session capture/recovery，但不得重新发送原 prompt。
+- `run_external_synthesis` 必须先持久化 packet/session/prompt hash 与 submit-once metadata，再等待 ChatGPT；前台等待耗尽时返回 `pending`，后续 status/recovery 只捕获、保存和审计同一次回答。
+- `extract_paper_full_text` 的 PDF-obtained 路径先 materialize PDF，再复用 DOI-bound parse attempt；already-saved、metadata-only、native full text 和普通 local read 等短路径保持同步返回。
+- `search_academic_papers(indepth=true)` 和 `import_local_pdf_library` 以 run manifest / event ledger 推进批处理；单个 DOI 或文件失败不能吞掉整个 run 的状态。
+- Operation/session/parse/run metadata 是控制面和恢复信息，不是 citation evidence，不写入 canonical Markdown 正文，也不能替代 `papers/*.md` 或 current-valid evidence pack。
+- MCP progress 和 cancellation 可以作为体验增强，但 timeout 安全来自 durable receipt + status/recovery，而不是来自更长前台等待。
+
+### 结果与影响
+- Host agent 收到 pending 时应 poll `get_operation_status`，不要通过重新发送 ChatGPT prompt、重新点击下载、重新导入目录或重复解析同一 PDF 来恢复。
+- 现有各领域 store 继续是当前实现真值；未来可以用 Operation Registry 统一 lifecycle/event schema，但必须保持现有 receipt 和兼容 id 可恢复。
+- README、CHANGELOG、skill tool reference 和 MCP schema drift tests 共同维护用户可见合同；TODO 只保留未完成的 Operation Registry、browser runtime 和写作流水线后续项。

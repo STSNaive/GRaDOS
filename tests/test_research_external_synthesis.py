@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import grados.research.evidence_pack as evidence_pack_module
+from grados.browser.chatgpt.session_store import ChatGPTSessionStore, new_session_id
 from grados.browser.chatgpt.types import (
     ChatGPTBrowserResult,
     ChatGPTCapture,
@@ -16,6 +17,7 @@ from grados.research.external_synthesis import (
     EXTERNAL_SYNTHESIS_PACKET_KIND,
     EXTERNAL_SYNTHESIS_RESULT_KIND,
     audit_external_synthesis_result,
+    get_external_synthesis_operation_status,
     prepare_external_synthesis_from_topic,
     prepare_external_synthesis_packet,
     preview_external_synthesis_packet,
@@ -290,6 +292,127 @@ def test_prepare_external_synthesis_packet_blocks_reference_only_item(tmp_path: 
     assert saved_packets["count"] == 0
 
 
+def test_prepare_external_synthesis_packet_blocks_author_metadata_item(tmp_path: Path) -> None:
+    save_paper_markdown(
+        "10.1234/authors",
+        "# Author Leakage\n\nAuthors: Alice Smith, Bob Lee\n\n## Results\n\nSubstantive body.",
+        _papers_dir(tmp_path),
+        title="Author Leakage",
+        source="fixture",
+    )
+    manifest = build_canonical_block_manifest(_papers_dir(tmp_path), doi="10.1234/authors")
+    assert manifest is not None
+    block = next(item for item in manifest.blocks if item.text.startswith("Authors:"))
+    item = EvidencePackItem(
+        canonical_uri=block.canonical_uri,
+        paper_id=block.paper_id,
+        safe_doi=block.safe_doi,
+        block_id=block.block_id,
+        block_type=block.block_type,
+        text=block.text,
+        text_sha256=block.text_sha256,
+        doi=block.doi,
+        heading_path=list(block.heading_path),
+        ordinal=block.ordinal,
+        source_paragraph_index=block.source_paragraph_index,
+        doc_sha256=block.doc_sha256,
+        prev_hash=block.prev_hash,
+        next_hash=block.next_hash,
+        title="Author Leakage",
+    )
+    saved = save_evidence_pack(
+        _db_path(tmp_path),
+        EvidencePack(
+            pack_id="pack_author_only",
+            topic="author leakage",
+            query="author leakage",
+            subquestions=["author leakage"],
+            answerable=True,
+            evidence_items=[item],
+            pack_sha256="",
+            created_at="2026-05-28T00:00:00+00:00",
+        ),
+    )
+
+    packet = prepare_external_synthesis_packet(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(saved["pack_id"]),
+    )
+
+    assert packet["ok"] is False
+    assert packet["sendable"] is False
+    assert packet["saved"] is False
+    assert packet["blocked_items"][0]["reason"] == "author_line"
+
+
+def test_prepare_external_synthesis_packet_does_not_block_on_candidate_claim_only(tmp_path: Path) -> None:
+    save_paper_markdown(
+        "10.1234/claim-edge",
+        (
+            "# Claim Edge\n\n"
+            "## Results\n\n"
+            "10.1234/claim-edge. Composite damping improved vibration attenuation by 18% "
+            "in controlled tests."
+        ),
+        _papers_dir(tmp_path),
+        title="Claim Edge",
+        source="fixture",
+    )
+    manifest = build_canonical_block_manifest(_papers_dir(tmp_path), doi="10.1234/claim-edge")
+    assert manifest is not None
+    block = next(item for item in manifest.blocks if "Composite damping improved" in item.text)
+    item = EvidencePackItem(
+        canonical_uri=block.canonical_uri,
+        paper_id=block.paper_id,
+        safe_doi=block.safe_doi,
+        block_id=block.block_id,
+        block_type=block.block_type,
+        text=block.text,
+        text_sha256=block.text_sha256,
+        doi=block.doi,
+        heading_path=list(block.heading_path),
+        ordinal=block.ordinal,
+        source_paragraph_index=block.source_paragraph_index,
+        doc_sha256=block.doc_sha256,
+        prev_hash=block.prev_hash,
+        next_hash=block.next_hash,
+        title="Claim Edge",
+    )
+    saved = save_evidence_pack(
+        _db_path(tmp_path),
+        EvidencePack(
+            pack_id="pack_candidate_claim_warning",
+            topic="candidate claim warning",
+            query="candidate claim warning",
+            subquestions=["candidate claim warning"],
+            answerable=True,
+            evidence_items=[item],
+            pack_sha256="",
+            created_at="2026-05-31T00:00:00+00:00",
+        ),
+    )
+
+    packet = prepare_external_synthesis_packet(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(saved["pack_id"]),
+    )
+    saved_packets = query_research_artifacts(
+        _db_path(tmp_path),
+        kind=EXTERNAL_SYNTHESIS_PACKET_KIND,
+        detail=True,
+    )
+
+    assert packet["ok"] is True
+    assert packet["sendable"] is True
+    assert packet["saved"] is True
+    assert packet["blocked_items"] == []
+    assert packet["warning_items"][0]["field"] == "candidate_claim"
+    assert packet["warning_items"][0]["reason"] == "doi_only"
+    assert saved_packets["count"] == 1
+
+
 def test_prepare_external_synthesis_packet_rejects_stale_pack(
     monkeypatch,
     tmp_path: Path,
@@ -475,7 +598,7 @@ def test_run_external_synthesis_uses_browser_and_audits(
     assert result["model_label"] == "Pro"
     assert "GRaDOS evidence packet" in str(seen["prompt"])
     assert seen["packet_artifact_id"]
-    assert seen["assistant_timeout_seconds"] == 120.0
+    assert seen["assistant_timeout_seconds"] == 75.0
 
 
 def test_run_external_synthesis_returns_recoverable_timeout_receipt(
@@ -515,7 +638,144 @@ def test_run_external_synthesis_returns_recoverable_timeout_receipt(
     assert result["ok"] is False
     assert result["recoverable"] is True
     assert result["browser_session_id"] == "chatgpt-timeout"
-    assert result["next_action"] == "retry run_external_synthesis with recover_session_id after ChatGPT finishes"
+    assert result["sendable"] is True
+    assert result["packet_sendable"] is True
+    assert result["next_action"] == "call get_operation_status with detail=true after ChatGPT finishes"
+    assert result["operation_id"] == "chatgpt-timeout"
+    assert result["status"] == "pending"
+    assert result["stage"] == "incomplete_capture"
+
+
+def test_external_synthesis_operation_status_saves_captured_session_once(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    receipt = _prepare_pack(monkeypatch, tmp_path)
+    packet = prepare_external_synthesis_packet(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+    )
+    paths = GRaDOSPaths(tmp_path)
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    session_id = new_session_id()
+    store.create(
+        session_id=session_id,
+        pack_id=str(receipt["pack_id"]),
+        packet_artifact_id=str(packet["artifact_id"]),
+        prompt_hash=str(packet["prompt_hash"]),
+        prompt=str(packet["host_prompt"]),
+        mode="review",
+        metadata={"test": "captured"},
+    )
+    response = {
+        "claims": [{"text": "Composite damping improved attenuation.", "anchor_ids": ["anchor_001"]}],
+        "missing_evidence": [],
+    }
+    store.update(
+        session_id,
+        status="captured",
+        conversation_url="https://chatgpt.com/c/recovered",
+        response_text=__import__("json").dumps(response),
+        model_selection={"resolved_label": "Pro"},
+        thinking_selection={"resolved_label": "Extended"},
+        capture_method="fixture",
+        capture_warnings=[],
+    )
+
+    first = __import__("asyncio").run(
+        get_external_synthesis_operation_status(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            operation_id=session_id,
+            detail=True,
+        )
+    )
+    second = __import__("asyncio").run(
+        get_external_synthesis_operation_status(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            operation_id=session_id,
+            detail=True,
+        )
+    )
+    saved_results = query_research_artifacts(
+        _db_path(tmp_path),
+        kind=EXTERNAL_SYNTHESIS_RESULT_KIND,
+        detail=True,
+        limit=10,
+    )
+
+    assert first["status"] == "completed"
+    assert first["result_artifact_id"]
+    assert second["result_artifact_id"] == first["result_artifact_id"]
+    assert saved_results["count"] == 1
+
+
+def test_external_synthesis_operation_status_does_not_complete_by_prompt_hash_only(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    receipt = _prepare_pack(monkeypatch, tmp_path)
+    packet = prepare_external_synthesis_packet(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+    )
+    paths = GRaDOSPaths(tmp_path)
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    first_session_id = new_session_id()
+    second_session_id = new_session_id()
+    for session_id in (first_session_id, second_session_id):
+        store.create(
+            session_id=session_id,
+            pack_id=str(receipt["pack_id"]),
+            packet_artifact_id=str(packet["artifact_id"]),
+            prompt_hash=str(packet["prompt_hash"]),
+            prompt=str(packet["host_prompt"]),
+            mode="review",
+            metadata={"test": "same_prompt_hash"},
+        )
+    save_external_synthesis_result(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+        packet_artifact_id=str(packet["artifact_id"]),
+        prompt_hash=str(packet["prompt_hash"]),
+        response="Composite damping improved vibration attenuation by 18% using anchor_001.",
+        metadata={
+            "runtime": "grados_chatgpt_browser",
+            "browser_session_id": first_session_id,
+        },
+        audit=False,
+    )
+
+    first = __import__("asyncio").run(
+        get_external_synthesis_operation_status(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            operation_id=first_session_id,
+            detail=False,
+        )
+    )
+    second = __import__("asyncio").run(
+        get_external_synthesis_operation_status(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            operation_id=second_session_id,
+            detail=False,
+        )
+    )
+
+    assert first["status"] == "completed"
+    assert first["result_artifact_id"]
+    assert second["status"] == "pending"
+    assert second["stage"] == "running"
+    assert second["result_artifact_id"] == ""
 
 
 def test_external_synthesis_audit_uses_packet_reference_scope(
