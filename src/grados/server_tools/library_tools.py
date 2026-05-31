@@ -2746,18 +2746,6 @@ async def import_local_pdf_library(
                     "warning_count": len(result.warnings),
                 },
             )
-            append_research_run_event(
-                paths.database_state,
-                research_run_id=research_run_id,
-                event_type="import_run_completed",
-                source="import_local_pdf_library",
-                payload={
-                    "scanned": result.scanned,
-                    "imported": result.imported,
-                    "skipped": result.skipped,
-                    "failed": result.failed,
-                },
-            )
             update_operation(
                 paths.database_state,
                 research_run_id,
@@ -2778,6 +2766,18 @@ async def import_local_pdf_library(
                     "next_action": "read_import_summary_artifact",
                 },
                 event_type="import_run_completed",
+            )
+            append_research_run_event(
+                paths.database_state,
+                research_run_id=research_run_id,
+                event_type="import_run_completed",
+                source="import_local_pdf_library",
+                payload={
+                    "scanned": result.scanned,
+                    "imported": result.imported,
+                    "skipped": result.skipped,
+                    "failed": result.failed,
+                },
             )
         except Exception as exc:
             fail_operation(

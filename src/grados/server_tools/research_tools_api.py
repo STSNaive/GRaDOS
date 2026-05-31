@@ -254,7 +254,6 @@ async def get_operation_status(
             "run_completed",
             "research_checkpoint_written",
             "import_run_completed",
-            "import_summary_written",
         }
         failed_events = {"run_failed", "import_run_failed"}
         status = "completed" if stage in completed_events else "failed" if stage in failed_events else "pending"
@@ -298,6 +297,9 @@ async def get_operation_status(
             },
         )
         current_record = get_operation(paths.database_state, operation_id)
+        if current_record is not None and current_record.status in {"completed", "failed", "stale", "cancelled"}:
+            if status == "pending":
+                return
         if status == "completed":
             terminal_progress = {
                 "stage": stage,
@@ -474,7 +476,6 @@ async def get_operation_status(
             "run_completed",
             "research_checkpoint_written",
             "import_run_completed",
-            "import_summary_written",
         }
         failed_events = {"run_failed", "import_run_failed"}
         status = "completed" if stage in completed_events else "failed" if stage in failed_events else "pending"
