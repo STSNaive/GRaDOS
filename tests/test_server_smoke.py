@@ -366,18 +366,19 @@ def test_search_academic_papers_indepth_writes_checkpoint_and_summary(tmp_path: 
 
     result = asyncio.run(search_academic_papers("composite damping", limit=1))
 
-    deadline = time.monotonic() + 2.0
-    checkpoint_files = []
-    while time.monotonic() < deadline:
-        checkpoint_files = list(paths.research_checkpoints.glob("*/checkpoint.json"))
-        if checkpoint_files:
-            break
-        time.sleep(0.02)
     assert "Indepth Operation Pending" in result
     assert "Operation ID:" in result
     operation_id = next(line for line in result.splitlines() if line.startswith("- Operation ID:")).split("`")[1]
+    deadline = time.monotonic() + 2.0
+    checkpoint_files = []
+    operation = None
+    while time.monotonic() < deadline:
+        checkpoint_files = list(paths.research_checkpoints.glob("*/checkpoint.json"))
+        operation = get_operation(home / "database" / "research.sqlite3", operation_id)
+        if checkpoint_files and operation is not None and operation.status == "completed":
+            break
+        time.sleep(0.02)
     assert checkpoint_files
-    operation = get_operation(home / "database" / "research.sqlite3", operation_id)
     assert operation is not None
     assert operation.kind == "indepth_search"
     assert operation.status == "completed"
