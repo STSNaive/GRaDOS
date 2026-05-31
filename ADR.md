@@ -171,13 +171,16 @@
 - `src/grados/__init__.py` 通过 `importlib.metadata.version("grados")` 在运行时获取版本。
 - 构建时 `hatch-vcs` 自动生成 `src/grados/_version.py` 写入版本。
 - Claude Code / Codex plugin JSON 中的 `version` 字段由 `scripts/release.py` 在打 tag 前统一更新。
-- 发布流程简化为：`uv run python scripts/release.py X.Y.Z --push`（更新 plugin → commit → tag → push）。
+- 发布流程简化为：`uv run python scripts/release.py X.Y.Z --push`（更新 plugin → commit → annotated tag → push → GitHub Release）。
+- Release tag 与 GitHub Release 标题统一使用 `vX.Y.Z`；annotated tag message 也只写 `vX.Y.Z`，具体变更写入 GitHub Release notes，由该 tag 范围内的 commit subject 列表和 compare link 生成。
+- `scripts/release.py` 在创建新 release commit/tag 前检查 PyPI 状态，若目标版本已存在或上一个已存在 release tag 尚未出现在 PyPI，则先停止而不是继续 bump 新版本。
 - `publish.yml` 不再校验 tag 与文件版本一致性（因为版本本身来源于 tag）。
 - 开发环境安装（`uv sync`）会显示带 dev 后缀的版本号（如 `0.6.9.dev3+g1a2b3c4`），发布包版本严格等于 tag。
 
 ### 结果与影响
 - Python 包版本唯一真源为 git tag，plugin 版本由 release 脚本同步，不可能产生不一致。
 - 发布操作步骤减少一半，消除了人为遗漏 bump 的风险。
+- GitHub Releases 成为公开发布说明入口；Tags 页面只承载稳定的版本号，不再混入随机 commit 标题作为发布说明。
 - `_version.py` 是构建产物，已加入 `.gitignore`。
 
 ---

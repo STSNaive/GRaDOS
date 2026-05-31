@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: publish-pypi
+  cancel-in-progress: false
+
 jobs:
   verify-release:
     runs-on: ubuntu-latest
@@ -32,6 +36,12 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+
+      - name: Guard release sequence
+        shell: bash
+        run: |
+          TAG="${{ inputs.publish_ref || github.ref_name }}"
+          python scripts/check_release_publish_guard.py --tag "$TAG" --package grados --repo "$GITHUB_WORKSPACE"
 
       - name: Install project and dev dependencies
         run: uv sync --group dev
@@ -59,31 +69,30 @@ jobs:
           BIN_DIR="$(uv tool dir --bin)"
           "$BIN_DIR/grados" version
 
+      - name: Upload release distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     runs-on: ubuntu-latest
     needs: verify-release
-    environment: pypi
+    environment:
+      name: pypi
+      url: https://pypi.org/p/grados
     permissions:
       contents: read
       id-token: write
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
+      - name: Download release distributions
+        uses: actions/download-artifact@v4
         with:
-          ref: ${{ inputs.publish_ref || github.ref }}
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Build sdist and wheel
-        run: uv build --native-tls --no-sources
+          name: release-dist
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -138,8 +147,13 @@ jobs:
       - name: Verify uv tool install and uvx from PyPI
         shell: bash
         run: |
+          TAG="${{ inputs.publish_ref || github.ref_name }}"
+          TAG="${TAG#refs/tags/}"
+          VERSION="${TAG#v}"
           export UV_CACHE_DIR=/tmp/grados-uv-cache
-          uv tool install grados --force
+          uv tool install "grados==${VERSION}" --force
           BIN_DIR="$(uv tool dir --bin)"
-          "$BIN_DIR/grados" version
-          uvx grados version
+          "$BIN_DIR/grados" version | tee /tmp/grados-tool-version.txt
+          grep -Fx "GRaDOS ${VERSION}" /tmp/grados-tool-version.txt
+          uvx --no-cache --from "grados==${VERSION}" grados version | tee /tmp/grados-uvx-version.txt
+          grep -Fx "GRaDOS ${VERSION}" /tmp/grados-uvx-version.txt

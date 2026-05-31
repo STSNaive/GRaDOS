@@ -51,6 +51,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed the release script and PyPI publish workflow to block a higher release tag when the previous existing release tag has not reached PyPI, publish the same `dist/` artifacts that passed release verification, serialize PyPI publish runs, and verify the exact tag version during post-publish install smoke tests.
+- Changed release automation to create annotated version-only tags and GitHub Releases titled `vX.Y.Z`, with release notes generated from the tagged commit list plus a compare link.
 - Changed evidence eligibility gating to reject author-line, DOI-only, journal-only, metadata-only, title-only, reference, and administrative fragments before helper surfaces can count them as usable evidence.
 - Changed `run_external_synthesis` to persist session/packet/prompt recovery state in the Operation Registry before waiting and to return a pending operation receipt before host tool timeouts; status recovery can capture/save/audit the final response without resending the prompt.
 - Changed `extract_paper_full_text` PDF-obtained paths to materialize the PDF, reuse DOI-bound parse attempts, and mirror long parser state into operation receipts while preserving fetch trace and remote metadata.
