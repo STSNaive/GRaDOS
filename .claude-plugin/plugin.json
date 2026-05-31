@@ -1,7 +1,7 @@
 {
   "name": "grados",
   "description": "Academic paper search, full-text extraction, and citation-grounded research workflow for Claude Code.",
-  "version": "0.6.26",
+  "version": "0.6.27",
   "author": {
     "name": "macfish"
   },
