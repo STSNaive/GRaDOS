@@ -12,11 +12,12 @@ from grados.browser.chatgpt.errors import ChatGPTBrowserError
 from grados.browser.chatgpt.types import ChatGPTCapture
 
 
-async def capture_final_response(page: Any) -> ChatGPTCapture:
-    snapshot = await read_assistant_snapshot(page)
+async def capture_final_response(page: Any, min_turn_index: int | None = None) -> ChatGPTCapture:
+    snapshot = await read_assistant_snapshot(page, min_turn_index=min_turn_index)
     meta = {
         "messageId": snapshot.get("messageId") if snapshot else None,
         "turnId": snapshot.get("turnId") if snapshot else None,
+        "minTurnIndex": min_turn_index,
     }
     copied = await capture_assistant_markdown(page, meta)
     if copied:
@@ -28,7 +29,7 @@ async def capture_final_response(page: Any) -> ChatGPTCapture:
             code="capture_failed",
             stage="capture",
             message="Unable to capture the final ChatGPT assistant response.",
-            details={"conversation_url": getattr(page, "url", "")},
+            details={"conversation_url": getattr(page, "url", ""), "min_turn_index": min_turn_index},
         )
     return ChatGPTCapture(
         response_text=text,

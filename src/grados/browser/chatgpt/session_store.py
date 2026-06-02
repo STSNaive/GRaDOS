@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from grados.browser.chatgpt.urls import is_recoverable_chatgpt_conversation_url
+
 SESSION_ID_PATTERN = re.compile(r"^chatgpt-\d{8}T\d{6}-[0-9a-f]{8}$")
 
 
@@ -98,7 +100,22 @@ class ChatGPTSessionStore:
 
     def update(self, session_id: str, **updates: Any) -> dict[str, Any]:
         record = self.read(session_id) or {"session_id": session_id, "created_at": utc_now()}
-        record.update(updates)
+        existing_url = str(record.get("conversation_url") or "").strip()
+        if existing_url and not is_recoverable_chatgpt_conversation_url(existing_url):
+            record.setdefault("last_observed_url", existing_url)
+            record["conversation_url"] = ""
+
+        clean_updates = dict(updates)
+        if "conversation_url" in clean_updates:
+            observed_url = str(clean_updates.get("conversation_url") or "").strip()
+            if observed_url and is_recoverable_chatgpt_conversation_url(observed_url):
+                clean_updates["conversation_url"] = observed_url
+            else:
+                clean_updates.pop("conversation_url", None)
+                if observed_url:
+                    clean_updates.setdefault("last_observed_url", observed_url)
+
+        record.update(clean_updates)
         self.write(session_id, record)
         return self.read(session_id) or record
 

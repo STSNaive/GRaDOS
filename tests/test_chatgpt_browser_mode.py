@@ -55,7 +55,12 @@ from grados.browser.chatgpt.thinking import (
     rank_thinking_label,
 )
 from grados.browser.chatgpt.types import ChatGPTCapture
+from grados.browser.chatgpt.urls import (
+    extract_chatgpt_conversation_id,
+    is_recoverable_chatgpt_conversation_url,
+)
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
+from grados.storage.operations import get_operation
 
 
 def test_chatgpt_profile_initialization_uses_private_profile_markers(tmp_path: Path) -> None:
@@ -344,11 +349,12 @@ def test_chatgpt_recovery_waits_for_assistant_before_capture(
 
     async def fake_wait(page: FakePage, **kwargs: Any) -> None:
         assert page.url == "https://chatgpt.com/c/demo"
-        assert kwargs == {"timeout_seconds": 12.0}
+        assert kwargs == {"min_turn_index": 7, "timeout_seconds": 12.0}
         events.append("wait_done")
 
-    async def fake_capture(page: FakePage) -> ChatGPTCapture:
+    async def fake_capture(page: FakePage, *, min_turn_index: int | None = None) -> ChatGPTCapture:
         assert page.url == "https://chatgpt.com/c/demo"
+        assert min_turn_index == 7
         events.append("capture")
         return ChatGPTCapture(response_text="final answer", method="dom_text")
 
@@ -363,7 +369,7 @@ def test_chatgpt_recovery_waits_for_assistant_before_capture(
             session_id="chatgpt-test",
             prompt="",
             recover=True,
-            record={"conversation_url": "https://chatgpt.com/c/demo"},
+            record={"conversation_url": "https://chatgpt.com/c/demo", "min_turn_index": 7},
             assistant_timeout_seconds=12.0,
         )
     )
@@ -378,6 +384,118 @@ def test_chatgpt_recovery_waits_for_assistant_before_capture(
         "save_response",
         "update:captured",
     ]
+
+
+def test_chatgpt_timeout_salvages_recoverable_conversation_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from grados.browser.chatgpt import runtime
+
+    paths = GRaDOSPaths(tmp_path)
+    events: list[str] = []
+
+    class FakeSelection:
+        def to_dict(self) -> dict[str, object]:
+            return {"resolved_label": "Pro", "verified": True}
+
+    class FakeLock:
+        async def __aenter__(self) -> FakeLock:
+            events.append("lock_enter")
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            events.append("lock_exit")
+
+    class FakePage:
+        url = "https://chatgpt.com/"
+
+    class FakeSession:
+        root_page = FakePage()
+
+        async def cleanup(self) -> None:
+            events.append("cleanup")
+
+    async def fake_launch(paths_arg: GRaDOSPaths, browser_config: HeadlessBrowserConfig) -> FakeSession:
+        assert paths_arg == paths
+        assert isinstance(browser_config, HeadlessBrowserConfig)
+        events.append("launch")
+        return FakeSession()
+
+    async def fake_submit(page: FakePage, prompt: str, *, baseline_turns: int | None = None) -> int:
+        assert prompt == "prompt"
+        assert baseline_turns == 2
+        page.url = "https://chatgpt.com/c/live"
+        events.append("submit")
+        return 5
+
+    async def fake_wait(page: FakePage, **kwargs: Any) -> None:
+        assert kwargs == {"min_turn_index": 5, "timeout_seconds": 1.0}
+        raise ChatGPTBrowserError(
+            code="assistant_timeout",
+            stage="assistant-wait",
+            message="timeout",
+            details={"conversation_url": page.url, "min_turn_index": kwargs["min_turn_index"]},
+        )
+
+    async def fake_open(page: FakePage) -> None:
+        events.append("open")
+
+    async def fake_login(page: FakePage) -> None:
+        events.append("login")
+
+    async def fake_selection(page: FakePage) -> FakeSelection:
+        return FakeSelection()
+
+    async def fake_clear(page: FakePage) -> None:
+        events.append("clear")
+
+    async def fake_turn_count(page: FakePage) -> int:
+        return 2
+
+    async def fake_paste(page: FakePage, prompt: str) -> None:
+        assert prompt == "prompt"
+        events.append("paste")
+
+    monkeypatch.setattr(runtime, "ensure_chatgpt_profile_ready", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtime, "chatgpt_profile_lock", lambda *args, **kwargs: FakeLock())
+    monkeypatch.setattr(runtime, "_launch_private_profile", fake_launch)
+    monkeypatch.setattr(runtime, "open_new_chat", fake_open)
+    monkeypatch.setattr(runtime, "ensure_chatgpt_logged_in", fake_login)
+    monkeypatch.setattr(runtime, "ensure_latest_pro_model", fake_selection)
+    monkeypatch.setattr(runtime, "ensure_pro_extended_thinking", fake_selection)
+    monkeypatch.setattr(runtime, "clear_prompt_composer", fake_clear)
+    monkeypatch.setattr(runtime, "read_conversation_turn_count", fake_turn_count)
+    monkeypatch.setattr(runtime, "paste_prompt", fake_paste)
+    monkeypatch.setattr(runtime, "submit_prompt", fake_submit)
+    monkeypatch.setattr(runtime, "wait_for_assistant_done", fake_wait)
+
+    result = asyncio.run(
+        runtime.run_chatgpt_browser_session(
+            paths,
+            HeadlessBrowserConfig(),
+            prompt="prompt",
+            pack_id="pack",
+            packet_artifact_id="packet",
+            prompt_hash="hash",
+            mode="review",
+            assistant_timeout_seconds=1.0,
+        )
+    )
+
+    record = ChatGPTSessionStore(paths.chatgpt_browser_sessions).read(result.session_id)
+    operation = get_operation(paths.database_state, result.session_id)
+
+    assert result.ok is False
+    assert result.status == "incomplete_capture"
+    assert result.conversation_url == "https://chatgpt.com/c/live"
+    assert record is not None
+    assert record["conversation_url"] == "https://chatgpt.com/c/live"
+    assert record["min_turn_index"] == 5
+    assert operation is not None
+    assert operation.recovery is not None
+    assert operation.recovery["conversation_url"] == "https://chatgpt.com/c/live"
+    assert operation.recovery["min_turn_index"] == 5
 
 
 def test_live_login_check_uses_profile_lock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -455,6 +573,46 @@ def test_session_store_rejects_path_escape_ids(tmp_path: Path) -> None:
             store.session_dir(bad_session_id)
 
 
+def test_chatgpt_conversation_url_helpers_accept_only_recoverable_conversations() -> None:
+    assert extract_chatgpt_conversation_id("https://chatgpt.com/c/abc-123") == "abc-123"
+    assert extract_chatgpt_conversation_id("https://chat.openai.com/project/demo/c/conv_123") == "conv_123"
+    assert is_recoverable_chatgpt_conversation_url("https://chatgpt.com/g/g-demo/project/foo/c/conv-123")
+
+    for url in [
+        "",
+        "https://chatgpt.com/",
+        "https://chatgpt.com/g/g-demo/project/foo",
+        "https://chatgpt.com/foo/c/abc-123",
+        "https://example.com/c/abc-123",
+        "http://chatgpt.com/c/abc-123",
+        "not a url",
+        "https://chatgpt.com/c/../bad",
+    ]:
+        assert extract_chatgpt_conversation_id(url) == ""
+        assert is_recoverable_chatgpt_conversation_url(url) is False
+
+
+def test_session_store_does_not_overwrite_recoverable_conversation_url_with_shell_url(
+    tmp_path: Path,
+) -> None:
+    store = ChatGPTSessionStore(tmp_path / "chatgpt-sessions")
+    session_id = new_session_id()
+    store.create(
+        session_id=session_id,
+        pack_id="pack",
+        packet_artifact_id="packet",
+        prompt_hash="hash",
+        prompt="prompt",
+        mode="review",
+    )
+
+    store.update(session_id, conversation_url="https://chatgpt.com/c/recoverable")
+    polluted = store.update(session_id, conversation_url="https://chatgpt.com/")
+
+    assert polluted["conversation_url"] == "https://chatgpt.com/c/recoverable"
+    assert polluted["last_observed_url"] == "https://chatgpt.com/"
+
+
 def test_latest_pro_model_rejects_legacy_pro_when_current_pro_visible() -> None:
     assert is_legacy_pro_label("GPT-5.4 Pro") is True
     assert select_latest_pro_label(["Instant", "GPT-5.4 Pro", "Pro"]) == "Pro"
@@ -530,9 +688,10 @@ def test_composer_expressions_use_chatgpt_prompt_commit_route() -> None:
 
 def test_capture_expressions_use_chatgpt_snapshot_and_copy_route() -> None:
     snapshot = _assistant_snapshot_expression()
-    copy = _copy_expression({"messageId": "m1", "turnId": "t1"})
+    copy = _copy_expression({"messageId": "m1", "turnId": "t1", "minTurnIndex": 4})
 
     assert "answer now" in snapshot
     assert "copy-turn-action-button" in copy
     assert "interceptClipboard" in copy
     assert "dispatchClickSequence" in copy
+    assert "MIN_TURN_INDEX" in copy

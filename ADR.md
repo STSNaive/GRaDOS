@@ -606,6 +606,8 @@
 - 领域特化 guardrail 放在 `domain_profiles/`。当前已加入 mechanics / elastic metamaterials profile，用于约束力学、弹性/声学/机械超材料、phononic crystal、band gap、有限样品与无限周期、仿真与实验等高风险混淆点。
 - `claim_matrix` 是写作阶段的 durable claim ledger，可先作为 `save_research_artifact(kind="claim_matrix")` 保存；它不是 citation evidence。最终事实 claim 仍必须回到 canonical paragraph window 或 current-valid evidence pack。
 - `validate_claim_matrix` 和 `prepare_claim_evidence_pack` 是下一步可实现的 deterministic helper 方向，但在 MCP tool 真正实现前，文档必须明确它们不是 live tools。当前可用 gate 仍由 `read_saved_paper`、`prepare_evidence_pack`、`verify_evidence_pack`、`audit_answer_against_pack` 等现有工具组合完成。
+- 论文写作 flow 复用现有 `research_run_manifest` 作为 run/project 索引；后续只扩展 paper-writing 目录视图，不新增第二套 paper manifest。
+- ChatGPT Pro 或其他外部 reviewer 复用 ADR-023 的 packet-bound external synthesis route。写作流程只发送 current-valid evidence packet 与 claim slice，保存并审计 advisory result，再把 audit/revision outcome 挂回 section revision log 或 `research_run_manifest`；reviewer prose 不写回 canonical evidence。
 - 不新增一组 `literature_review`、`experimental_protocol`、`experiment_report`、`manuscript` 同名 MCP tools。profile 是 skill/reference 文档；MCP tool 只在承担确定性校验、canonical materialization 或最终 assurance 时新增。
 
 ### 结果与影响
@@ -630,6 +632,7 @@
 - `research.external_synthesis.enabled` 仍是唯一配置 gate，默认关闭。关闭时 GRaDOS 不打开 ChatGPT、不调用 ChatGPT、不改变 evidence reading 流程。
 - 启用后，默认入口是 `run_external_synthesis`。它从 topic 准备 evidence pack 和 packet，或从既有 pack id 验证并 packet 化该 pack，然后使用 GRaDOS 私有 ChatGPT profile 执行 browser flow。
 - ChatGPT browser runtime 由 GRaDOS 管理：使用 `browser/chatgpt-profile`、`browser/chatgpt-sessions`、profile readiness、login probe、model/thinking selector、response capture、session record 和 profile lock。
+- ChatGPT session/recovery metadata 只把可恢复的 ChatGPT `/c/<id>` URL 当作恢复句柄；首页、project shell 或空 URL 只能作为 `last_observed_url` 诊断信息，不能覆盖已有可恢复 conversation URL。
 - `grados external-synthesis setup-browser` 只负责首次登录私有 profile；`grados external-synthesis doctor [--live]` 负责诊断 profile 与登录状态；运行期 synthesis 与 live diagnosis 共享同一 private profile lock。
 - 模型和 thinking route 是协议默认值，不进入 GRaDOS config。运行时在 ChatGPT UI 中确认 GRaDOS-validated Pro model route 与 Pro Extended thinking route，并记录实际确认到的原始标签。
 - `preview_external_synthesis_packet`、`prepare_external_synthesis_from_topic`、`prepare_external_synthesis_packet`、`save_external_synthesis_result` 和 `audit_external_synthesis_result` 保留给 dry run、恢复和显式 rerun。
@@ -656,6 +659,7 @@
 ### 决策
 - `GRADOS_HOME/browser/profile` 只用于 publisher PDF acquisition；`GRADOS_HOME/browser/chatgpt-profile` 只用于 ChatGPT 外部综合。两者的 profile、lock、session record 和 DOM selector 不混用。
 - `fetch_with_browser(...)` 的合同保持为 acquisition-only：成功时返回 PDF bytes；遇到 publisher verification/challenge 时返回 `manual=true`、host、resume metadata、warnings 和 session/capture metadata；它不直接写 `papers/*.md`。
+- Publisher verification/challenge 的用户接管提示保持 acquisition-only 和 best-effort：只标记 exact challenge page，优先使用 focus/title prefix；不默认注入页面 banner、modal 或阻挡 pointer events；提示失败不改变 fetch outcome 或原始 challenge receipt。
 - `extract_paper_full_text(...)` 继续负责后半段 canonical pipeline：把 browser 返回的 PDF bytes 归档到 `downloads/*.pdf`，再走 parser、QA、sidecar/index 和 canonical Markdown persistence。
 - Publisher browser runtime 使用 GRaDOS-managed Chromium/Patchright、persistent publisher profile、profile lock/stale recovery、`browser/pdf-sessions` operational records、response/download/backfill capture、structured event metadata 和 manual resume state。
 - `grados browser status --json` 与 `grados browser doctor [--live --doi DOI]` 是 publisher browser runtime 的诊断入口；live doctor 只能报告 capture/challenge/session record，不绕过 canonical extraction pipeline。
@@ -667,7 +671,7 @@
 - Browser acquisition 的可观测性和恢复能力进入正式架构面，而不是继续保留在 TODO 接手文档里。
 - `browser/pdf-sessions`、capture metadata 和 challenge resume 是 operational/debug data，不是 citation evidence，也不是 `papers/*.md` 的替代来源。
 - 新增 publisher-specific browser strategy 时，应接入现有 strategy registry，并以 PDF response/download/backfill capture 作为成功判定，而不是以“点击了按钮”判定成功。
-- README、CHANGELOG、skill tool reference 和 tests 共同维护当前用户可见行为；TODO 只保留 CDP attach/reuse、`codex` 去留和 live DOI 样本这类未完成决策。
+- README、CHANGELOG、skill tool reference 和 tests 共同维护当前用户可见行为。`codex` 去留和跨进程 CDP attach/reuse 已由本 ADR 约束，不作为普通 TODO 保留；只有 live tests 证明现有 lock/wait/fail-safe 合同不足时，才另开 ADR 或实施计划。TODO 只保留可复用 live DOI 样本维护。
 
 ---
 
@@ -710,6 +714,7 @@
 - 长耗时或用户接管 workflow 先返回 durable receipt，而不是依赖单个 MCP 调用跑到最终完成。Receipt 至少包含 `operation_id` 或兼容 id、`kind`、`status`、`progress`、`next_action`、result/error pointer 和恢复建议。
 - Operation Registry 是轻量 SQLite 控制面，记录 normalized lifecycle row、bounded event ledger、idempotency key、runtime/recovery metadata、heartbeat/stale 状态和 debug bundle 指针；各领域 store 仍保留自己的恢复真值。
 - `get_operation_status(operation_id, detail=false)` 是统一状态/恢复入口。它优先读取 Operation Registry，并可兼容桥接 external synthesis session、DOI-bound parse attempt、indepth research run、local PDF import run 和 Codex download handoff；`detail=true` 可用于 ChatGPT browser session capture/recovery，但不得重新发送原 prompt。
+- `get_operation_status(detail=true)` 对 ChatGPT external synthesis 只从可恢复 `/c/<id>` URL 打开并捕获；如果 Operation Registry 或 session record 只有首页/project shell URL，必须清空污染的恢复 URL 并返回 `conversation_url_missing_or_not_recoverable`，不得重发 prompt 或反复打开 ChatGPT 首页。
 - `run_external_synthesis` 必须先持久化 packet/session/prompt hash 与 submit-once metadata，再等待 ChatGPT；前台等待耗尽时返回 `pending`，后续 status/recovery 只捕获、保存和审计同一次回答。
 - `extract_paper_full_text` 的 PDF-obtained 路径先 materialize PDF，再复用 DOI-bound parse attempt；already-saved、metadata-only、native full text 和普通 local read 等短路径保持同步返回。
 - `search_academic_papers(indepth=true)` 和 `import_local_pdf_library` 以 run manifest / operation event ledger 推进批处理；单个 DOI 或文件失败不能吞掉整个 run 的状态。

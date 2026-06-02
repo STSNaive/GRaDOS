@@ -26,7 +26,7 @@ from grados.research.external_synthesis import (
 )
 from grados.research_state import query_research_artifacts
 from grados.storage.canonical_blocks import build_canonical_block_manifest
-from grados.storage.operations import get_operation
+from grados.storage.operations import create_operation, get_operation
 from grados.storage.papers import save_paper_markdown
 from grados.storage.vector import PaperSearchResult
 
@@ -782,6 +782,183 @@ def test_external_synthesis_operation_status_does_not_complete_by_prompt_hash_on
     assert second["status"] == "pending"
     assert second["stage"] == "running"
     assert second["result_artifact_id"] == ""
+
+
+def test_external_synthesis_operation_status_rejects_shell_conversation_url(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    receipt = _prepare_pack(monkeypatch, tmp_path)
+    packet = prepare_external_synthesis_packet(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+    )
+    paths = GRaDOSPaths(tmp_path)
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    session_id = new_session_id()
+    record = store.create(
+        session_id=session_id,
+        pack_id=str(receipt["pack_id"]),
+        packet_artifact_id=str(packet["artifact_id"]),
+        prompt_hash=str(packet["prompt_hash"]),
+        prompt=str(packet["host_prompt"]),
+        mode="review",
+        metadata={"test": "polluted_home_url"},
+    )
+    record["status"] = "incomplete_capture"
+    record["conversation_url"] = "https://chatgpt.com/"
+    store.write(session_id, record)
+
+    async def fail_browser_session(*args, **kwargs):  # noqa: ANN001
+        _ = (args, kwargs)
+        raise AssertionError("detail recovery must not open a non-recoverable ChatGPT shell URL")
+
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fail_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        get_external_synthesis_operation_status(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            operation_id=session_id,
+            detail=True,
+        )
+    )
+
+    assert result["status"] == "pending"
+    assert result["error"] == "conversation_url_missing_or_not_recoverable"
+    assert result["conversation_url"] == ""
+    assert result["last_observed_url"] == "https://chatgpt.com/"
+    assert result["progress"]["conversation_url_available"] is False
+    assert result["recovery_metadata"]["conversation_url"] == ""
+
+
+def test_external_synthesis_operation_status_clears_polluted_registry_recovery_url(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    receipt = _prepare_pack(monkeypatch, tmp_path)
+    packet = prepare_external_synthesis_packet(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+    )
+    paths = GRaDOSPaths(tmp_path)
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    session_id = new_session_id()
+    record = store.create(
+        session_id=session_id,
+        pack_id=str(receipt["pack_id"]),
+        packet_artifact_id=str(packet["artifact_id"]),
+        prompt_hash=str(packet["prompt_hash"]),
+        prompt=str(packet["host_prompt"]),
+        mode="review",
+        metadata={"test": "polluted_registry_recovery"},
+    )
+    record["status"] = "incomplete_capture"
+    record["conversation_url"] = "https://chatgpt.com/"
+    store.write(session_id, record)
+    create_operation(
+        _db_path(tmp_path),
+        operation_id=session_id,
+        kind="external_synthesis",
+        status="pending",
+        stage="incomplete_capture",
+        idempotency_key=str(packet["prompt_hash"]),
+        recovery={
+            "recover_session_id": session_id,
+            "conversation_url": "https://chatgpt.com/",
+            "next_action": "get_operation_status_detail_true",
+        },
+    )
+
+    result = __import__("asyncio").run(
+        get_external_synthesis_operation_status(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            operation_id=session_id,
+            detail=True,
+        )
+    )
+    operation = get_operation(_db_path(tmp_path), session_id)
+
+    assert result["error"] == "conversation_url_missing_or_not_recoverable"
+    assert operation is not None
+    assert operation.recovery is not None
+    assert operation.recovery["conversation_url"] == ""
+    assert operation.recovery["last_observed_url"] == "https://chatgpt.com/"
+
+
+def test_external_synthesis_operation_status_recovers_without_resubmitting_prompt(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    receipt = _prepare_pack(monkeypatch, tmp_path)
+    packet = prepare_external_synthesis_packet(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+    )
+    paths = GRaDOSPaths(tmp_path)
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    session_id = new_session_id()
+    store.create(
+        session_id=session_id,
+        pack_id=str(receipt["pack_id"]),
+        packet_artifact_id=str(packet["artifact_id"]),
+        prompt_hash=str(packet["prompt_hash"]),
+        prompt=str(packet["host_prompt"]),
+        mode="review",
+        metadata={"test": "recover_once"},
+    )
+    store.update(
+        session_id,
+        status="incomplete_capture",
+        conversation_url="https://chatgpt.com/c/recover-once",
+        min_turn_index=9,
+    )
+    seen: dict[str, object] = {}
+
+    async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
+        _ = (paths_arg, browser_config)
+        seen.update(kwargs)
+        return ChatGPTBrowserResult(
+            ok=False,
+            status="incomplete_capture",
+            session_id=session_id,
+            error="Timed out waiting for ChatGPT response generation to finish.",
+            error_code="assistant_timeout",
+            session_record_path=str(store.session_json(session_id)),
+            metadata={"last_observed_url": "https://chatgpt.com/c/recover-once"},
+            conversation_url="https://chatgpt.com/c/recover-once",
+        )
+
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fake_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        get_external_synthesis_operation_status(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            operation_id=session_id,
+            detail=True,
+        )
+    )
+
+    assert seen["prompt"] == ""
+    assert seen["recover_session_id"] == session_id
+    assert seen["packet_artifact_id"] == str(packet["artifact_id"])
+    assert seen["prompt_hash"] == str(packet["prompt_hash"])
+    assert result["status"] == "pending"
+    assert result["error"] == "assistant_timeout"
 
 
 def test_external_synthesis_audit_uses_packet_reference_scope(

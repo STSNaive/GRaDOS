@@ -114,6 +114,10 @@ and `prepare_claim_evidence_pack` are live MCP tools, the host agent must
 manually reread the saved canonical windows and use `prepare_evidence_pack`,
 `verify_evidence_pack`, and `audit_answer_against_pack` for the actual gate.
 
+When a `research_run_id` exists, link writing artifacts to the existing
+`research_run_manifest`; do not create a second paper manifest or evidence
+truth layer.
+
 ### 4. Claim Matrix V1 Contract
 
 Use this shape unless the user or codebase provides a newer schema:
@@ -205,6 +209,10 @@ Recommended section artifacts:
 - `section_audit_report`;
 - `section_revision_log`.
 
+Long or handoff-prone writing tasks should also link these artifacts from the
+existing `research_run_manifest`. Planned paper-project work is a directory view
+over that manifest, not a replacement for it.
+
 ### 6. Submission Or Delivery Gate
 
 Before marking a deliverable ready, check:
@@ -266,6 +274,10 @@ ChatGPT Pro or another reviewer may be used only as an advisory reviewer when
 the GRaDOS external synthesis gate is enabled. Send only current-valid evidence
 pack material and the relevant claim slice. Request structured outputs with
 `claims[].anchor_ids`, gaps, caveats, and revision suggestions.
+
+Use the existing `run_external_synthesis` packet/save/audit route when it is
+available; do not create a second reviewer transport or evidence source for
+paper writing.
 
 The reviewer must not add papers, facts, DOIs, citations, figures, or numerical
 results outside the provided evidence packet. Save and audit the advisory result

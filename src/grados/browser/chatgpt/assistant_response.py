@@ -260,6 +260,7 @@ def _copy_expression(meta: dict[str, Any]) -> str:
   const CONVERSATION_SELECTOR = __CONVERSATION_SELECTOR__;
   const ASSISTANT_SELECTOR = __ASSISTANT_SELECTOR__;
   const HINT = __HINT__;
+  const MIN_TURN_INDEX = Number.isInteger(HINT?.minTurnIndex) && HINT.minTurnIndex >= 0 ? HINT.minTurnIndex : -1;
   const TIMEOUT_MS = 10000;
 
   const isAssistantTurn = (node) => {
@@ -285,6 +286,7 @@ def _copy_expression(meta: dict[str, Any]) -> str:
     }
     const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
     for (let i = turns.length - 1; i >= 0; i -= 1) {
+      if (MIN_TURN_INDEX >= 0 && i < MIN_TURN_INDEX) continue;
       const turn = turns[i];
       if (!isAssistantTurn(turn)) continue;
       const button = turn.querySelector(BUTTON_SELECTOR);
@@ -294,6 +296,10 @@ def _copy_expression(meta: dict[str, Any]) -> str:
     for (let i = all.length - 1; i >= 0; i -= 1) {
       const button = all[i];
       const turn = button?.closest?.(CONVERSATION_SELECTOR);
+      if (MIN_TURN_INDEX >= 0 && turn) {
+        const turnIndex = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR)).indexOf(turn);
+        if (turnIndex >= 0 && turnIndex < MIN_TURN_INDEX) continue;
+      }
       if (turn && isAssistantTurn(turn)) return button;
     }
     return null;

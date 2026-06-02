@@ -143,6 +143,7 @@ async def wait_for_assistant_done(
         details={
             "timeout_seconds": timeout_seconds,
             "conversation_url": getattr(page, "url", ""),
+            "min_turn_index": min_turn_index,
             "last_observed_length": latest_length,
             "had_snapshot": latest_snapshot is not None,
         },

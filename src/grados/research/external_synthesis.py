@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from grados.browser.chatgpt.urls import is_recoverable_chatgpt_conversation_url
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 from grados.research.draft_audit import (
     VERDICT_MAJOR_DISTORTION,
@@ -536,6 +537,42 @@ def _selection_label(record: dict[str, Any], key: str) -> str:
     return str(raw.get("resolved_label") or "")
 
 
+def _recoverable_conversation_url(url: Any) -> str:
+    observed_url = str(url or "").strip()
+    return observed_url if is_recoverable_chatgpt_conversation_url(observed_url) else ""
+
+
+def _last_observed_conversation_url(record: dict[str, Any]) -> str:
+    conversation_url = str(record.get("conversation_url") or "").strip()
+    return str(record.get("last_observed_url") or conversation_url).strip()
+
+
+def _external_recovery_metadata(
+    *,
+    recover_session_id: str,
+    packet_artifact_id: str,
+    prompt_hash: str,
+    browser_session_record: str = "",
+    conversation_url: str = "",
+    last_observed_url: str = "",
+    next_action: str = "",
+) -> dict[str, Any]:
+    recoverable_url = _recoverable_conversation_url(conversation_url)
+    payload = {
+        "recover_session_id": recover_session_id,
+        "packet_artifact_id": packet_artifact_id,
+        "prompt_hash": prompt_hash,
+        "conversation_url": recoverable_url,
+    }
+    if browser_session_record:
+        payload["browser_session_record"] = browser_session_record
+    if last_observed_url:
+        payload["last_observed_url"] = last_observed_url
+    if next_action:
+        payload["next_action"] = next_action
+    return payload
+
+
 def _operation_lookup_sha256(operation_id: str) -> str:
     value = operation_id.strip()
     if not value:
@@ -645,7 +682,16 @@ def _external_operation_status_payload(
     operation_status = "completed" if completed else "failed" if failed else "pending"
     prompt_hash = str(record.get("prompt_hash") or "")
     packet_artifact_id = str(record.get("packet_artifact_id") or "")
-    conversation_url = str(record.get("conversation_url") or "")
+    conversation_url = _recoverable_conversation_url(record.get("conversation_url"))
+    last_observed_url = _last_observed_conversation_url(record)
+    recovery_metadata = _external_recovery_metadata(
+        recover_session_id=operation_id,
+        packet_artifact_id=packet_artifact_id,
+        prompt_hash=prompt_hash,
+        browser_session_record=str(record.get("session_record") or ""),
+        conversation_url=conversation_url,
+        last_observed_url=last_observed_url,
+    )
     return {
         "found": True,
         "operation_id": operation_id,
@@ -673,14 +719,10 @@ def _external_operation_status_payload(
         "packet_artifact_id": packet_artifact_id,
         "prompt_hash": prompt_hash,
         "conversation_url": conversation_url,
+        "last_observed_url": last_observed_url,
         "browser_session_id": operation_id,
         "browser_session_record": str(record.get("session_record") or ""),
-        "recovery_metadata": {
-            "recover_session_id": operation_id,
-            "packet_artifact_id": packet_artifact_id,
-            "prompt_hash": prompt_hash,
-            "conversation_url": conversation_url,
-        },
+        "recovery_metadata": recovery_metadata,
         "error": error,
     }
 
@@ -734,7 +776,7 @@ def _save_captured_session_result(
         response=response_text,
         packet_artifact_id=str(record.get("packet_artifact_id") or ""),
         prompt_hash=str(record.get("prompt_hash") or ""),
-        conversation_url=str(record.get("conversation_url") or ""),
+        conversation_url=_recoverable_conversation_url(record.get("conversation_url")),
         model_label=_selection_label(record, "model_selection"),
         thinking_label=_selection_label(record, "thinking_selection"),
         mode=str(record.get("mode") or "review"),
@@ -815,6 +857,7 @@ async def get_external_synthesis_operation_status(
     session_record_path = str(store.session_json(operation_id))
     record["session_record"] = session_record_path
     prompt_hash = str(record.get("prompt_hash") or "")
+    packet_artifact_id = str(record.get("packet_artifact_id") or "")
     existing = _find_external_result_for_session(
         db_path,
         session_id=operation_id,
@@ -856,7 +899,8 @@ async def get_external_synthesis_operation_status(
             error=str(saved.get("error") or "external_synthesis_save_failed"),
         )
 
-    if detail and str(record.get("conversation_url") or ""):
+    conversation_url = _recoverable_conversation_url(record.get("conversation_url"))
+    if detail and conversation_url:
         browser_result = await run_chatgpt_browser_session(
             paths,
             browser_config or HeadlessBrowserConfig(),
@@ -902,6 +946,37 @@ async def get_external_synthesis_operation_status(
             operation_id=operation_id,
             record=refreshed,
             error=browser_result.error_code or browser_result.error,
+        )
+
+    if detail:
+        from grados.storage.operations import update_operation
+
+        recovery_metadata = _external_recovery_metadata(
+            recover_session_id=operation_id,
+            packet_artifact_id=packet_artifact_id,
+            prompt_hash=prompt_hash,
+            browser_session_record=session_record_path,
+            conversation_url="",
+            last_observed_url=_last_observed_conversation_url(record),
+        )
+        session_status = str(record.get("status") or "unknown")
+        update_operation(
+            db_path,
+            operation_id,
+            status="failed" if session_status == "failed" else "pending",
+            stage=session_status,
+            recovery=recovery_metadata,
+            error={
+                "error": "conversation_url_missing_or_not_recoverable",
+                "message": "Saved ChatGPT browser session has no recoverable ChatGPT conversation URL.",
+            },
+            event_type="external_synthesis_recovery_unavailable",
+            event_payload=recovery_metadata,
+        )
+        return _external_operation_status_payload(
+            operation_id=operation_id,
+            record=record,
+            error="conversation_url_missing_or_not_recoverable",
         )
 
     return _external_operation_status_payload(operation_id=operation_id, record=record)
@@ -1012,6 +1087,16 @@ async def run_external_synthesis(
         }
         operation_status = "pending" if recoverable else "failed"
         packet_sendable = bool(packet.get("sendable")) if packet else bool(recover_session_id)
+        last_observed_url = str(browser_payload.get("metadata", {}).get("last_observed_url") or "")
+        recovery_metadata = _external_recovery_metadata(
+            recover_session_id=browser_result.session_id,
+            packet_artifact_id=packet_artifact_id,
+            prompt_hash=prompt_hash,
+            browser_session_record=browser_result.session_record_path,
+            conversation_url=browser_result.conversation_url,
+            last_observed_url=last_observed_url,
+            next_action="get_operation_status_detail_true" if recoverable else "",
+        )
         _ensure_external_operation(
             db_path,
             operation_id=browser_result.session_id,
@@ -1021,14 +1106,7 @@ async def run_external_synthesis(
             mode=resolved_mode,
             status=operation_status,
             stage=browser_result.status,
-            recovery={
-                "recover_session_id": browser_result.session_id,
-                "packet_artifact_id": packet_artifact_id,
-                "prompt_hash": prompt_hash,
-                "browser_session_record": browser_result.session_record_path,
-                "conversation_url": browser_result.conversation_url,
-                "next_action": "get_operation_status_detail_true" if recoverable else "",
-            },
+            recovery=recovery_metadata,
             result={"result_path": "", "result_artifact_id": "", "next_action": ""},
             error={"error": browser_result.error_code or "chatgpt_browser_failed", "message": browser_result.error},
         )
@@ -1052,6 +1130,7 @@ async def run_external_synthesis(
             "browser_session_id": browser_result.session_id,
             "browser_session_record": browser_result.session_record_path,
             "conversation_url": browser_result.conversation_url,
+            "last_observed_url": last_observed_url,
             "packet_artifact_id": packet_artifact_id,
             "prompt_hash": prompt_hash,
             "result_artifact_id": "",
@@ -1061,13 +1140,7 @@ async def run_external_synthesis(
                 if recoverable
                 else "inspect browser error and retry when fixed"
             ),
-            "recovery_metadata": {
-                "recover_session_id": browser_result.session_id,
-                "packet_artifact_id": packet_artifact_id,
-                "prompt_hash": prompt_hash,
-                "browser_session_record": browser_result.session_record_path,
-                "conversation_url": browser_result.conversation_url,
-            },
+            "recovery_metadata": recovery_metadata,
             "browser": browser_payload,
             "packet": packet,
         }
@@ -1132,6 +1205,14 @@ async def run_external_synthesis(
         "prompt_hash": prompt_hash,
         "next_action": saved.get("next_action", "audit_external_synthesis_result"),
     }
+    operation_recovery = _external_recovery_metadata(
+        recover_session_id=browser_result.session_id,
+        packet_artifact_id=packet_artifact_id,
+        prompt_hash=prompt_hash,
+        browser_session_record=browser_result.session_record_path,
+        conversation_url=browser_result.conversation_url,
+        last_observed_url=str(browser_payload.get("metadata", {}).get("last_observed_url") or ""),
+    )
     _ensure_external_operation(
         db_path,
         operation_id=browser_result.session_id,
@@ -1141,11 +1222,7 @@ async def run_external_synthesis(
         mode=resolved_mode,
         status="pending",
         stage="captured",
-        recovery={
-            "recover_session_id": browser_result.session_id,
-            "conversation_url": browser_result.conversation_url,
-            "browser_session_record": browser_result.session_record_path,
-        },
+        recovery=operation_recovery,
         result=operation_result,
     )
     if saved.get("saved"):
@@ -1288,6 +1365,7 @@ def save_external_synthesis_result(
     verify_result = verify_evidence_pack(db_path, papers_dir, pack_id=pack.pack_id)
     text = _response_text(response)
     response_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    conversation_url = _recoverable_conversation_url(conversation_url)
     raw_metadata = metadata or {}
     operation_lookup_sha256 = _operation_lookup_sha256(
         str(raw_metadata.get("browser_session_id") or raw_metadata.get("recover_session_id") or "")

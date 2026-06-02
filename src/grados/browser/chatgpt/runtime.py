@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from typing import Any
 
 from grados.browser.chatgpt.capture import capture_final_response
@@ -38,6 +40,7 @@ from grados.browser.chatgpt.types import (
     ChatGPTModelSelection,
     ChatGPTThinkingSelection,
 )
+from grados.browser.chatgpt.urls import is_recoverable_chatgpt_conversation_url
 from grados.browser.manager import (
     launch_browser_session,
     random_viewport,
@@ -51,6 +54,81 @@ from grados.storage.operations import (
     fail_operation,
     update_operation,
 )
+
+_CONVERSATION_URL_CAPTURE_TIMEOUT_SECONDS = 12.0
+
+
+def _recoverable_conversation_url(url: Any) -> str:
+    observed_url = str(url or "").strip()
+    return observed_url if is_recoverable_chatgpt_conversation_url(observed_url) else ""
+
+
+def _coerce_min_turn_index(value: Any) -> int | None:
+    try:
+        min_turn_index = int(value)
+    except (TypeError, ValueError):
+        return None
+    return min_turn_index if min_turn_index >= 0 else None
+
+
+def _last_observed_url(record: dict[str, Any]) -> str:
+    conversation_url = str(record.get("conversation_url") or "").strip()
+    return str(record.get("last_observed_url") or conversation_url).strip()
+
+
+def _conversation_observation_updates(url: Any) -> dict[str, Any]:
+    observed_url = str(url or "").strip()
+    if not observed_url:
+        return {}
+    updates = {"last_observed_url": observed_url}
+    conversation_url = _recoverable_conversation_url(observed_url)
+    if conversation_url:
+        updates["conversation_url"] = conversation_url
+    return updates
+
+
+def _chatgpt_recovery_payload(
+    *,
+    session_id: str,
+    record: dict[str, Any],
+    session_record: str = "",
+    prompt_path: str = "",
+    next_action: str = "get_operation_status_detail_true",
+) -> dict[str, Any]:
+    conversation_url = _recoverable_conversation_url(record.get("conversation_url"))
+    payload: dict[str, Any] = {
+        "browser_session_id": session_id,
+        "conversation_url": conversation_url,
+        "next_action": next_action,
+    }
+    last_observed_url = _last_observed_url(record)
+    if last_observed_url:
+        payload["last_observed_url"] = last_observed_url
+    min_turn_index = _coerce_min_turn_index(record.get("min_turn_index"))
+    if min_turn_index is not None:
+        payload["min_turn_index"] = min_turn_index
+    if session_record:
+        payload["session_record"] = session_record
+    if prompt_path:
+        payload["prompt_path"] = prompt_path
+    return payload
+
+
+async def _observe_recoverable_conversation_url(
+    page: Any,
+    *,
+    timeout_seconds: float = _CONVERSATION_URL_CAPTURE_TIMEOUT_SECONDS,
+) -> tuple[str, str]:
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last_observed_url = ""
+    while True:
+        observed_url = str(getattr(page, "url", "") or "").strip()
+        if observed_url:
+            last_observed_url = observed_url
+        conversation_url = _recoverable_conversation_url(observed_url)
+        if conversation_url or time.monotonic() >= deadline:
+            return conversation_url, last_observed_url
+        await asyncio.sleep(0.25)
 
 
 async def run_chatgpt_browser_session(
@@ -192,7 +270,18 @@ async def run_chatgpt_browser_session(
                 await browser_session.cleanup()
     except ChatGPTBrowserError as exc:
         status = "incomplete_capture" if exc.code in {"assistant_timeout", "capture_failed"} else "failed"
-        store.update(session_id, status=status, error=exc.to_dict())
+        error_updates: dict[str, Any] = {"status": status, "error": exc.to_dict()}
+        if isinstance(exc.details, dict):
+            error_updates.update(_conversation_observation_updates(exc.details.get("conversation_url")))
+            min_turn_index = _coerce_min_turn_index(exc.details.get("min_turn_index"))
+            if min_turn_index is not None:
+                error_updates["min_turn_index"] = min_turn_index
+        error_record = store.update(session_id, **error_updates)
+        recovery_payload = _chatgpt_recovery_payload(
+            session_id=session_id,
+            record=error_record,
+            session_record=str(store.session_json(session_id)),
+        )
         if status == "incomplete_capture":
             update_operation(
                 operation_db_path,
@@ -200,11 +289,7 @@ async def run_chatgpt_browser_session(
                 status=OPERATION_STATUS_PENDING,
                 stage=status,
                 error=exc.to_dict(),
-                recovery={
-                    "next_action": "get_operation_status_detail_true",
-                    "browser_session_id": session_id,
-                    "session_record": str(store.session_json(session_id)),
-                },
+                recovery=recovery_payload,
                 event_type="browser_wait_incomplete",
                 event_payload=exc.to_dict(),
             )
@@ -216,7 +301,18 @@ async def run_chatgpt_browser_session(
                 error=exc.to_dict(),
                 result={"next_action": "inspect_browser_error_and_retry_when_fixed"},
             )
-        return _error_result(session_id, exc, status=status, session_record_path=str(store.session_json(session_id)))
+        return _error_result(
+            session_id,
+            exc,
+            status=status,
+            session_record_path=str(store.session_json(session_id)),
+            conversation_url=str(recovery_payload.get("conversation_url") or ""),
+            metadata={
+                key: value
+                for key, value in recovery_payload.items()
+                if key in {"conversation_url", "last_observed_url", "min_turn_index"}
+            },
+        )
     except Exception as exc:
         error = ChatGPTBrowserError(
             code="browser_run_failed",
@@ -250,15 +346,31 @@ async def _run_page_flow(
     operation_db_path: Any | None = None,
     assistant_timeout_seconds: float | None = None,
 ) -> None:
+    min_turn_index: int | None = None
+    recovery_payload: dict[str, Any]
     if recover:
-        conversation_url = str(record.get("conversation_url") or "")
+        raw_conversation_url = str(record.get("conversation_url") or "")
+        conversation_url = _recoverable_conversation_url(raw_conversation_url)
         if not conversation_url:
             raise ChatGPTBrowserError(
-                code="conversation_url_missing",
+                code="conversation_url_missing_or_not_recoverable",
                 stage="recovery",
-                message="Saved ChatGPT browser session has no conversation URL to recover.",
-                details={"session_id": session_id},
+                message="Saved ChatGPT browser session has no recoverable ChatGPT conversation URL.",
+                details={
+                    "session_id": session_id,
+                    "conversation_url": raw_conversation_url,
+                    "last_observed_url": _last_observed_url(record),
+                },
             )
+        min_turn_index = _coerce_min_turn_index(record.get("min_turn_index"))
+        recovery_payload = {
+            "conversation_url": conversation_url,
+            "next_action": "wait_for_assistant_capture",
+        }
+        progress: dict[str, Any] = {"response_captured": False}
+        if min_turn_index is not None:
+            recovery_payload["min_turn_index"] = min_turn_index
+            progress["min_turn_index"] = min_turn_index
         _update_chatgpt_session_operation(
             store,
             operation_db_path,
@@ -266,9 +378,9 @@ async def _run_page_flow(
             status="recovering",
             stage="recovering",
             recovery_attempted=True,
-            recovery={"conversation_url": conversation_url, "next_action": "wait_for_assistant_capture"},
+            recovery=recovery_payload,
             event_type="recovery_started",
-            event_payload={"conversation_url": conversation_url},
+            event_payload=recovery_payload,
         )
         await page.goto(conversation_url, wait_until="domcontentloaded", timeout=60_000)
         await ensure_chatgpt_logged_in(page)
@@ -278,11 +390,12 @@ async def _run_page_flow(
             session_id,
             status="waiting_for_assistant",
             stage="waiting_for_assistant",
-            progress={"response_captured": False},
+            progress=progress,
             event_type="assistant_wait_started",
         )
         await wait_for_assistant_done(
             page,
+            min_turn_index=min_turn_index,
             timeout_seconds=assistant_timeout_seconds or 900.0,
         )
     else:
@@ -328,6 +441,26 @@ async def _run_page_flow(
             event_type="prompt_submit_started",
         )
         min_turn_index = await submit_prompt(page, prompt, baseline_turns=baseline_turns)
+        conversation_url, last_observed_url = await _observe_recoverable_conversation_url(page)
+        recovery_payload = {"next_action": "get_operation_status_detail_true"}
+        if min_turn_index is not None:
+            recovery_payload["min_turn_index"] = min_turn_index
+        if conversation_url:
+            recovery_payload["conversation_url"] = conversation_url
+        if last_observed_url:
+            recovery_payload["last_observed_url"] = last_observed_url
+        event_payload = {
+            "conversation_url": conversation_url,
+            "last_observed_url": last_observed_url,
+            "min_turn_index": min_turn_index,
+        }
+        record_updates: dict[str, Any] = {}
+        if min_turn_index is not None:
+            record_updates["min_turn_index"] = min_turn_index
+        if last_observed_url:
+            record_updates["last_observed_url"] = last_observed_url
+        if conversation_url:
+            record_updates["conversation_url"] = conversation_url
         _update_chatgpt_session_operation(
             store,
             operation_db_path,
@@ -335,14 +468,10 @@ async def _run_page_flow(
             status="waiting_for_assistant",
             stage="waiting_for_assistant",
             progress={"response_captured": False, "min_turn_index": min_turn_index},
-            recovery={
-                "conversation_url": str(getattr(page, "url", "")),
-                "next_action": "get_operation_status_detail_true",
-            },
+            recovery=recovery_payload,
             event_type="prompt_submitted_once",
-            event_payload={"conversation_url": str(getattr(page, "url", "")), "min_turn_index": min_turn_index},
-            conversation_url=str(getattr(page, "url", "")),
-            min_turn_index=min_turn_index,
+            event_payload=event_payload,
+            **record_updates,
         )
         await wait_for_assistant_done(
             page,
@@ -350,8 +479,9 @@ async def _run_page_flow(
             timeout_seconds=assistant_timeout_seconds or 900.0,
         )
 
-    capture = await capture_final_response(page)
+    capture = await capture_final_response(page, min_turn_index=min_turn_index)
     response_path = store.save_response(session_id, capture.response_text)
+    final_url_updates = _conversation_observation_updates(getattr(page, "url", ""))
     _update_chatgpt_session_operation(
         store,
         operation_db_path,
@@ -362,11 +492,11 @@ async def _run_page_flow(
         result={"response_path": response_path, "next_action": "save_external_synthesis_result"},
         event_type="response_captured",
         event_payload={"response_path": response_path, "method": capture.method},
-        conversation_url=str(getattr(page, "url", "")),
         response_text=capture.response_text,
         response_path=response_path,
         capture_method=capture.method,
         capture_warnings=capture.warnings,
+        **final_url_updates,
     )
 
 
@@ -397,12 +527,12 @@ def _create_chatgpt_operation(
             "profile_path": str(paths.chatgpt_browser_profile),
             "browser_mode_version": BROWSER_MODE_VERSION,
         },
-        recovery={
-            "browser_session_id": session_id,
-            "session_record": str(ChatGPTSessionStore(paths.chatgpt_browser_sessions).session_json(session_id)),
-            "prompt_path": prompt_path,
-            "next_action": "get_operation_status_detail_true",
-        },
+        recovery=_chatgpt_recovery_payload(
+            session_id=session_id,
+            record=record,
+            session_record=str(ChatGPTSessionStore(paths.chatgpt_browser_sessions).session_json(session_id)),
+            prompt_path=prompt_path,
+        ),
     )
 
 
@@ -432,12 +562,11 @@ def _record_chatgpt_operation_recovery(
             "profile_path": str(paths.chatgpt_browser_profile),
             "browser_mode_version": BROWSER_MODE_VERSION,
         },
-        recovery={
-            "browser_session_id": session_id,
-            "conversation_url": str(record.get("conversation_url") or ""),
-            "session_record": str(ChatGPTSessionStore(paths.chatgpt_browser_sessions).session_json(session_id)),
-            "next_action": "get_operation_status_detail_true",
-        },
+        recovery=_chatgpt_recovery_payload(
+            session_id=session_id,
+            record=record,
+            session_record=str(ChatGPTSessionStore(paths.chatgpt_browser_sessions).session_json(session_id)),
+        ),
     )
     if not created and existing.status != OPERATION_STATUS_FAILED:
         update_operation(
@@ -446,10 +575,7 @@ def _record_chatgpt_operation_recovery(
             status=OPERATION_STATUS_PENDING,
             stage="recovering",
             heartbeat=True,
-            recovery={
-                "conversation_url": str(record.get("conversation_url") or ""),
-                "next_action": "get_operation_status_detail_true",
-            },
+            recovery=_chatgpt_recovery_payload(session_id=session_id, record=record),
             event_type="recovery_requested",
         )
 
@@ -600,13 +726,16 @@ def _error_result(
     *,
     status: str,
     session_record_path: str = "",
+    conversation_url: str = "",
+    metadata: dict[str, Any] | None = None,
 ) -> ChatGPTBrowserResult:
     return ChatGPTBrowserResult(
         ok=False,
         status=status,  # type: ignore[arg-type]
         session_id=session_id,
+        conversation_url=conversation_url,
         error=error.message,
         error_code=error.code,
         session_record_path=session_record_path,
-        metadata={"browser_mode_version": BROWSER_MODE_VERSION, **error.to_dict()},
+        metadata={"browser_mode_version": BROWSER_MODE_VERSION, **error.to_dict(), **(metadata or {})},
     )
