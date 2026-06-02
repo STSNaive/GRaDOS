@@ -9,6 +9,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from grados.server_tools.shared import get_paths_and_config
+from grados.server_tools.toolsets import ToolsetPolicy, resolve_toolset_policy
 
 __all__ = [
     "audit_answer_against_pack",
@@ -1229,57 +1230,72 @@ async def suggest_missing_evidence(
     )
 
 
-def register_research_tools_api(mcp: FastMCP) -> None:
-    mcp.tool(
+def register_research_tools_api(mcp: FastMCP, policy: ToolsetPolicy | None = None) -> None:
+    active_policy = policy or resolve_toolset_policy()
+    active_policy.register_tool(
+        mcp,
+        save_research_artifact,
         description=(
             "Save a structured research artifact produced during search, extraction, reading, or writing. "
             "Use this for reusable intermediate outputs such as search snapshots, "
             "extraction receipts, evidence grids, compression-safe evidence checkpoints, "
             "and run-linked artifacts."
-        )
-    )(save_research_artifact)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        query_research_artifacts,
         description=(
             "Query previously saved research artifacts by id, kind, or keyword. "
             "Set `detail=true` to load the full stored content."
-        )
-    )(query_research_artifacts)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        get_operation_status,
         description=(
             "Inspect a durable long-running operation returned by GRaDOS tools. "
             "Use this for pending external synthesis sessions, DOI-bound PDF parse attempts, "
             "indepth search runs, local PDF import runs, and Codex download handoffs; "
             "`detail=true` may recover a ChatGPT browser response without resending the prompt "
             "and returns registry events/debug pointers."
-        )
-    )(get_operation_status)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        prepare_evidence_pack,
         description=(
             "Prepare a citation-grade evidence pack by materializing retrieved candidate anchors "
             "back into canonical paragraph blocks from `papers/*.md`. Returns a compact receipt, "
             "`pack_id`, `pack_sha256`, and answerability flags."
-        )
-    )(prepare_evidence_pack)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        read_evidence_pack,
         description=(
             "Inspect or recover a previously saved evidence pack snapshot from research artifacts. "
             "For current-valid status or pack-scoped auditing, use the verify/audit tools directly; "
             "they read the pack internally."
-        )
-    )(read_evidence_pack)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        verify_evidence_pack,
         description=(
             "Verify an evidence pack by rereading current `papers/*.md` canonical blocks. "
             "Does not use Chroma, FTS, or retrieval scores for current-valid evidence."
-        )
-    )(verify_evidence_pack)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        run_external_synthesis,
         description=(
             "Run the default GRaDOS-native ChatGPT Pro browser synthesis route. "
             "When external synthesis is enabled, this prepares or verifies a current-valid "
@@ -1288,111 +1304,137 @@ def register_research_tools_api(mcp: FastMCP) -> None:
             "captures the response, saves it as advisory output, and audits it before "
             "returning the canonical reread next action. Long generations return pending operation receipts; "
             "poll get_operation_status(detail=true) instead of resending the packet."
-        )
-    )(run_external_synthesis)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        preview_external_synthesis_packet,
         description=(
             "Preview the compact host-side ChatGPT Pro packet for a current-valid evidence pack. "
             "This never opens Chrome, calls ChatGPT, or saves an artifact."
-        )
-    )(preview_external_synthesis_packet)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        prepare_external_synthesis_packet,
         description=(
             "Persist a compact external_synthesis_packet built only from current-valid evidence pack "
             "anchors. This is a lower-level recovery route; the default enabled route is "
             "run_external_synthesis, which sends the packet through GRaDOS's private ChatGPT "
             "browser mode."
-        )
-    )(prepare_external_synthesis_packet)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        prepare_external_synthesis_from_topic,
         description=(
             "Prepare a fresh evidence pack from a topic and persist a verified external_synthesis_packet "
             "in one deterministic lower-level route. Use run_external_synthesis for the default "
             "browser send/save/audit workflow when no pack id already exists."
-        )
-    )(prepare_external_synthesis_from_topic)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        save_external_synthesis_result,
         description=(
             "Save a host-provided ChatGPT Pro response as an advisory external_synthesis_result "
             "artifact linked to the source evidence pack and optional packet/session metadata. "
             "By default, immediately audits the saved result before returning."
-        )
-    )(save_external_synthesis_result)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        audit_external_synthesis_result,
         description=(
             "Audit a saved external_synthesis_result against its linked packet when present, "
             "otherwise its source evidence pack, using structured claim anchor ids while "
             "flagging unknown anchors, locators, outside DOIs, stale packs, and non-verified "
             "claims."
-        )
-    )(audit_external_synthesis_result)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        manage_failure_cases,
         description=(
             "Record, inspect, and summarize failed fetch/parse/search/citation attempts. "
             "Use `mode=suggest_retry` to get conservative next-step guidance from the local failure memory."
-        )
-    )(manage_failure_cases)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        get_citation_graph,
         description=(
             "Return local citation relationships among saved papers. "
             "Supports paper neighborhoods, common references, and reverse "
             "citing-paper lookups without generating prose conclusions."
-        )
-    )(get_citation_graph)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        get_papers_full_context,
         description=(
             "Return structured full-context material for a context-budgeted batch of saved papers. "
             "Use `mode=estimate` to budget context first, then `mode=full` when the batch fits; "
             "run additional batches for broad reading."
-        )
-    )(get_papers_full_context)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        build_evidence_grid,
         description=(
             "Build an evidence grid for a research topic or subquestions. "
             "Returns aligned paper-section-snippet rows and reread anchors so the host agent can rerank "
             "evidence before drafting prose."
-        )
-    )(build_evidence_grid)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        compare_papers,
         description=(
             "Extract parallel comparison material across saved papers. "
             "It aligns methods, results, or full-text excerpts into a table "
             "or bullet view with reread anchors, leaving higher-level comparison reasoning to "
             "the host agent."
-        )
-    )(compare_papers)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        audit_draft_support,
         description=(
             "Audit draft claims against the local paper library. "
             "Returns claim-level `verified`, `minor_distortion`, `major_distortion`, "
             "`unverifiable`, or `unverifiable_access` verdicts plus candidate evidence snippets, "
             "issue types, revision actions, and reread anchors."
-        )
-    )(audit_draft_support)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        audit_answer_against_pack,
         description=(
             "Audit draft claims against one evidence pack only. Strict mode does not search the full "
             "library for replacement evidence; non-verified claims stay visible until a separate "
             "evidence-gathering or revision step extends or prepares a pack. Set include_suggestions=true "
             "to attach suggestion-only follow-up work in the same response."
-        )
-    )(audit_answer_against_pack)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        suggest_missing_evidence,
         description=(
             "Suggest follow-up evidence or revision work for non-verified pack-audit claims. "
             "This is suggestion-only and does not alter strict audit verdicts."
-        )
-    )(suggest_missing_evidence)
+        ),
+    )

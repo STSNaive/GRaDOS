@@ -3,6 +3,7 @@
 ## Contents
 
 - [Default Tool Routes](#default-tool-routes)
+- [MCP Toolsets](#mcp-toolsets)
 - [Tool Tiers](#tool-tiers)
 - [GRaDOS Server Tools](#grados-server-tools)
 - [Live MCP Contract Guardrails](#live-mcp-contract-guardrails)
@@ -29,7 +30,29 @@ Use these routes to keep the host agent from treating every public MCP tool as a
 
 Do not start ordinary research with audit, comparison, external synthesis, Zotero, failure memory, or generic artifact tools unless the user asks for that mode or the run needs recovery. Do not use snippets, summaries, grids, comparisons, audits, checkpoints, receipts, or external synthesis prose as final citation evidence.
 
+## MCP Toolsets
+
+GRaDOS uses MCP toolsets to control which public tools appear in `tools/list`. Toolsets only affect MCP exposure; they do not delete function code, CLI paths, internal workflow calls, storage, or resources. `grados://papers/index` and `grados://papers/{safe_doi}` are registered by default and are not counted in toolsets.
+
+Default startup is `GRADOS_MCP_TOOLSETS=research_default`. Use `GRADOS_MCP_TOOLSETS=all` or `GRADOS_MCP_TOOLSETS=full` to expose the full public surface, currently 31 tools. Use `GRADOS_MCP_TOOLS=name1,name2` as an exact allow-list when no toolset is set, for example `GRADOS_MCP_TOOLS=read_saved_paper,prepare_evidence_pack`; combine it with `GRADOS_MCP_TOOLSETS` to add named tools to selected profiles. Unknown toolset or tool names fail at server startup.
+
+| Toolset | Tools | Use when |
+| --- | --- | --- |
+| `research_default` | `grados:search_saved_papers`, `grados:search_academic_papers`, `grados:extract_paper_full_text`, `grados:get_saved_paper_structure`, `grados:read_saved_paper`, `grados:get_operation_status`, `grados:audit_draft_support`, `grados:prepare_evidence_pack`, `grados:verify_evidence_pack`, `grados:audit_answer_against_pack`, `grados:build_evidence_grid`, `grados:compare_papers`, `grados:run_external_synthesis`, `grados:save_research_artifact` | Default end-to-end research workflow: search, acquire, reread, organize evidence, audit, compare, checkpoint, and use the default external synthesis route when enabled. |
+| `local_pdf` | `grados:import_local_pdf_library`, `grados:parse_pdf_file`, `grados:ingest_codex_downloaded_pdf`, `grados:read_paper_asset` | The user provides local PDFs, a Codex/Chrome PDF download must be ingested, or saved-paper figures/tables/formulas/page/source assets are needed. |
+| `analysis_extra` | `grados:get_papers_full_context`, `grados:get_citation_graph` | CAG-style batch context budgeting or citation-neighborhood analysis is explicitly useful. |
+| `evidence_extra` | `grados:suggest_missing_evidence` | Non-verified pack-audit claims need suggestion-only follow-up work. |
+| `evidence_recovery` | `grados:read_evidence_pack` | A saved evidence pack snapshot needs inspection or recovery; verification and pack audit read packs internally. |
+| `external_recovery` | `grados:preview_external_synthesis_packet`, `grados:prepare_external_synthesis_packet`, `grados:prepare_external_synthesis_from_topic`, `grados:save_external_synthesis_result`, `grados:audit_external_synthesis_result` | Dry runs, explicit lower-level external synthesis packet/result recovery, or host-provided advisory result save/audit work is required. |
+| `maintenance` | `grados:query_research_artifacts`, `grados:manage_failure_cases`, `grados:plan_library_pdf_cleanup` | Artifact lookup, failure-memory review, retry planning, or duplicate PDF cleanup reports are explicitly requested. |
+| `zotero` | `grados:save_paper_to_zotero` | Papers that actually supported the final answer should be written to Zotero. |
+| `all` / `full` | All public MCP tools. | Compatibility, regression tests, or expert sessions that intentionally need the complete surface. |
+
+Every live tool description also starts with a helper label such as `[DEFAULT]`, `[LOCAL_PDF]`, `[ANALYSIS]`, `[EVIDENCE]`, `[RECOVERY]`, `[MAINTENANCE]`, or `[ZOTERO]`. These labels are only guidance; actual exposure is controlled by toolsets.
+
 ## Tool Tiers
+
+The tiers below document the full public MCP surface. In the default `research_default` profile, non-default tools are hidden from `tools/list` until their matching toolset or `all` / `full` is enabled.
 
 | Tier | Tools | Use when |
 | --- | --- | --- |
@@ -75,7 +98,7 @@ Do not start ordinary research with audit, comparison, external synthesis, Zoter
 | `grados:get_papers_full_context` | Return structured full-context material for saved-paper batches, with token estimates or actual section content for CAG-style deep reading. Use `mode="estimate"` and batching to manage broad reading; do not treat one call's DOI list as a research paper-count target. |
 | `grados:build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. Scoped DOI calls fall back to canonical sections when the best vector match misses the requested section, and report requested/covered/missing DOI coverage. Rows are agent-side reranking material until reread through `grados:read_saved_paper`. |
 | `grados:compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. Returned excerpts and anchors guide rereading; they avoid References/CRediT/Acknowledgements/Funding/Declarations by default, leave axes empty when no eligible excerpt exists, and are not citation-ready proof. |
-| `grados:audit_draft_support` | Audit draft claims against the local paper library and return first-pass `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts plus eligible candidate evidence snippets, issue types, revision actions, and anchors. Citation-only markers attach to the preceding claim when possible. `candidate_limit` controls how many candidates are retrieved per claim for host-agent reranking. The host agent model must reread canonical paragraph windows before final support judgment. |
+| `grados:audit_draft_support` | Audit draft claims against the local paper library and return first-pass `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts plus eligible candidate evidence snippets, issue types, revision actions, and anchors. Citation-only markers attach to the preceding claim when possible. With `citation_style="author_year"`, bracketed, parenthetical, and narrative markers such as `Dou et al. (2026)`, `Dou et al., 2026`, and `张三等，2025` count as citation markers; author/year text is stripped from retrieval queries, but retrieved evidence must still match the cited author/year for attribution. `candidate_limit` controls how many candidates are retrieved per claim for host-agent reranking. The host agent model must reread canonical paragraph windows before final support judgment. |
 
 There is no separate local RAG server in the Python release. Saved-paper canonical storage and semantic retrieval are built directly into GRaDOS through ChromaDB.
 

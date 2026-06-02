@@ -12,6 +12,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Updated the locked Python dependency graph for vulnerable networking, XML, auth, multipart, and parser-adjacent packages, including `authlib`, `cryptography`, `lxml`, `python-multipart`, `urllib3`, and Docling parser dependencies.
 
 ### Added
+- Added MCP toolset exposure controls through `GRADOS_MCP_TOOLSETS` and `GRADOS_MCP_TOOLS`, including `research_default`, `local_pdf`, `analysis_extra`, `evidence_extra`, `evidence_recovery`, `external_recovery`, `maintenance`, `zotero`, `all`, and `full` profiles with startup fail-fast validation for unknown names.
 - Added a lightweight Operation Registry in the GRaDOS state database, with normalized lifecycle rows, bounded events, idempotency keys, heartbeat/stale helpers, and debug bundles for long-running or user-interactive work.
 - Added `get_operation_status`, a generic MCP status/recovery tool for pending external synthesis sessions, DOI-bound PDF parse attempts, indepth search runs, local PDF import runs, and Codex download handoffs.
 - Added a durable DOI-bound local PDF parse-attempt ledger plus `extract.parsing.foreground_wait_seconds` and `extract.parsing.attempt_stale_seconds`, allowing `parse_pdf_file(..., doi=...)` to return `parse_in_progress` while long parser runs continue in the background.
@@ -51,6 +52,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Added a dedicated GitHub `CI` workflow for `push`, `pull_request`, and manual runs, with separate Ruff linting, a Python 3.11/3.12/3.13 pytest matrix, and a package build plus local wheel smoke-install job.
 
 ### Changed
+- Changed the default MCP `tools/list` exposure from the full public surface to `research_default`; set `GRADOS_MCP_TOOLSETS=all` or `GRADOS_MCP_TOOLSETS=full` to keep the previous all-tools surface.
 - Changed the release script and PyPI publish workflow to block a higher release tag when the previous existing release tag has not reached PyPI, publish the same `dist/` artifacts that passed release verification, serialize PyPI publish runs, and verify the exact tag version during post-publish install smoke tests.
 - Changed release automation to create annotated version-only tags and GitHub Releases titled `vX.Y.Z`, with release notes generated from the tagged commit list plus a compare link.
 - Changed evidence eligibility gating to reject author-line, DOI-only, journal-only, metadata-only, title-only, reference, and administrative fragments before helper surfaces can count them as usable evidence.

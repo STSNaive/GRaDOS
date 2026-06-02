@@ -37,12 +37,14 @@ from grados.server_tools.research_tools_api import (
     save_research_artifact,
 )
 from grados.server_tools.search_tools import register_search_tools, search_academic_papers, search_saved_papers
+from grados.server_tools.toolsets import ToolsetPolicy, resolve_toolset_policy
 
 __all__ = [
     "audit_draft_support",
     "audit_external_synthesis_result",
     "build_evidence_grid",
     "compare_papers",
+    "create_mcp",
     "extract_paper_full_text",
     "get_citation_graph",
     "get_operation_status",
@@ -70,16 +72,22 @@ __all__ = [
     "search_saved_papers",
 ]
 
-mcp = FastMCP(
-    "GRaDOS",
-    version=__version__,
-    instructions="Academic research MCP server — search, extract, and manage papers",
-)
+def create_mcp(policy: ToolsetPolicy | None = None) -> FastMCP:
+    """Create a GRaDOS MCP server with the configured tool exposure policy."""
+    server = FastMCP(
+        "GRaDOS",
+        version=__version__,
+        instructions="Academic research MCP server — search, extract, and manage papers",
+    )
+    active_policy = policy or resolve_toolset_policy()
+    register_search_tools(server, active_policy)
+    register_library_tools(server, active_policy)
+    register_research_tools_api(server, active_policy)
+    register_admin_tools(server, active_policy)
+    return server
 
-register_search_tools(mcp)
-register_library_tools(mcp)
-register_research_tools_api(mcp)
-register_admin_tools(mcp)
+
+mcp = create_mcp()
 
 
 def run_server() -> None:

@@ -31,6 +31,7 @@ from grados.server_tools.shared import (
     get_paths_and_config,
     missing_paper_selector_message,
 )
+from grados.server_tools.toolsets import ToolsetPolicy, resolve_toolset_policy
 from grados.storage.assets import AssetLimits
 from grados.workflows.library import (
     build_library_document_artifact,
@@ -3426,73 +3427,90 @@ async def parse_pdf_file(
     )
 
 
-def register_library_tools(mcp: FastMCP) -> None:
+def register_library_tools(mcp: FastMCP, policy: ToolsetPolicy | None = None) -> None:
+    active_policy = policy or resolve_toolset_policy()
     mcp.resource("grados://papers/index", mime_type="text/markdown")(papers_index_resource)
     mcp.resource("grados://papers/{safe_doi}", mime_type="text/markdown")(paper_overview_resource)
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        extract_paper_full_text,
         description=(
             "Fetch, parse, and save one paper's canonical full text by DOI. "
             "If canonical Markdown is already saved, returns an already-saved receipt unless `force_refresh=true`. "
             "Returns a compact save receipt with URI, file path, section headings, "
             "and warnings rather than the full paper text. PDF-obtained parser work may return a pending "
             "operation receipt; poll get_operation_status instead of resending extraction."
-        )
-    )(extract_paper_full_text)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        read_saved_paper,
         description=(
             "Read a paragraph window from a previously saved paper for canonical deep reading "
             "and citation verification. "
             "Provide one of `doi`, `safe_doi`, or `uri`; use `section_query` to jump near a heading."
-        )
-    )(read_saved_paper)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        get_saved_paper_structure,
         description=(
             "Return a low-token structure card for one saved paper. "
             "Use this to screen a paper before calling `read_saved_paper`; it is not the full citation source."
-        )
-    )(get_saved_paper_structure)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        read_paper_asset,
         description=(
             "List or read parser-generated paper assets such as figures, tables, formulas, page images, "
             "and debug/source files. Use `include_image=true` only for a specific image asset."
-        )
-    )(read_paper_asset)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        import_local_pdf_library,
         description=(
             "Scan a local PDF file or directory, then import PDFs into GRaDOS canonical storage and the "
             "retrieval index as a background import run. Returns operation_id and progress; poll "
             "get_operation_status for the final summary artifact."
-        )
-    )(import_local_pdf_library)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        plan_library_pdf_cleanup,
         description=(
             "Dry-run scan for noncanonical PDFs in downloads/ that duplicate a DOI's managed "
             "downloads/{safe_doi}.pdf artifact. It reports candidates only and never deletes files."
-        )
-    )(plan_library_pdf_cleanup)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        ingest_codex_downloaded_pdf,
         description=(
             "Complete a Codex Chrome Extension handoff by conservatively scanning the "
             "configured watch directory for one completed PDF, or by validating downloaded_file_path when the "
             "absolute PDF path is known, then save it through the same codex parse/canonical-storage path. "
             "Ambiguous, missing, invalid, pending, and completed handoff states are tracked as "
             "codex_download_handoff operations."
-        )
-    )(ingest_codex_downloaded_pdf)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        parse_pdf_file,
         description=(
             "Parse a local PDF into markdown. "
             "Without a DOI it returns a truncated preview; with a DOI it saves canonical markdown "
             "and returns a save receipt. Use copy_to_library=true for host-agent downloaded PDFs "
             "that should be archived under downloads/. Long DOI-bound saves return parse_in_progress with "
             "operation_id for get_operation_status."
-        )
-    )(parse_pdf_file)
+        ),
+    )

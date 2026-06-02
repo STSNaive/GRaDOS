@@ -6,7 +6,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from grados.server import mcp
+from grados.server import create_mcp
+from grados.server_tools.toolsets import resolve_toolset_policy
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOL_TABLE_PATTERN = re.compile(r"\| `grados:([^`/][^`]*)` \|")
@@ -18,7 +19,8 @@ INLINE_TOOL_PATTERN = re.compile(r"`grados:([^`]+)`")
 
 
 def _live_tools() -> dict[str, Any]:
-    return {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+    server = create_mcp(resolve_toolset_policy({"GRADOS_MCP_TOOLSETS": "all"}))
+    return {tool.name: tool for tool in asyncio.run(server.list_tools())}
 
 
 def _read(path: str) -> str:
@@ -62,6 +64,28 @@ def test_readmes_keep_light_coverage_of_live_mcp_tool_names() -> None:
     for docs_path in ["README.md", "README.zh-CN.md"]:
         text = _read(docs_path)
         missing = [tool_name for tool_name in live_tool_names if f"`{tool_name}`" not in text]
+        assert missing == []
+
+
+def test_docs_describe_mcp_toolsets_and_compatibility_profiles() -> None:
+    required_fragments = [
+        "GRADOS_MCP_TOOLSETS=research_default",
+        "GRADOS_MCP_TOOLSETS=all",
+        "GRADOS_MCP_TOOLSETS=full",
+        "GRADOS_MCP_TOOLS=read_saved_paper,prepare_evidence_pack",
+        "research_default",
+        "local_pdf",
+        "external_recovery",
+    ]
+
+    for docs_path in [
+        "README.md",
+        "README.zh-CN.md",
+        "skills/grados/references/tools.md",
+        "plugins/grados/skills/grados/references/tools.md",
+    ]:
+        text = _read(docs_path)
+        missing = [fragment for fragment in required_fragments if fragment not in text]
         assert missing == []
 
 

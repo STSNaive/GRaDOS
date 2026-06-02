@@ -8,6 +8,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from grados.server_tools.shared import get_paths_and_config
+from grados.server_tools.toolsets import ToolsetPolicy, resolve_toolset_policy
 
 __all__ = ["register_admin_tools", "save_paper_to_zotero"]
 
@@ -53,10 +54,13 @@ async def save_paper_to_zotero(
     return f"## Zotero Save Failed\n\n- **Error:** {result.message}"
 
 
-def register_admin_tools(mcp: FastMCP) -> None:
-    mcp.tool(
+def register_admin_tools(mcp: FastMCP, policy: ToolsetPolicy | None = None) -> None:
+    active_policy = policy or resolve_toolset_policy()
+    active_policy.register_tool(
+        mcp,
+        save_paper_to_zotero,
         description=(
             "Save one paper to Zotero via the Web API using the configured library settings. "
             "Best used for papers that actually support the final answer."
-        )
-    )(save_paper_to_zotero)
+        ),
+    )

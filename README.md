@@ -43,6 +43,22 @@ For long-operation recovery, the Operation Registry is a lightweight SQLite cont
 
 For evidence-grounded writing, the bundled skill includes `references/paper_writing.md` as the workflow router. It points host agents to task-specific profiles for experiment/simulation protocols, literature reviews, experiment reports, and manuscripts, plus a mechanics/elastic-metamaterials domain profile. These profiles guide planning, claim matrices, section gates, and delivery checks; they do not create a second evidence source or a separate MCP runtime.
 
+### MCP Toolsets 🧰
+
+By default, MCP `tools/list` exposes the `research_default` profile rather than every public GRaDOS tool. This keeps ordinary research agents focused on the end-to-end loop: local/remote search, extraction, structure cards, canonical rereading, operation polling, evidence packs, audits, evidence grids, comparison, default external synthesis, and run-linked artifact saving.
+
+Toolsets only control MCP tool visibility. They do not remove Python functions, CLI commands, resources, internal workflows, or existing storage paths. The paper resources `grados://papers/index` and `grados://papers/{safe_doi}` remain registered by default and are not counted as tools.
+
+| Setting | Exposed tools |
+| --- | --- |
+| unset / `GRADOS_MCP_TOOLSETS=research_default` | Default research workflow tools. |
+| `GRADOS_MCP_TOOLSETS=all` or `GRADOS_MCP_TOOLSETS=full` | The full public MCP surface, currently all 31 tools. |
+| `GRADOS_MCP_TOOLSETS=research_default,local_pdf` | Default research tools plus local PDF import/parse/handoff/asset tools. |
+| `GRADOS_MCP_TOOLS=read_saved_paper,prepare_evidence_pack` | Exact tool allow-list when no toolset is also set. |
+| `GRADOS_MCP_TOOLSETS=research_default` plus `GRADOS_MCP_TOOLS=read_paper_asset` | Default profile plus explicitly named tools. |
+
+Named toolsets: `research_default`, `local_pdf`, `analysis_extra`, `evidence_extra`, `evidence_recovery`, `external_recovery`, `maintenance`, `zotero`, `all`, and `full`. Unknown toolset or tool names fail at server startup so misconfigured MCP clients do not silently run with the wrong surface.
+
 ### MCP Tools 🔧
 
 | Server | Tool | Description |
@@ -77,7 +93,7 @@ For evidence-grounded writing, the bundled skill includes `references/paper_writ
 | GRaDOS | `get_papers_full_context` | Return structured full-context material for context-budgeted saved-paper batches, with token estimates or actual section content for CAG-style deep reading. |
 | GRaDOS | `build_evidence_grid` | Build topic- or subquestion-centered evidence grids from the local paper library before drafting. Rows carry reread anchors for agent-side reranking before citation verification, and scoped DOI calls report requested/covered/missing coverage. |
 | GRaDOS | `compare_papers` | Extract aligned comparison material across multiple saved papers, focused on methods, results, or full text. Returned excerpts carry per-axis reread anchors, avoid backmatter sections by default, and leave an axis empty when no eligible excerpt exists. |
-| GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return first-pass `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts with eligible candidate evidence snippets, issue types, revision actions, and anchors. `candidate_limit` controls candidates per claim. |
+| GRaDOS | `audit_draft_support` | Audit draft claims against the local paper library and return first-pass `verified`, `minor_distortion`, `major_distortion`, `unverifiable`, or `unverifiable_access` verdicts with eligible candidate evidence snippets, issue types, revision actions, and anchors. `author_year` citations include bracketed, parenthetical, and narrative markers such as `Dou et al. (2026)`, `Dou et al., 2026`, and `张三等，2025`; author/year text is stripped from retrieval queries while attribution checks remain strict. `candidate_limit` controls candidates per claim. |
 
 ### MCP Resources 📚
 

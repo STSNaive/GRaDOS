@@ -726,3 +726,29 @@
 - Host agent 收到 pending 时应 poll `get_operation_status`，不要通过重新发送 ChatGPT prompt、重新点击下载、重新导入目录或重复解析同一 PDF 来恢复。
 - 现有各领域 store 继续是当前实现真值；Operation Registry 是跨工具状态面和调试控制面，必须保持现有 receipt 和兼容 id 可恢复。
 - README、CHANGELOG、skill tool reference 和 MCP schema drift tests 共同维护用户可见合同；TODO 只保留未完成的 browser runtime、写作流水线和后续压力验证项。
+
+---
+
+## ADR-027：MCP public tool surface 通过 toolsets 收敛
+
+- 状态：Accepted
+- 日期：2026-06-02
+
+### 背景
+- MCP tools 是 model-controlled surface；默认暴露全部 public tools 会增加 schema/token 噪音，也会提高 agent 误选恢复、维护或外部写入工具的概率。
+- 只靠工具 description 做软分层不够稳定。成熟 MCP server 通常通过 toolsets/capabilities 控制实际 `tools/list` 暴露面，再用 description 做辅助提示。
+- MCP Resources 适合承载只读状态，但不同 host 对资源自动发现和调用的支持不一致，不能一次性替代现有工具。
+
+### 决策
+- GRaDOS 的 FastMCP server 创建时解析 `GRADOS_MCP_TOOLSETS` 和 `GRADOS_MCP_TOOLS`，按 policy 注册工具；默认 profile 是 `research_default`。
+- `research_default` 覆盖常见端到端研究 workflow；完整 public surface 通过 `GRADOS_MCP_TOOLSETS=all` 或 `GRADOS_MCP_TOOLSETS=full` 保留兼容。
+- `GRADOS_MCP_TOOLS=name1,name2` 作为精确 allow-list，并可与 toolsets 叠加；未知 toolset 或工具名在 server 启动时 fail fast。
+- Toolsets 只影响 MCP `tools/list` 可见性；不删除 Python 函数、CLI 路径、内部 workflow、存储数据或资源模板。`grados://papers/index` 和 `grados://papers/{safe_doi}` 默认继续注册，且不计入 toolset 工具数。
+- 非默认的 local PDF、analysis extra、evidence recovery/extra、external recovery、maintenance 和 Zotero 工具通过命名 toolsets 暴露；完整映射以 `skills/grados/references/tools.md` 及 plugin mirror 为用户可见真值，避免在 ADR 中重复维护长工具清单。
+- 工具 description 的 `[DEFAULT]`、`[LOCAL_PDF]`、`[RECOVERY]` 等标签只是辅助提示；实际边界由 toolset policy 决定。
+- Operation、research artifact 和 evidence pack 等只读 resource templates 作为后续 additive work；在常用 MCP host 验证稳定前，不用 Resources 删除或替代现有 read/status tools。
+
+### 结果与影响
+- 普通研究 agent 默认看到更聚焦的工具面，同时专家/兼容场景仍可启用完整 surface。
+- 文档和 tests 必须同时覆盖默认 surface、`all` / `full` compatibility、精确 allow-list、无效名称 fail-fast，以及 skill/plugin mirror drift。
+- TODO 只保留未完成的 read-only Resource 扩展和后续 host 兼容验证，不再保留已完成 toolset rollout 计划。

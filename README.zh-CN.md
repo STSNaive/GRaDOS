@@ -43,6 +43,22 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 面向论文、综述、实验流程和实验报告写作时，内置 skill 会用 `references/paper_writing.md` 作为 workflow router。它会把 agent 引到实验/仿真 protocol、literature review、experiment report、manuscript 等细分 profile，并在力学、弹性/声学/机械超材料、phononic crystal、band gap 等主题上加载对应 domain profile。这些 profile 只负责规划、claim matrix、section gate 和交付检查，不会成为第二套证据源，也不会把写作阶段拆成一组新的 MCP tools。
 
+### MCP Toolsets 🧰
+
+默认情况下，MCP `tools/list` 暴露 `research_default` profile，而不是所有 GRaDOS public tools。这样普通研究 agent 会优先看到端到端研究闭环所需的工具：本地/远程检索、全文获取、结构卡、canonical 回读、operation polling、evidence pack、审计、evidence grid、对比、默认 external synthesis，以及 run-linked artifact 保存。
+
+Toolsets 只控制 MCP 工具可见性；不会删除 Python 函数、CLI 命令、resources、内部 workflow 或既有存储路径。`grados://papers/index` 和 `grados://papers/{safe_doi}` 两个论文资源默认仍会注册，也不计入工具数量。
+
+| 设置 | 暴露工具 |
+| --- | --- |
+| 未设置 / `GRADOS_MCP_TOOLSETS=research_default` | 默认研究 workflow 工具。 |
+| `GRADOS_MCP_TOOLSETS=all` 或 `GRADOS_MCP_TOOLSETS=full` | 完整 public MCP surface，目前为 31 个工具。 |
+| `GRADOS_MCP_TOOLSETS=research_default,local_pdf` | 默认研究工具，加上本地 PDF import/parse/handoff/asset 工具。 |
+| `GRADOS_MCP_TOOLS=read_saved_paper,prepare_evidence_pack` | 未同时设置 toolset 时，作为精确工具 allow-list。 |
+| `GRADOS_MCP_TOOLSETS=research_default` 加 `GRADOS_MCP_TOOLS=read_paper_asset` | 默认 profile 加显式指定工具。 |
+
+可用 toolsets：`research_default`、`local_pdf`、`analysis_extra`、`evidence_extra`、`evidence_recovery`、`external_recovery`、`maintenance`、`zotero`、`all` 和 `full`。未知 toolset 或工具名会在 server 启动时 fail-fast，避免 MCP client 静默运行在错误暴露面上。
+
 ### MCP 工具 🔧
 
 | 服务 | 工具 | 说明 |
@@ -77,7 +93,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 | GRaDOS | `get_papers_full_context` | 为按上下文预算分批的已保存论文返回结构化全文上下文，可先拿 token 估计，也可直接进入 CAG 风格的深读模式。 |
 | GRaDOS | `build_evidence_grid` | 围绕主题或子问题，从本地论文库构建写作前的证据网格；行内带可回读 anchor，供 agent-side reranking 后再核验引用，scoped DOI 调用会报告 requested/covered/missing 覆盖状态。 |
 | GRaDOS | `compare_papers` | 跨多篇已保存论文抽取并行对比材料，聚焦 methods、results 或 full text；返回 excerpt 会带每个对比轴的回读 anchor，默认避开后置噪声 section，并在没有合格 excerpt 时留空该轴。 |
-| GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 first-pass `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，以及合格候选 evidence snippet、issue type、revision action 和 anchor；`candidate_limit` 控制每条 claim 的候选数。 |
+| GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 first-pass `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，以及合格候选 evidence snippet、issue type、revision action 和 anchor；`author_year` citation 包括括号/方括号 marker，以及 `Dou et al. (2026)`、`Dou et al., 2026`、`张三等，2025` 这类 narrative marker，检索 query 会剥离 author/year，但 attribution check 仍保持严格；`candidate_limit` 控制每条 claim 的候选数。 |
 
 ### MCP 资源 📚
 

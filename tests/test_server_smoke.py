@@ -9,6 +9,9 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
+
+import pytest
 
 from grados.config import GRaDOSPaths, IndexingConfig, generate_default_config
 from grados.publisher.common import PublisherMetadata, safe_doi_filename
@@ -18,6 +21,7 @@ from grados.server import (
     audit_draft_support,
     build_evidence_grid,
     compare_papers,
+    create_mcp,
     extract_paper_full_text,
     get_citation_graph,
     get_operation_status,
@@ -25,7 +29,6 @@ from grados.server import (
     get_saved_paper_structure,
     import_local_pdf_library,
     manage_failure_cases,
-    mcp,
     parse_pdf_file,
     query_research_artifacts,
     read_paper_asset,
@@ -34,17 +37,48 @@ from grados.server import (
     search_academic_papers,
     search_saved_papers,
 )
+from grados.server_tools.toolsets import resolve_toolset_policy
 from grados.storage.frontmatter import read_frontmatter_metadata_from_file
 from grados.storage.operations import get_operation
 from grados.storage.papers import PaperListEntry, load_paper_record, save_paper_markdown
 from grados.storage.vector import PaperSearchResult
 
 
-def test_server_registers_expected_tools() -> None:
-    tools = asyncio.run(mcp.list_tools())
-    tool_names = sorted(tool.name for tool in tools)
+def _mcp_for_tool_env(env: dict[str, str] | None = None) -> Any:
+    return create_mcp(resolve_toolset_policy(env or {}))
+
+
+def _tool_names(server: Any) -> list[str]:
+    return sorted(tool.name for tool in asyncio.run(server.list_tools()))
+
+
+def test_server_registers_research_default_tools() -> None:
+    server = _mcp_for_tool_env()
+    tool_names = _tool_names(server)
 
     assert tool_names == [
+        "audit_answer_against_pack",
+        "audit_draft_support",
+        "build_evidence_grid",
+        "compare_papers",
+        "extract_paper_full_text",
+        "get_operation_status",
+        "get_saved_paper_structure",
+        "prepare_evidence_pack",
+        "read_saved_paper",
+        "run_external_synthesis",
+        "save_research_artifact",
+        "search_academic_papers",
+        "search_saved_papers",
+        "verify_evidence_pack",
+    ]
+
+    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    assert (tools["search_saved_papers"].description or "").startswith("[DEFAULT] ")
+
+
+def test_server_registers_all_tools_with_all_or_full_profile() -> None:
+    expected_tool_names = [
         "audit_answer_against_pack",
         "audit_draft_support",
         "audit_external_synthesis_result",
@@ -78,9 +112,70 @@ def test_server_registers_expected_tools() -> None:
         "verify_evidence_pack",
     ]
 
+    for profile in ["all", "full"]:
+        assert _tool_names(_mcp_for_tool_env({"GRADOS_MCP_TOOLSETS": profile})) == expected_tool_names
+
+
+def test_server_combines_research_default_with_local_pdf_toolset() -> None:
+    tool_names = _tool_names(_mcp_for_tool_env({"GRADOS_MCP_TOOLSETS": "research_default,local_pdf"}))
+
+    assert tool_names == [
+        "audit_answer_against_pack",
+        "audit_draft_support",
+        "build_evidence_grid",
+        "compare_papers",
+        "extract_paper_full_text",
+        "get_operation_status",
+        "get_saved_paper_structure",
+        "import_local_pdf_library",
+        "ingest_codex_downloaded_pdf",
+        "parse_pdf_file",
+        "prepare_evidence_pack",
+        "read_paper_asset",
+        "read_saved_paper",
+        "run_external_synthesis",
+        "save_research_artifact",
+        "search_academic_papers",
+        "search_saved_papers",
+        "verify_evidence_pack",
+    ]
+
+
+def test_server_supports_precise_tool_allow_list() -> None:
+    tool_names = _tool_names(
+        _mcp_for_tool_env({"GRADOS_MCP_TOOLS": "read_saved_paper,prepare_evidence_pack,read_saved_paper"})
+    )
+
+    assert tool_names == ["prepare_evidence_pack", "read_saved_paper"]
+
+
+def test_server_combines_toolsets_with_explicit_tools() -> None:
+    tool_names = _tool_names(
+        _mcp_for_tool_env(
+            {
+                "GRADOS_MCP_TOOLSETS": "research_default",
+                "GRADOS_MCP_TOOLS": "read_paper_asset",
+            }
+        )
+    )
+
+    assert "read_paper_asset" in tool_names
+    assert "parse_pdf_file" not in tool_names
+    assert len(tool_names) == 15
+
+
+def test_server_rejects_unknown_toolset_or_tool_name() -> None:
+    with pytest.raises(ValueError, match="GRADOS_MCP_TOOLSETS"):
+        resolve_toolset_policy({"GRADOS_MCP_TOOLSETS": "unknown"})
+
+    with pytest.raises(ValueError, match="GRADOS_MCP_TOOLS"):
+        resolve_toolset_policy({"GRADOS_MCP_TOOLS": "unknown_tool"})
+
 
 def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
-    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+    tools = {tool.name: tool for tool in asyncio.run(_mcp_for_tool_env({"GRADOS_MCP_TOOLSETS": "all"}).list_tools())}
+
+    assert (tools["query_research_artifacts"].description or "").startswith("[MAINTENANCE] ")
 
     search_remote = tools["search_academic_papers"]
     assert "metadata only" in (search_remote.description or "")
@@ -133,8 +228,9 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
 
 
 def test_server_registers_expected_paper_resources() -> None:
-    resources = asyncio.run(mcp.list_resources())
-    templates = asyncio.run(mcp.list_resource_templates())
+    server = _mcp_for_tool_env()
+    resources = asyncio.run(server.list_resources())
+    templates = asyncio.run(server.list_resource_templates())
 
     assert sorted(str(resource.uri) for resource in resources) == ["grados://papers/index"]
     assert sorted(template.uri_template for template in templates) == ["grados://papers/{safe_doi}"]
@@ -160,8 +256,9 @@ def test_paper_resources_can_be_read_for_index_and_overview(tmp_path: Path, monk
         encoding="utf-8",
     )
 
-    index_result = asyncio.run(mcp.read_resource("grados://papers/index"))
-    paper_result = asyncio.run(mcp.read_resource("grados://papers/10_1234_demo"))
+    server = _mcp_for_tool_env()
+    index_result = asyncio.run(server.read_resource("grados://papers/index"))
+    paper_result = asyncio.run(server.read_resource("grados://papers/10_1234_demo"))
 
     assert "Demo Paper Title" in index_result.contents[0].content
     assert "grados://papers/10_1234_demo" in index_result.contents[0].content

@@ -17,6 +17,7 @@ from pydantic import Field
 
 from grados.config import GRaDOSConfig, GRaDOSPaths
 from grados.server_tools.shared import get_api_keys, get_paths_and_config
+from grados.server_tools.toolsets import ToolsetPolicy, resolve_toolset_policy
 
 __all__ = ["register_search_tools", "search_academic_papers", "search_saved_papers"]
 
@@ -917,22 +918,27 @@ async def search_saved_papers(
     return "\n".join(lines)
 
 
-def register_search_tools(mcp: FastMCP) -> None:
-    mcp.tool(
+def register_search_tools(mcp: FastMCP, policy: ToolsetPolicy | None = None) -> None:
+    active_policy = policy or resolve_toolset_policy()
+    active_policy.register_tool(
+        mcp,
+        search_academic_papers,
         description=(
             "Search remote academic databases for paper metadata only. "
             "Returns deduplicated titles, abstracts, DOIs, and a continuation token when more results are available; "
             "also exposes local saved/full-text/summary state. "
             "Use `indepth=true` only when you want GRaDOS to start a background materialization run for "
             "returned candidates; poll get_operation_status with the returned operation id."
-        )
-    )(search_academic_papers)
+        ),
+    )
 
-    mcp.tool(
+    active_policy.register_tool(
+        mcp,
+        search_saved_papers,
         description=(
             "Search the local saved-paper library with semantic retrieval, SQLite FTS/BM25 fallback, "
             "metadata filters, and optional hybrid RRF reranking. "
             "Returned snippets and evidence anchors are screening/reranking material, not citation evidence; "
             "use `read_saved_paper` before citing."
-        )
-    )(search_saved_papers)
+        ),
+    )
