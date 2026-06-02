@@ -357,6 +357,108 @@ def test_audit_draft_support_handles_chinese_claims_and_author_year_citations(
     ]
 
 
+def test_audit_draft_support_handles_narrative_author_year_citations(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, limit, kwargs)
+        calls.append(query)
+        if "composite damping" in query.lower():
+            return [
+                PaperSearchResult(
+                    doi="10.1234/dou",
+                    safe_doi="10_1234_dou",
+                    title="Composite Damping Study",
+                    authors=["Dou", "Lee"],
+                    year="2026",
+                    journal="Composite Structures",
+                    section_name="Results",
+                    paragraph_start=4,
+                    paragraph_count=2,
+                    snippet="Composite damping improved vibration attenuation by 18%.",
+                    score=1.35,
+                )
+            ]
+        if "振动衰减" in query:
+            return [
+                PaperSearchResult(
+                    doi="10.1234/zhang",
+                    safe_doi="10_1234_zhang",
+                    title="复合阻尼研究",
+                    authors=["张三"],
+                    year="2025",
+                    journal="Composite Structures",
+                    section_name="Results",
+                    paragraph_start=3,
+                    paragraph_count=1,
+                    snippet="复合阻尼将振动衰减提高了18%。",
+                    score=1.35,
+                )
+            ]
+        return []
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    result = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text=(
+            "Dou et al. (2026) showed that composite damping improves vibration attenuation by 18%. "
+            "Dou et al., 2026 reported that composite damping remained stable under load. "
+            "张三等，2025 证明复合阻尼将振动衰减提高了18%。"
+        ),
+        strictness="strict",
+    )
+
+    assert result.claims_checked == 3
+    assert [claim.verdict for claim in result.claims] == ["verified", "verified", "verified"]
+    assert [claim.citation_marker_present for claim in result.claims] == [True, True, True]
+    assert [claim.citations[0].author for claim in result.claims] == ["dou", "dou", "张三"]
+    assert [claim.citations[0].year for claim in result.claims] == ["2026", "2026", "2025"]
+    assert all("Dou" not in query and "2026" not in query for query in calls[:2])
+    assert "张三" not in calls[2]
+    assert "2025" not in calls[2]
+
+
+def test_audit_draft_support_keeps_narrative_author_year_mismatch_strict(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, limit, kwargs)
+        return [
+            PaperSearchResult(
+                doi="10.5555/other",
+                safe_doi="10_5555_other",
+                title="Other Baseline Study",
+                authors=["Garcia"],
+                year="2024",
+                journal="Mechanical Systems",
+                section_name="Discussion",
+                paragraph_start=7,
+                paragraph_count=1,
+                snippet="A different baseline was evaluated.",
+                score=0.9,
+            )
+        ]
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    result = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text="Dou et al. (2026) showed that baseline mismatch is resolved in the experiment.",
+        strictness="strict",
+    )
+
+    assert result.claims_checked == 1
+    assert result.claims[0].citation_marker_present is True
+    assert result.claims[0].citations[0].author == "dou"
+    assert result.claims[0].verdict == "major_distortion"
+    assert result.claims[0].issue_type == "citation_mismatch"
+
+
 def test_audit_draft_support_attaches_standalone_citation_marker(
     monkeypatch,
     tmp_path: Path,

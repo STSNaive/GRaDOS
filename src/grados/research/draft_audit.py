@@ -28,6 +28,24 @@ VERDICT_MAJOR_DISTORTION = "major_distortion"
 VERDICT_UNVERIFIABLE = "unverifiable"
 VERDICT_UNVERIFIABLE_ACCESS = "unverifiable_access"
 
+_ET_AL_SENTENCE_PLACEHOLDER = "et al<dot>"
+_NARRATIVE_PAREN_AUTHOR_YEAR_PATTERNS = [
+    re.compile(
+        r"(?P<marker>(?P<author>[A-Z][A-Za-z'`-]+)(?:\s+et\s+al\.?)?\s*[\(（]\s*(?P<year>\d{4})\s*[\)）])"
+    ),
+    re.compile(
+        r"(?P<marker>(?P<author>[\u3400-\u9fff]{1,8}?)(?:等人?|等)?\s*[\(（]\s*(?P<year>\d{4})\s*[\)）])"
+    ),
+]
+_NARRATIVE_COMMA_AUTHOR_YEAR_PATTERNS = [
+    re.compile(
+        r"(?P<marker>(?P<author>[A-Z][A-Za-z'`-]+)(?:\s+et\s+al\.?)?\s*[,，]\s*(?P<year>\d{4}))"
+    ),
+    re.compile(
+        r"(?P<marker>(?P<author>[\u3400-\u9fff]{1,8}?)(?:等人?|等)?\s*[,，]\s*(?P<year>\d{4}))"
+    ),
+]
+
 
 class DraftVerdictPayload(TypedDict):
     verdict: str
@@ -45,9 +63,15 @@ def _split_claims(draft_text: str) -> list[str]:
         block = block.strip()
         if not block or block.startswith("#"):
             continue
-        sentences = re.split(r"(?<=[。！？])|(?<=[.!?])\s+", block)
+        block_for_split = re.sub(
+            r"\bet\s+al\.",
+            _ET_AL_SENTENCE_PLACEHOLDER,
+            block,
+            flags=re.IGNORECASE,
+        )
+        sentences = re.split(r"(?<=[。！？])|(?<=[.!?])\s+", block_for_split)
         for sentence in sentences:
-            candidate = sentence.strip()
+            candidate = sentence.replace(_ET_AL_SENTENCE_PLACEHOLDER, "et al.").strip()
             if is_citation_fragment(candidate):
                 if claims:
                     claims[-1] = f"{claims[-1].rstrip()} {candidate}"
@@ -62,15 +86,67 @@ def _normalize_citation_piece(piece: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def _author_year_marker_key(marker: AuditCitationMarker) -> tuple[str, str, str, str]:
+    if marker.style == "author_year":
+        return marker.style, marker.author, marker.year, ""
+    return marker.style, "", "", marker.marker
+
+
+def _append_author_year_marker(
+    markers: list[AuditCitationMarker],
+    *,
+    author: str,
+    year: str,
+    marker: str,
+    seen: set[tuple[str, str, str, str]],
+) -> None:
+    normalized_author = re.sub(r"(等人?|等)$", "", author.strip().lower())
+    normalized_marker = _normalize_citation_piece(marker)
+    if not normalized_author or not year:
+        return
+    citation = AuditCitationMarker(
+        style="author_year",
+        author=normalized_author,
+        year=year,
+        marker=normalized_marker,
+    )
+    key = _author_year_marker_key(citation)
+    if key in seen:
+        return
+    seen.add(key)
+    markers.append(citation)
+
+
+def _extract_narrative_author_year_markers(
+    text: str,
+    markers: list[AuditCitationMarker],
+    seen: set[tuple[str, str, str, str]],
+) -> None:
+    for pattern in _NARRATIVE_PAREN_AUTHOR_YEAR_PATTERNS + _NARRATIVE_COMMA_AUTHOR_YEAR_PATTERNS:
+        for match in pattern.finditer(text):
+            _append_author_year_marker(
+                markers,
+                author=match.group("author"),
+                year=match.group("year"),
+                marker=match.group("marker"),
+                seen=seen,
+            )
+
+
 def _extract_citation_markers(text: str, citation_style: str) -> list[AuditCitationMarker]:
     markers: list[AuditCitationMarker] = []
+    seen: set[tuple[str, str, str, str]] = set()
     bracket_chunks = re.findall(r"[\[【]([^\]】]+)[\]】]", text)
     paren_chunks = re.findall(r"[\(（]([^\)）]+)[\)）]", text) if citation_style == "author_year" else []
     for chunk in bracket_chunks + paren_chunks:
         normalized_chunk = _normalize_citation_piece(chunk)
         if citation_style == "numeric":
             if re.search(r"\d", normalized_chunk):
-                markers.append(AuditCitationMarker(style="numeric", marker=normalized_chunk))
+                citation = AuditCitationMarker(style="numeric", marker=normalized_chunk)
+                key = _author_year_marker_key(citation)
+                if key not in seen:
+                    seen.add(key)
+                    markers.append(citation)
             continue
         for piece in re.split(r"[;；]", normalized_chunk):
             normalized_piece = _normalize_citation_piece(piece)
@@ -81,21 +157,26 @@ def _extract_citation_markers(text: str, citation_style: str) -> list[AuditCitat
                 normalized_piece,
             )
             if match:
-                author = re.sub(r"(等|等人)$", "", match.group(1).lower())
-                markers.append(
-                    AuditCitationMarker(
-                        style="author_year",
-                        author=author,
-                        year=match.group(2),
-                        marker=normalized_piece,
-                    )
+                _append_author_year_marker(
+                    markers,
+                    author=match.group(1),
+                    year=match.group(2),
+                    marker=normalized_piece,
+                    seen=seen,
                 )
+    if citation_style == "author_year":
+        _extract_narrative_author_year_markers(text, markers, seen)
     return markers
 
 
 def _strip_citations(text: str) -> str:
-    stripped = re.sub(r"[\[【][^\]】]+[\]】]", "", text)
+    stripped = text
+    for pattern in _NARRATIVE_PAREN_AUTHOR_YEAR_PATTERNS:
+        stripped = pattern.sub("", stripped)
+    stripped = re.sub(r"[\[【][^\]】]+[\]】]", "", stripped)
     stripped = re.sub(r"[\(（][^\)）]+\d{4}[^\)）]*[\)）]", "", stripped)
+    for pattern in _NARRATIVE_COMMA_AUTHOR_YEAR_PATTERNS:
+        stripped = pattern.sub("", stripped)
     return re.sub(r"\s+", " ", stripped).strip()
 
 
