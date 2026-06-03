@@ -39,7 +39,7 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 需要恢复整次研究过程时，`research_run_manifest` 是一次 research run 的轻量目录页，而不是证据来源。它可以串联 search query、候选、extraction/parser receipt、`paper_summary`、`research_checkpoint`、`evidence_checkpoint`、`evidence_pack`、audit result id、canonical anchor 和失败记录；也可以保存 append-only event ledger 与 redacted config/provenance snapshot。修正流程用追加 correction event 的方式表达，不改写旧事件；任何 secret 都不得写入 manifest。最终引用仍必须回读 canonical `papers/*.md` 或 current-valid evidence pack。
 
-需要恢复长操作时，Operation Registry 是 GRaDOS 状态数据库里的轻量 SQLite 控制面。它把 external consult session、DOI-bound parse attempt、indepth run、本地 import run 和 Codex download handoff 统一成 `operation_id`、`kind`、`status`、`stage`、`progress`、`next_action` 与 recovery metadata，同时保留各自领域 store 的可恢复性。`get_operation_status(detail=true)` 可以返回 lifecycle events 和 debug bundle，指向相关 session/run/parse/artifact；这些记录只是运行元数据，不是引用证据。
+需要恢复长操作时，Operation Registry 是 GRaDOS 状态数据库里的轻量 SQLite 控制面。它把 external consult session、DOI-bound extraction/fetch operation、DOI-bound parse attempt、indepth run、本地 import run 和 Codex download handoff 统一成 `operation_id`、`kind`、`status`、`stage`、`progress`、`next_action` 与 recovery metadata，同时保留各自领域 store 的可恢复性。`get_operation_status(detail=true)` 可以返回 lifecycle events 和 debug bundle，指向相关 session/run/parse/artifact；这些记录只是运行元数据，不是引用证据。
 
 面向论文、综述、实验流程和实验报告写作时，内置 skill 会用 `references/paper_writing.md` 作为 workflow router。它会把 agent 引到实验/仿真 protocol、literature review、experiment report、manuscript 等细分 profile，并在力学、弹性/声学/机械超材料、phononic crystal、band gap 等主题上加载对应 domain profile。这些 profile 只负责规划、claim matrix、section gate 和交付检查，不会成为第二套证据源，也不会把写作阶段拆成一组新的 MCP tools。
 
@@ -71,7 +71,7 @@ Toolsets 只控制 MCP 工具可见性；不会删除 Python 函数、CLI 命令
 | GRaDOS | `read_paper_asset` | 列出或读取已保存论文的 parser assets，包括图片、表格、公式、页面图和 debug/source 文件。图片只在显式请求且低于尺寸上限时内联返回。 |
 | GRaDOS | `import_local_pdf_library` | 扫描本地 PDF 文件或目录，然后把逐 PDF 解析/导入作为后台 import run 推进。返回 `operation_id`、进度和 `get_operation_status` 下一步。 |
 | GRaDOS | `parse_pdf_file` | 把本地 PDF 解析为 markdown。未提供 DOI 时返回截断预览；提供 DOI 时会保存进 canonical 论文库，并在 `copy_to_library=true` 时 materialize 受管 PDF；长解析可先返回 `parse_in_progress`，GRaDOS 后台继续同一个 durable parse attempt。 |
-| GRaDOS | `get_operation_status` | 查询 pending external consult、DOI-bound PDF parse、indepth search、本地 PDF import 或 Codex download handoff operation。`detail=true` 可在不重复发送 prompt 的情况下恢复 ChatGPT browser 响应，并返回 registry events/debug 指针。 |
+| GRaDOS | `get_operation_status` | 查询 pending external consult、DOI-bound extraction/PDF parse、indepth search、本地 PDF import 或 Codex download handoff operation。Extraction 状态也可用 `doi:<DOI>` 或裸 DOI 查询。`detail=true` 可在不重复发送 prompt 的情况下恢复 ChatGPT browser 响应，并返回 registry events/debug 指针。 |
 | GRaDOS | `ingest_codex_downloaded_pdf` | 完成 `codex` Chrome extension handoff：校验 `downloaded_file_path` 或 watch dir 中唯一候选 PDF，然后复用同一条 canonical parse/save 路径；歧义、缺失或失败会记录为可恢复的 `codex_download_handoff` operation，长解析中的候选会返回 in-progress 而不是 parse failure。 |
 | GRaDOS | `plan_library_pdf_cleanup` | dry-run 扫描 `downloads/` 中与 DOI 受管 `downloads/{safe_doi}.pdf` hash 相同的非 canonical publisher-name PDF，只生成报告，不删除文件。 |
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 把单篇论文保存到当前配置的 Zotero 库，通常用于最终答案里实际引用到的论文。 |
@@ -331,7 +331,7 @@ cp -R skills/grados "<skills-root>/"
 | `grados external-consult is-enabled --quiet` | 可选 ChatGPT Pro external consult transport 的 predicate gate；exit 0 表示启用，exit 1 表示关闭 |
 | `grados external-consult status --json` | 以结构化诊断形式显示同一个 external consult gate 和 config 路径细节；profile initialized 只表示 Chrome profile marker 存在，不表示 ChatGPT 已登录 |
 | `grados external-consult setup-browser [--keep-open]` | 打开 GRaDOS 私有 ChatGPT profile，用于首次登录 ChatGPT；默认稳定检测到登录后关闭，`--keep-open` 会让命令和 profile lock 保持到 setup browser 关闭 |
-| `grados external-consult doctor [--live]` | 检查 external consult 浏览器前置条件；`--live` 会额外探测 ChatGPT 登录状态 |
+| `grados external-consult doctor [--live]` | 检查 external consult 浏览器前置条件；`--live` 会额外探测 ChatGPT 登录、模型、thinking 和 composer 的 no-submit 就绪状态 |
 | `grados import-pdfs --from /path/to/papers --recursive` | 把已有 PDF 文件夹导入 canonical 论文库 |
 | `grados eval-retrieval --fixture cases.jsonl` | 用本地 golden cases 评测 saved-paper retrieval；默认跑 dense、FTS/BM25、exact lookup 和 RRF，可用 `--dense-only` 调试旧模式 |
 | `grados status` | 查看配置、依赖、运行时资产和 API Key 状态 |
@@ -383,7 +383,7 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 1. `GRADOS_HOME`
 2. `~/GRaDOS`
 
-`parse_pdf_file`、`ingest_codex_downloaded_pdf(downloaded_file_path=...)` 和 `import_local_pdf_library` 这类本地 PDF 工具会从可信本地 MCP/CLI 会话读取主机文件路径，并在加载前和加载过程中执行 `extract.security.max_local_pdf_bytes` 限制。长 parser、indepth、import、external-consult 和 Codex handoff 工作会返回带 `operation_id` 的 durable pending 或 needs-input receipt；应轮询 `get_operation_status`，不要重复提交原始长任务。
+`parse_pdf_file`、`ingest_codex_downloaded_pdf(downloaded_file_path=...)` 和 `import_local_pdf_library` 这类本地 PDF 工具会从可信本地 MCP/CLI 会话读取主机文件路径，并在加载前和加载过程中执行 `extract.security.max_local_pdf_bytes` 限制。长 extraction、parser、indepth、import、external-consult 和 Codex handoff 工作会返回带 `operation_id` 的 durable pending 或 needs-input receipt；应轮询 `get_operation_status`，不要重复提交原始长任务。如果 DOI extraction 在 receipt 可见前超过 MCP host timeout，可轮询 `get_operation_status(operation_id="doi:<DOI>", detail=true)`。
 
 ### API Keys 🔑
 

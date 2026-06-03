@@ -141,7 +141,7 @@ async def finalize_browser_success(
         try:
             await focus_root_page(runtime.session.root_page)
         finally:
-            release_runtime_lock(runtime, release_file=False)
+            release_runtime_lock(runtime)
         return
     try:
         await runtime.session.cleanup()
@@ -164,7 +164,7 @@ async def finalize_browser_no_capture(runtime: BrowserRuntime, *, keep_job_page:
     if runtime.retain:
         if not keep_job_page:
             await _close_runtime_job_page(runtime)
-        release_runtime_lock(runtime, release_file=False)
+        release_runtime_lock(runtime, release_file=not keep_job_page)
         return
     try:
         await runtime.session.cleanup()
@@ -176,7 +176,7 @@ async def finalize_browser_error(runtime: BrowserRuntime) -> None:
     """Release ephemeral sessions after unexpected errors."""
     if runtime.retain:
         await _close_runtime_job_page(runtime)
-        release_runtime_lock(runtime, release_file=False)
+        release_runtime_lock(runtime)
         return
     try:
         await runtime.session.cleanup()

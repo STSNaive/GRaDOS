@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from fastmcp import FastMCP
 from pydantic import Field
 
+from grados.server_tools.operation_keys import extract_full_text_doi_alias_key
 from grados.server_tools.shared import get_paths_and_config
 from grados.server_tools.toolsets import ToolsetPolicy, resolve_toolset_policy
 
@@ -143,7 +144,8 @@ async def get_operation_status(
             min_length=1,
             description=(
                 "Durable operation id returned by a pending long-running tool. "
-                "Accepts ChatGPT browser session ids, DOI-bound parse attempt ids, and research_run_id values."
+                "Accepts ChatGPT browser session ids, DOI-bound parse attempt ids, research_run_id values, "
+                "or extract_paper_full_text DOI aliases such as `doi:10.xxxx/example`."
             ),
         ),
     ],
@@ -166,6 +168,7 @@ async def get_operation_status(
         complete_operation,
         create_operation,
         fail_operation,
+        find_operation_by_idempotency_key,
         get_operation,
         list_operation_events,
         operation_status_payload,
@@ -174,6 +177,11 @@ async def get_operation_status(
     from grados.storage.parse_attempts import get_parse_attempt
 
     paths, config = get_paths_and_config()
+    alias_key = extract_full_text_doi_alias_key(operation_id)
+    if alias_key:
+        alias_record = find_operation_by_idempotency_key(paths.database_state, alias_key)
+        if alias_record is not None:
+            operation_id = alias_record.operation_id
     registry_record = get_operation(paths.database_state, operation_id)
 
     def mirror_parse_attempt(parse_attempt: Any) -> None:
@@ -237,6 +245,53 @@ async def get_operation_status(
             result={
                 "result_path": parse_attempt.paper_path or parse_attempt.canonical_pdf_path,
                 "canonical_uri": parse_attempt.canonical_uri,
+            },
+            error={"message": parse_attempt.error_message, "failure_reason": parse_attempt.failure_reason}
+            if failed
+            else {},
+            clear_error=not failed,
+            heartbeat=not completed and not failed,
+        )
+
+    def mirror_extract_full_text_operation(record: Any) -> None:
+        recovery = record.recovery if isinstance(record.recovery, dict) else {}
+        parse_attempt_id = str(recovery.get("parse_attempt_id") or "").strip()
+        if not parse_attempt_id:
+            return
+        parse_attempt = get_parse_attempt(paths.database_state, parse_attempt_id)
+        if parse_attempt is None:
+            return
+        completed = parse_attempt.status == "completed"
+        failed = parse_attempt.status == "failed"
+        next_action = (
+            "read_saved_paper_or_get_saved_paper_structure"
+            if completed
+            else "review_parse_failure_or_retry_after_stale_window"
+            if failed
+            else "retry_parse_pdf_file_or_get_operation_status_later"
+        )
+        progress = {
+            "stage": parse_attempt.status,
+            "doi": parse_attempt.doi,
+            "parse_attempt_id": parse_attempt_id,
+            "input_pdf_name": parse_attempt.input_pdf_name,
+            "canonical_uri": parse_attempt.canonical_uri,
+        }
+        update_operation(
+            paths.database_state,
+            record.operation_id,
+            status="completed" if completed else "failed" if failed else "pending",
+            stage=parse_attempt.status,
+            progress=progress,
+            recovery={
+                "doi": parse_attempt.doi,
+                "parse_attempt_id": parse_attempt_id,
+                "next_action": next_action,
+            },
+            result={
+                "result_path": parse_attempt.paper_path or parse_attempt.canonical_pdf_path,
+                "canonical_uri": parse_attempt.canonical_uri,
+                "next_action": next_action,
             },
             error={"message": parse_attempt.error_message, "failure_reason": parse_attempt.failure_reason}
             if failed
@@ -309,11 +364,7 @@ async def get_operation_status(
                 "artifact_count": len(artifact_index),
             }
             terminal_result = {"result_artifact_id": result_artifact_id, "result_path": result_path}
-            if (
-                current_record is not None
-                and current_record.status == "completed"
-                and current_record.stage == stage
-            ):
+            if current_record is not None and current_record.status == "completed" and current_record.stage == stage:
                 update_operation(
                     paths.database_state,
                     operation_id,
@@ -411,6 +462,9 @@ async def get_operation_status(
             if parse_attempt is not None:
                 mirror_parse_attempt(parse_attempt)
                 registry_record = get_operation(paths.database_state, operation_id) or registry_record
+        elif registry_record.kind == "extract_paper_full_text":
+            mirror_extract_full_text_operation(registry_record)
+            registry_record = get_operation(paths.database_state, operation_id) or registry_record
         elif registry_record.kind in {"indepth_search", "local_pdf_import", "research_run_manifest"}:
             run_status = read_research_run_manifest(paths.database_state, research_run_id=operation_id)
             if run_status.get("found"):
@@ -623,8 +677,7 @@ async def consult_chatgpt_pro(
         Literal["highest", "current", "ignore"],
         Field(
             description=(
-                "Thinking handling: select highest visible effort, record current label only, "
-                "or skip with warning."
+                "Thinking handling: select highest visible effort, record current label only, or skip with warning."
             ),
         ),
     ] = "highest",
@@ -1080,8 +1133,7 @@ async def get_papers_full_context(
         list[str] | None,
         Field(
             description=(
-                "Optional section names to scope the returned context, "
-                "such as `Abstract`, `Methods`, or `Results`."
+                "Optional section names to scope the returned context, such as `Abstract`, `Methods`, or `Results`."
             )
         ),
     ] = None,
@@ -1121,10 +1173,7 @@ async def build_evidence_grid(
     dois: Annotated[
         list[str] | None,
         Field(
-            description=(
-                "Optional saved-paper DOI scope. When provided, GRaDOS "
-                "only mines evidence from these papers."
-            )
+            description=("Optional saved-paper DOI scope. When provided, GRaDOS only mines evidence from these papers.")
         ),
     ] = None,
     section_filter: Annotated[

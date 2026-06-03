@@ -242,13 +242,13 @@ def test_paper_resources_can_be_read_for_index_and_overview(tmp_path: Path, monk
     papers_dir = tmp_path / "grados-home" / "papers"
     papers_dir.mkdir(parents=True)
     (papers_dir / "10_1234_demo.md").write_text(
-        '---\n'
+        "---\n"
         'doi: "10.1234/demo"\n'
         'title: "Demo Paper Title"\n'
         'source: "Crossref"\n'
         'year: "2025"\n'
         'journal: "Composite Structures"\n'
-        '---\n\n'
+        "---\n\n"
         "# Demo Paper Title\n\n"
         "## Abstract\n\n"
         "This study investigates layered composite vibration behavior.\n\n"
@@ -693,14 +693,14 @@ def test_get_saved_paper_structure_returns_compact_structure_card(
     papers_dir = tmp_path / "grados-home" / "papers"
     papers_dir.mkdir(parents=True)
     (papers_dir / "10_1234_demo.md").write_text(
-        '---\n'
+        "---\n"
         'doi: "10.1234/demo"\n'
         'title: "Demo Paper Title"\n'
         'source: "Crossref"\n'
         'year: "2025"\n'
         'journal: "Composite Structures"\n'
         'authors_json: \'["Alice", "Bob"]\'\n'
-        '---\n\n'
+        "---\n\n"
         "# Demo Paper Title\n\n"
         "## Abstract\n\n"
         "This study investigates layered composite vibration behavior.\n\n"
@@ -908,9 +908,7 @@ def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path,
     assert "Canonical Excerpt: ## Methods Canonical paragraph window from papers file." in result
 
 
-def test_search_saved_papers_end_to_end_rereads_updated_canonical_excerpt(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_search_saved_papers_end_to_end_rereads_updated_canonical_excerpt(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
 
     import grados.storage.vector as vector
@@ -950,7 +948,7 @@ def test_search_saved_papers_end_to_end_rereads_updated_canonical_excerpt(
     )
 
     Path(saved.file_path).write_text(
-        '---\n'
+        "---\n"
         'doi: "10.1234/demo-server"\n'
         'title: "Composite Damping Study"\n'
         'source: "Crossref"\n'
@@ -1014,13 +1012,7 @@ def test_extract_paper_full_text_writes_asset_manifest(tmp_path: Path, monkeypat
         )
     )
 
-    manifest_file = (
-        tmp_path
-        / "grados-home"
-        / "papers"
-        / "_assets"
-        / f"{safe_doi_filename('10.1234/demo')}.json"
-    )
+    manifest_file = tmp_path / "grados-home" / "papers" / "_assets" / f"{safe_doi_filename('10.1234/demo')}.json"
     assert "Paper Extracted Successfully" in result
     assert manifest_file.is_file()
     assert isinstance(captured["indexing_config"], IndexingConfig)
@@ -1200,13 +1192,17 @@ def test_extract_paper_full_text_returns_pending_for_pdf_parse(
     assert result.startswith("## PDF Parse Accepted")
     assert "Extraction Operation" in result
     assert "Operation ID:**" in result
-    operation_id = next(line for line in result.splitlines() if line.startswith("- **Operation ID:**")).split(
-        ":**", 1
-    )[1].strip()
+    operation_id = (
+        next(line for line in result.splitlines() if line.startswith("- **Operation ID:**")).split(":**", 1)[1].strip()
+    )
     status = asyncio.run(get_operation_status(operation_id=operation_id, detail=True))
     assert status["kind"] == "parse_pdf"
     assert status["status"] == "pending"
     assert status["progress"]["doi"] == "10.1234/remote-pdf"
+    doi_status = asyncio.run(get_operation_status(operation_id="doi:10.1234/remote-pdf", detail=True))
+    assert doi_status["kind"] == "extract_paper_full_text"
+    assert doi_status["status"] == "pending"
+    assert doi_status["recovery_metadata"]["parse_attempt_id"] == operation_id
     assert remote_calls[0]["fetch_status"] == "parse_in_progress"
     assert remote_calls[0]["fetch_trace"] == [{"via": "browser", "state": "ok"}]
     release.set()
@@ -1219,6 +1215,10 @@ def test_extract_paper_full_text_returns_pending_for_pdf_parse(
     completed_status = asyncio.run(get_operation_status(operation_id=operation_id, detail=True))
     assert completed_status["status"] == "completed"
     assert completed_status["result_path"]
+    completed_doi_status = asyncio.run(get_operation_status(operation_id="10.1234/remote-pdf", detail=True))
+    assert completed_doi_status["status"] == "completed"
+    assert completed_doi_status["next_action"] == "read_saved_paper_or_get_saved_paper_structure"
+    assert completed_doi_status["result_path"]
 
 
 def test_extract_paper_full_text_returns_metadata_only_receipt(tmp_path: Path, monkeypatch) -> None:
@@ -1372,9 +1372,7 @@ def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeyp
     assert calls[0]["fetch_manual"] is True
     assert isinstance(calls[0]["fetch_resume"], dict)
     assert calls[0]["fetch_resume"]["kind"] == "browser_profile"
-    assert calls[0]["fetch_trace"] == [
-        {"via": "browser", "state": "challenge", "host": "www.sciencedirect.com"}
-    ]
+    assert calls[0]["fetch_trace"] == [{"via": "browser", "state": "challenge", "host": "www.sciencedirect.com"}]
     assert calls[0]["has_fulltext"] is False
 
 
@@ -1740,9 +1738,7 @@ def test_parse_pdf_file_persists_canonical_markdown_and_reports_partial_success(
     record = load_paper_record(tmp_path / "grados-home" / "papers", doi="10.1234/local-parse")
     assert record is not None
     assert record.title == "Saved Demo"
-    frontmatter = read_frontmatter_metadata_from_file(
-        tmp_path / "grados-home" / "papers" / f"{record.safe_doi}.md"
-    )
+    frontmatter = read_frontmatter_metadata_from_file(tmp_path / "grados-home" / "papers" / f"{record.safe_doi}.md")
     assert "acquisition_via" not in frontmatter
     assert "original_pdf_path" not in frontmatter
     assert "copied_pdf_path" not in frontmatter

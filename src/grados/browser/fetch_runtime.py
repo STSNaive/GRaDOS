@@ -63,8 +63,7 @@ class BrowserBackfill(Protocol):
         max_capture_bytes: int = DEFAULT_MAX_BROWSER_CAPTURE_BYTES,
         backfill_timeout_ms: int | None = None,
         record_event: Callable[..., None] | None = None,
-    ) -> Awaitable[None]:
-        ...
+    ) -> Awaitable[None]: ...
 
 
 def _now_iso() -> str:
@@ -86,6 +85,7 @@ class BrowserFetchState:
     capture_url: str = ""
     capture_content_type: str = ""
     capture_bytes: int = 0
+    capture_assisted_download_possible: bool = False
     manual_interactive_wait_started: bool = False
     manual_pdf_page_urls: set[str] = field(default_factory=set)
 
@@ -114,6 +114,7 @@ class BrowserFetchState:
         source_url: str = "",
         *,
         source_kind: str = "capture",
+        assisted_download_possible: bool = False,
     ) -> bool:
         label = f"Browser PDF capture from {source_url}" if source_url else "Browser PDF capture"
         try:
@@ -133,14 +134,18 @@ class BrowserFetchState:
             self.capture_url = source_url
             self.capture_content_type = content_type
             self.capture_bytes = len(data)
+            self.capture_assisted_download_possible = assisted_download_possible
+            details: dict[str, Any] = {
+                "source": source_kind,
+                "content_type": content_type,
+                "bytes": len(data),
+            }
+            if assisted_download_possible:
+                details["assisted_download_possible"] = True
             self.record_event(
                 "pdf_capture_success",
                 url=source_url,
-                details={
-                    "source": source_kind,
-                    "content_type": content_type,
-                    "bytes": len(data),
-                },
+                details=details,
             )
             return True
         self.record_event(
@@ -212,12 +217,25 @@ class BrowserFetchState:
         return self.action_states[pid]
 
     def capture_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "source": self.capture_source,
             "url": self.capture_url,
             "content_type": self.capture_content_type,
             "bytes": self.capture_bytes,
         }
+        if self.capture_assisted_download_possible:
+            payload["assisted_download_possible"] = True
+        return payload
+
+    def recently_confirmed_automated_download_action(self) -> bool:
+        for event in reversed(self.events[-5:]):
+            if event.get("name") != "strategy_action_confirmed":
+                continue
+            details = event.get("details")
+            details = details if isinstance(details, dict) else {}
+            if details.get("confirmation") == "click_dispatched":
+                return True
+        return False
 
 
 @dataclass
@@ -293,7 +311,13 @@ class BrowserListenerRegistry:
                     label=f"Browser PDF download from {download.url}",
                 )
                 body = path.read_bytes()
-                self.state.try_capture(body, "application/pdf", download.url, source_kind="download")
+                self.state.try_capture(
+                    body,
+                    "application/pdf",
+                    download.url,
+                    source_kind="download",
+                    assisted_download_possible=not self.state.recently_confirmed_automated_download_action(),
+                )
         except SizeLimitError as exc:
             self.state.report_warning(str(exc))
             self.state.record_event(

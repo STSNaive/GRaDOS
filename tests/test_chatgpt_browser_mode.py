@@ -56,7 +56,7 @@ from grados.browser.chatgpt.thinking import (
     rank_thinking_label,
     select_chatgpt_thinking,
 )
-from grados.browser.chatgpt.types import ChatGPTCapture
+from grados.browser.chatgpt.types import ChatGPTCapture, ChatGPTModelSelection, ChatGPTThinkingSelection
 from grados.browser.chatgpt.urls import (
     extract_chatgpt_conversation_id,
     is_recoverable_chatgpt_conversation_url,
@@ -555,19 +555,63 @@ def test_live_login_check_uses_profile_lock(monkeypatch: pytest.MonkeyPatch, tmp
         events.append("probe")
         return {"ok": True}
 
+    async def fake_open_new_chat(page: Any) -> None:
+        assert isinstance(page, FakePage)
+        events.append("open_new_chat")
+
+    async def fake_ensure_logged_in(page: Any) -> None:
+        assert isinstance(page, FakePage)
+        events.append("ensure_logged_in")
+
+    async def fake_select_model(page: Any, *, strategy: str) -> ChatGPTModelSelection:
+        assert isinstance(page, FakePage)
+        assert strategy == "select"
+        events.append("select_model")
+        return ChatGPTModelSelection(requested="latest_pro", resolved_label="GPT-5.1", verified=True)
+
+    async def fake_select_thinking(page: Any, *, strategy: str) -> ChatGPTThinkingSelection:
+        assert isinstance(page, FakePage)
+        assert strategy == "highest"
+        events.append("select_thinking")
+        return ChatGPTThinkingSelection(requested="highest", resolved_label="Thinking", verified=True)
+
+    async def fake_clear_composer(page: Any) -> None:
+        assert isinstance(page, FakePage)
+        events.append("clear_composer")
+
+    async def fake_read_turns(page: Any) -> int:
+        assert isinstance(page, FakePage)
+        events.append("read_turns")
+        return 3
+
     monkeypatch.setattr(runtime, "chatgpt_profile_lock", fake_lock)
     monkeypatch.setattr(runtime, "_launch_private_profile", fake_launch)
     monkeypatch.setattr(runtime, "probe_chatgpt_login", fake_probe)
+    monkeypatch.setattr(runtime, "open_new_chat", fake_open_new_chat)
+    monkeypatch.setattr(runtime, "ensure_chatgpt_logged_in", fake_ensure_logged_in)
+    monkeypatch.setattr(runtime, "select_chatgpt_model", fake_select_model)
+    monkeypatch.setattr(runtime, "select_chatgpt_thinking", fake_select_thinking)
+    monkeypatch.setattr(runtime, "clear_prompt_composer", fake_clear_composer)
+    monkeypatch.setattr(runtime, "read_conversation_turn_count", fake_read_turns)
 
     result = asyncio.run(runtime.check_chatgpt_login(paths, HeadlessBrowserConfig()))
 
     assert result["ok"] is True
+    assert result["ready"] is True
+    assert result["readiness"] == "consult_route_ready"
+    assert result["composer_ready"] is True
     assert result["profile"] == str(paths.chatgpt_browser_profile)
     assert events == [
         "enter:external_consult_doctor:True",
         "launch",
         "goto:https://chatgpt.com/",
         "probe",
+        "open_new_chat",
+        "ensure_logged_in",
+        "select_model",
+        "select_thinking",
+        "clear_composer",
+        "read_turns",
         "cleanup",
         "exit:external_consult_doctor",
     ]
@@ -728,9 +772,7 @@ def test_chatgpt_selectors_match_browser_contract() -> None:
         '[data-testid="model-switcher-dropdown-button"], button.__composer-pill[aria-haspopup="menu"]'
     )
     assert MENU_CONTAINER_SELECTOR == '[role="menu"], [data-radix-collection-root]'
-    assert MENU_ITEM_SELECTOR == (
-        'button, [role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]'
-    )
+    assert MENU_ITEM_SELECTOR == ('button, [role="menuitem"], [role="menuitemradio"], [data-testid*="model-switcher-"]')
     assert COMPOSER_MODEL_SIGNAL_SELECTOR == '[data-testid="composer-footer-actions"]'
     assert "--disable-background-networking" in CHATGPT_BROWSER_CHROME_FLAGS
     assert "--disable-features=TranslateUI,AutomationControlled" in CHATGPT_BROWSER_CHROME_FLAGS
@@ -770,7 +812,7 @@ def test_composer_expressions_use_chatgpt_prompt_commit_route() -> None:
 
     assert "dispatchClickSequence" in focus
     assert "textarea[data-id" in focus
-    assert "button[data-testid=\\\"send-button\\\"]" in send
+    assert 'button[data-testid=\\"send-button\\"]' in send
     assert "composerCleared" in commit
     assert "normalizedPromptPrefix" in commit
 

@@ -268,6 +268,7 @@ def test_retained_browser_finalizers_close_only_disposable_job_pages() -> None:
         BrowserRuntime,
         finalize_browser_error,
         finalize_browser_no_capture,
+        finalize_browser_success,
     )
 
     class FakePage:
@@ -285,10 +286,18 @@ def test_retained_browser_finalizers_close_only_disposable_job_pages() -> None:
             self.root_page = root_page
             self.profile_lock = None
 
-    def make_runtime() -> tuple[BrowserRuntime, FakePage, FakePage]:
+    class FakeLock:
+        def __init__(self) -> None:
+            self.releases: list[bool] = []
+
+        def release(self, *, release_file: bool = True) -> None:
+            self.releases.append(release_file)
+
+    def make_runtime() -> tuple[BrowserRuntime, FakePage, FakePage, FakeLock]:
         manual_page = FakePage()
         job_page = FakePage()
         session = FakeSession(manual_page)
+        lock = FakeLock()
         return (
             BrowserRuntime(
                 browser_label="Chrome",
@@ -297,29 +306,47 @@ def test_retained_browser_finalizers_close_only_disposable_job_pages() -> None:
                 session=session,
                 context=object(),
                 root_page=job_page,
+                profile_lock=lock,
                 job_page_owned=True,
             ),
             manual_page,
             job_page,
+            lock,
         )
 
-    runtime, manual_page, job_page = make_runtime()
+    runtime, manual_page, job_page, lock = make_runtime()
     asyncio.run(finalize_browser_no_capture(runtime))
 
     assert job_page.closed is True
     assert manual_page.closed is False
+    assert lock.releases == [True]
 
-    runtime, manual_page, job_page = make_runtime()
+    runtime, manual_page, job_page, lock = make_runtime()
     asyncio.run(finalize_browser_no_capture(runtime, keep_job_page=True))
 
     assert job_page.closed is False
     assert manual_page.closed is False
+    assert lock.releases == [False]
 
-    runtime, manual_page, job_page = make_runtime()
+    runtime, manual_page, job_page, lock = make_runtime()
+    asyncio.run(
+        finalize_browser_success(
+            runtime,
+            close_secondary_pages=lambda context, root_page: None,
+            close_pdf_page_after_capture=True,
+        )
+    )
+
+    assert job_page.closed is True
+    assert manual_page.closed is False
+    assert lock.releases == [True]
+
+    runtime, manual_page, job_page, lock = make_runtime()
     asyncio.run(finalize_browser_error(runtime))
 
     assert job_page.closed is True
     assert manual_page.closed is False
+    assert lock.releases == [True]
 
 
 def test_pdf_browser_session_store_round_trip(tmp_path: Path) -> None:
@@ -335,7 +362,9 @@ def test_pdf_browser_session_store_round_trip(tmp_path: Path) -> None:
         outcome="pdf_obtained",
         capture={"source": "response", "url": "https://example.com/paper.pdf", "bytes": 12},
         warnings=["one warning"],
-        events=[{"timestamp": record.created_at, "name": "pdf_capture_success", "url": "https://example.com/paper.pdf"}],
+        events=[
+            {"timestamp": record.created_at, "name": "pdf_capture_success", "url": "https://example.com/paper.pdf"}
+        ],
     )
 
     payload = json.loads(Path(record.record_path).read_text(encoding="utf-8"))
@@ -434,6 +463,22 @@ def test_browser_fetch_state_records_success_capture_metadata() -> None:
     assert state.events[-1]["name"] == "pdf_capture_success"
 
 
+def test_browser_fetch_state_marks_unattributed_download_capture() -> None:
+    state = BrowserFetchState(max_capture_bytes=1024)
+
+    captured = state.try_capture(
+        b"%PDF-1.4\n%download",
+        "application/pdf",
+        "https://example.com/download",
+        source_kind="download",
+        assisted_download_possible=True,
+    )
+
+    assert captured is True
+    assert state.capture_payload()["assisted_download_possible"] is True
+    assert state.events[-1]["details"]["assisted_download_possible"] is True
+
+
 def test_direct_pdf_backfill_rejects_oversized_content_length() -> None:
     class FakePage:
         url = "https://example.com/paper.pdf"
@@ -506,9 +551,7 @@ def test_direct_pdf_backfill_uses_runtime_timeout_config() -> None:
         update={
             "extract": cfg.extract.model_copy(
                 update={
-                    "headless_browser": cfg.extract.headless_browser.model_copy(
-                        update={"pdf_backfill_timeout": 42.0}
-                    )
+                    "headless_browser": cfg.extract.headless_browser.model_copy(update={"pdf_backfill_timeout": 42.0})
                 }
             )
         }
@@ -626,8 +669,7 @@ def test_direct_pdf_backfill_records_html_challenge_rejection() -> None:
         },
     }
     assert any(
-        event["name"] == "pdf_capture_rejected"
-        and event["details"]["reason"] == "html_or_challenge_page"
+        event["name"] == "pdf_capture_rejected" and event["details"]["reason"] == "html_or_challenge_page"
         for event in state.events
     )
 

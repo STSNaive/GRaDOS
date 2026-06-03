@@ -799,6 +799,8 @@ def external_consult_status(as_json: bool) -> None:
 
 
 def _format_chatgpt_live_login_result(result: dict[str, object]) -> str:
+    if result.get("ready"):
+        return "ready"
     if result.get("ok"):
         return "ok"
 
@@ -814,7 +816,7 @@ def _format_chatgpt_live_login_result(result: dict[str, object]) -> str:
     if dom_login_cta or on_auth_page or status in {401, 403}:
         return f"not signed in ({', '.join(details)})"
 
-    error = result.get("error") or "failed"
+    error = result.get("error") or result.get("readiness") or "failed"
     return f"{error} ({', '.join(details)})"
 
 

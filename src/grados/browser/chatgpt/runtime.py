@@ -697,6 +697,8 @@ async def check_chatgpt_login(
     paths: GRaDOSPaths,
     browser_config: HeadlessBrowserConfig,
 ) -> dict[str, object]:
+    """Verify the live ChatGPT consult route without sending a prompt."""
+
     ensure_chatgpt_profile_ready(paths.chatgpt_browser_profile, setup_mode=False)
     async with chatgpt_profile_lock(
         paths.chatgpt_browser_profile,
@@ -707,8 +709,46 @@ async def check_chatgpt_login(
         try:
             page = browser_session.root_page
             await page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=60_000)
-            result = await probe_chatgpt_login(page)
-            return {**result, "profile": str(paths.chatgpt_browser_profile)}
+            login_probe = await probe_chatgpt_login(page)
+            if not login_probe.get("ok"):
+                return {
+                    **login_probe,
+                    "ready": False,
+                    "readiness": "login_required",
+                    "profile": str(paths.chatgpt_browser_profile),
+                }
+
+            try:
+                await open_new_chat(page)
+                await ensure_chatgpt_logged_in(page)
+                model = await select_chatgpt_model(page, strategy="select")
+                thinking = await select_chatgpt_thinking(page, strategy="highest")
+                await clear_prompt_composer(page)
+                baseline_turns = await read_conversation_turn_count(page)
+            except ChatGPTBrowserError as exc:
+                return {
+                    **login_probe,
+                    "ok": False,
+                    "ready": False,
+                    "readiness": "consult_route_unavailable",
+                    "stage": exc.stage,
+                    "error": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                    "profile": str(paths.chatgpt_browser_profile),
+                }
+
+            return {
+                **login_probe,
+                "ok": True,
+                "ready": True,
+                "readiness": "consult_route_ready",
+                "composer_ready": True,
+                "baseline_turns": baseline_turns,
+                "model_selection": model.to_dict(),
+                "thinking_selection": thinking.to_dict(),
+                "profile": str(paths.chatgpt_browser_profile),
+            }
         finally:
             await browser_session.cleanup()
 

@@ -22,6 +22,25 @@ def test_evidence_eligibility_rejects_backmatter_and_fragments() -> None:
     assert classify_evidence_rejection("", "Authors: Alice Smith, Bob Lee") == "author_line"
     assert classify_evidence_rejection("", "DOI: 10.1234/demo") == "doi_only"
     assert classify_evidence_rejection("Journal", "Composite Structures") == "journal_only"
+    assert classify_evidence_rejection("Keywords", "metamaterials / attenuation") == "metadata_only"
+    assert classify_evidence_rejection("Keywords:", "metamaterials / attenuation") == "metadata_only"
+    assert classify_evidence_rejection("Index terms:", "metamaterials / attenuation") == "metadata_only"
+    assert (
+        classify_evidence_rejection(
+            "",
+            "## Keywords\n\nMetamaterials / Inertial amplification / Vibration attenuation",
+        )
+        == "metadata_only"
+    )
+    assert (
+        classify_evidence_rejection(
+            "",
+            "## Keywords:\n\nMetamaterials / Inertial amplification / Vibration attenuation",
+        )
+        == "metadata_only"
+    )
+    assert is_non_evidence_section("Index terms")
+    assert is_non_evidence_section("Index terms:")
     assert (
         classify_evidence_rejection(
             "",

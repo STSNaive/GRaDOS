@@ -37,6 +37,12 @@ _ADMIN_SECTION_MARKERS = (
     "ethics",
 )
 
+_METADATA_SECTION_MARKERS = (
+    "keywords",
+    "key words",
+    "index terms",
+)
+
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$")
 _METADATA_FIELD_RE = re.compile(
     r"^\s*(?:[-*]\s*)?"
@@ -48,9 +54,7 @@ _METADATA_FIELD_RE = re.compile(
 )
 _DOI_VALUE_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/)?10\.\S+$", re.IGNORECASE)
 _JOURNAL_SECTION_RE = re.compile(r"^(?:journal|source|publisher|publication)\b", re.IGNORECASE)
-_AUTHOR_NAME_TOKEN_RE = re.compile(
-    r"^[A-Z][A-Za-z'`.-]+(?:\s+(?:[A-Z]\.|[A-Z][A-Za-z'`.-]+)){0,3}$"
-)
+_AUTHOR_NAME_TOKEN_RE = re.compile(r"^[A-Z][A-Za-z'`.-]+(?:\s+(?:[A-Z]\.|[A-Z][A-Za-z'`.-]+)){0,3}$")
 _INITIAL_NAME_TOKEN_RE = re.compile(r"^[A-Z](?:\.\s*)+[A-Z][A-Za-z'`.-]+$")
 
 
@@ -95,8 +99,7 @@ def _is_doi_only(text: str) -> bool:
         return True
     fields = _metadata_field_lines(text)
     return bool(fields) and all(
-        label == "doi" and _DOI_VALUE_RE.fullmatch(value.strip(" .;"))
-        for label, value in fields
+        label == "doi" and _DOI_VALUE_RE.fullmatch(value.strip(" .;")) for label, value in fields
     )
 
 
@@ -142,11 +145,7 @@ def _is_author_line(text: str) -> bool:
     joined = " ".join(lines)
     if joined.lower().startswith("by "):
         joined = joined[3:].strip()
-    chunks = [
-        chunk.strip()
-        for chunk in re.split(r"\s*(?:,|;|\band\b|&|\|)\s*", joined)
-        if chunk.strip()
-    ]
+    chunks = [chunk.strip() for chunk in re.split(r"\s*(?:,|;|\band\b|&|\|)\s*", joined) if chunk.strip()]
     return bool(chunks) and len(chunks) <= 20 and all(_looks_like_author_name(chunk) for chunk in chunks)
 
 
@@ -181,8 +180,25 @@ def _is_administrative_section(section_name: str) -> bool:
     return any(marker in normalized for marker in _ADMIN_SECTION_MARKERS)
 
 
+def _is_metadata_section(section_name: str) -> bool:
+    normalized = _normalize(section_name).rstrip(" :：")
+    return any(marker == normalized for marker in _METADATA_SECTION_MARKERS)
+
+
 def is_non_evidence_section(section_name: str) -> bool:
-    return is_backmatter_section(section_name) or _is_administrative_section(section_name)
+    return (
+        is_backmatter_section(section_name)
+        or _is_administrative_section(section_name)
+        or _is_metadata_section(section_name)
+    )
+
+
+def _text_starts_with_metadata_heading(text: str) -> bool:
+    lines = _nonempty_lines(text)
+    if not lines:
+        return False
+    first = _strip_heading_marker(lines[0])
+    return _is_metadata_section(first)
 
 
 def is_title_only_or_empty(
@@ -240,6 +256,8 @@ def classify_evidence_rejection(
         return "backmatter_section"
     if section and _is_administrative_section(section):
         return "administrative_section"
+    if (section and _is_metadata_section(section)) or _text_starts_with_metadata_heading(text):
+        return "metadata_only"
     if _is_doi_only(text):
         return "doi_only"
     if _is_journal_only(section, text):

@@ -714,10 +714,10 @@
 ### 决策
 - 长耗时或用户接管 workflow 先返回 durable receipt，而不是依赖单个 MCP 调用跑到最终完成。Receipt 至少包含 `operation_id` 或兼容 id、`kind`、`status`、`progress`、`next_action`、result/error pointer 和恢复建议。
 - Operation Registry 是轻量 SQLite 控制面，记录 normalized lifecycle row、bounded event ledger、idempotency key、runtime/recovery metadata、heartbeat/stale 状态和 debug bundle 指针；各领域 store 仍保留自己的恢复真值。
-- `get_operation_status(operation_id, detail=false)` 是统一状态/恢复入口。它优先读取 Operation Registry，并可兼容桥接 external consult session、DOI-bound parse attempt、indepth research run、local PDF import run 和 Codex download handoff；`detail=true` 可用于 ChatGPT browser session capture/recovery，但不得重新发送原 prompt。
+- `get_operation_status(operation_id, detail=false)` 是统一状态/恢复入口。它优先读取 Operation Registry，并可兼容桥接 external consult session、DOI-bound extraction/fetch operation、DOI-bound parse attempt、indepth research run、local PDF import run 和 Codex download handoff；DOI extraction 也可通过 `doi:<DOI>` 或裸 DOI alias 找回；`detail=true` 可用于 ChatGPT browser session capture/recovery，但不得重新发送原 prompt。
 - `get_operation_status(detail=true)` 对 ChatGPT external consult 只从可恢复 `/c/<id>` URL 打开并捕获；如果 Operation Registry 或 session record 只有首页/project shell URL，必须清空污染的恢复 URL 并返回 `conversation_url_missing_or_not_recoverable`，不得重发 prompt 或反复打开 ChatGPT 首页。
 - `run_external_consult` 必须先持久化 packet/session/prompt hash 与 submit-once metadata，再等待 ChatGPT；配置的总响应等待预算耗尽时返回 `pending`，后续 status/recovery 只捕获、保存和审计同一次回答。
-- `extract_paper_full_text` 的 PDF-obtained 路径先 materialize PDF，再复用 DOI-bound parse attempt；already-saved、metadata-only、native full text 和普通 local read 等短路径保持同步返回。
+- `extract_paper_full_text` 在 acquisition 前先注册 DOI-bound extraction operation，使 host-side MCP timeout 后仍可按 DOI alias 查询；PDF-obtained 路径先 materialize PDF，再复用 DOI-bound parse attempt；already-saved、metadata-only、native full text 和普通 local read 等短路径保持同步返回。
 - `search_academic_papers(indepth=true)` 和 `import_local_pdf_library` 以 run manifest / operation event ledger 推进批处理；单个 DOI 或文件失败不能吞掉整个 run 的状态。
 - `codex_download_handoff` 使用 `needs_input` operation 表达 host-action 状态、watch-dir scan-only 语义、候选 PDF hash/size/mtime、disambiguation token、parse progress 和完成/失败恢复路径；多候选时不按 DOI 猜测。
 - Operation/session/parse/run metadata 是控制面和恢复信息，不是 citation evidence，不写入 canonical Markdown 正文，也不能替代 `papers/*.md` 或 current-valid evidence pack。

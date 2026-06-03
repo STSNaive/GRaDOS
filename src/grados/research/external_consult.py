@@ -391,15 +391,11 @@ def _validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                     "candidate_claim_rejection_reason": claim_reason or "",
                 }
             )
-            blocked_reasons.append(
-                f"{anchor_id or 'anchor'}:{excerpt_reason}:{section_name or 'unknown_section'}"
-            )
+            blocked_reasons.append(f"{anchor_id or 'anchor'}:{excerpt_reason}:{section_name or 'unknown_section'}")
 
     missing_reasons = packet.get("missing_reasons")
     missing_reason_map = missing_reasons if isinstance(missing_reasons, dict) else {}
-    missing_scoped_dois = [
-        str(doi) for doi in packet.get("missing_scoped_dois", []) if str(doi).strip()
-    ]
+    missing_scoped_dois = [str(doi) for doi in packet.get("missing_scoped_dois", []) if str(doi).strip()]
     if missing_scoped_dois:
         blocked_reasons.append("missing_scoped_doi_coverage")
         blocked_items.extend(
@@ -752,11 +748,7 @@ def _find_external_result_for_session(
                 or metadata.get("rendered_prompt_hash")
                 or ""
             )
-            if (
-                allow_prompt_hash_fallback
-                and prompt_hash
-                and candidate_prompt_hash == prompt_hash
-            ):
+            if allow_prompt_hash_fallback and prompt_hash and candidate_prompt_hash == prompt_hash:
                 if str(metadata.get("runtime") or "") == "grados_chatgpt_browser":
                     return artifact
     return None
@@ -1362,10 +1354,39 @@ def _save_chatgpt_pro_consult_result(
 
 
 def _recoverable_browser_result(result: Any) -> bool:
+    error_code = str(getattr(result, "error_code", "") or "")
+    if error_code == "chatgpt_login_required":
+        return _browser_result_has_recovery_handle(result)
     return bool(
-        getattr(result, "status", "") == "incomplete_capture"
-        or getattr(result, "error_code", "") in {"assistant_timeout", "capture_failed", "chatgpt_login_required"}
+        getattr(result, "status", "") == "incomplete_capture" or error_code in {"assistant_timeout", "capture_failed"}
     )
+
+
+def _browser_result_has_recovery_handle(result: Any) -> bool:
+    metadata = getattr(result, "metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    for candidate in (
+        getattr(result, "conversation_url", ""),
+        metadata.get("conversation_url"),
+        metadata.get("last_observed_url"),
+    ):
+        if _recoverable_conversation_url(candidate):
+            return True
+    min_turn_index = metadata.get("min_turn_index")
+    if min_turn_index is None:
+        return False
+    try:
+        return int(min_turn_index) >= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _browser_failure_next_action(result: Any) -> str:
+    if _recoverable_browser_result(result):
+        return "call get_operation_status with detail=true after ChatGPT finishes"
+    if str(getattr(result, "error_code", "") or "") == "chatgpt_login_required":
+        return "rerun external-consult doctor --live or setup-browser, then retry consult_chatgpt_pro"
+    return "inspect browser error and retry when fixed"
 
 
 async def _auto_reattach_chatgpt_session(
@@ -1512,9 +1533,7 @@ async def get_external_consult_operation_status(
     if detail and conversation_url:
         wait_settings = _resolve_chatgpt_pro_consult_wait_settings(external_consult_config)
         record_metadata_value = record.get("metadata")
-        record_metadata: dict[str, Any] = (
-            record_metadata_value if isinstance(record_metadata_value, dict) else {}
-        )
+        record_metadata: dict[str, Any] = record_metadata_value if isinstance(record_metadata_value, dict) else {}
         browser_result, reattach_attempts = await _auto_reattach_chatgpt_session(
             paths,
             browser_config or HeadlessBrowserConfig(),
@@ -1772,6 +1791,7 @@ async def consult_chatgpt_pro(
     packet_artifact_id = str(browser_result.metadata.get("packet_artifact_id") or packet_artifact_id)
     rendered_prompt_hash = str(browser_result.metadata.get("prompt_hash") or rendered_prompt_hash)
     last_observed_url = str(browser_payload.get("metadata", {}).get("last_observed_url") or "")
+    failure_next_action = _browser_failure_next_action(browser_result)
     recovery_metadata = _external_recovery_metadata(
         recover_session_id=browser_result.session_id,
         packet_artifact_id=packet_artifact_id,
@@ -1779,7 +1799,7 @@ async def consult_chatgpt_pro(
         browser_session_record=browser_result.session_record_path,
         conversation_url=browser_result.conversation_url,
         last_observed_url=last_observed_url,
-        next_action="get_operation_status_detail_true",
+        next_action=failure_next_action,
     )
 
     if not browser_result.ok:
@@ -1795,7 +1815,7 @@ async def consult_chatgpt_pro(
             status=operation_status,
             stage=browser_result.status,
             recovery=recovery_metadata,
-            result={"result_path": "", "result_artifact_id": "", "next_action": "get_operation_status_detail_true"},
+            result={"result_path": "", "result_artifact_id": "", "next_action": failure_next_action},
             error={"error": browser_result.error_code or "chatgpt_browser_failed", "message": browser_result.error},
         )
         return {
@@ -1820,11 +1840,7 @@ async def consult_chatgpt_pro(
             "auto_reattach_attempts": auto_reattach_attempts,
             "error": browser_result.error_code or "chatgpt_browser_failed",
             "message": browser_result.error,
-            "next_action": (
-                "call get_operation_status with detail=true after ChatGPT finishes"
-                if recoverable
-                else "inspect browser error and retry when fixed"
-            ),
+            "next_action": failure_next_action,
             "recovery_metadata": recovery_metadata,
             "manual_copy_fallback": {
                 "available": bool(browser_result.conversation_url or last_observed_url),
@@ -2173,9 +2189,7 @@ def save_external_consult_result(
             structured_claims = [dict(item) for item in response_claims if isinstance(item, dict)]
     structured_gaps = gaps
     if structured_gaps is None and isinstance(response, dict):
-        structured_gaps = _coerce_string_list(
-            response.get("gaps") or response.get("missing_evidence")
-        )
+        structured_gaps = _coerce_string_list(response.get("gaps") or response.get("missing_evidence"))
     content_payload: dict[str, Any] = {
         "schema_version": EXTERNAL_CONSULT_PROTOCOL_VERSION,
         "kind": EXTERNAL_CONSULT_RESULT_KIND,
@@ -2265,8 +2279,7 @@ def _allowed_refs_from_pack(pack: EvidencePack) -> dict[str, set[str]]:
 
 def _source_items_from_pack(pack: EvidencePack) -> list[dict[str, Any]]:
     return [
-        _packet_item(item, index=index, max_excerpt_chars=2000)
-        for index, item in enumerate(pack.evidence_items, 1)
+        _packet_item(item, index=index, max_excerpt_chars=2000) for index, item in enumerate(pack.evidence_items, 1)
     ]
 
 
@@ -2281,9 +2294,7 @@ def _allowed_refs_from_items(items: list[dict[str, Any]]) -> dict[str, set[str]]
     return {
         "anchor_ids": {str(item.get("anchor_id")) for item in items if item.get("anchor_id")},
         "block_ids": {str(item.get("block_id")) for item in items if item.get("block_id")},
-        "canonical_uris": {
-            str(item.get("canonical_uri")) for item in items if item.get("canonical_uri")
-        },
+        "canonical_uris": {str(item.get("canonical_uri")) for item in items if item.get("canonical_uri")},
         "dois": {str(item.get("doi")).lower() for item in items if item.get("doi")},
     }
 
@@ -2345,9 +2356,7 @@ def _normalize_token(token: str) -> str:
 
 def _tokens(text: str) -> set[str]:
     return {
-        _normalize_token(match.group(0))
-        for match in _WORD_PATTERN.finditer(text.lower())
-        if len(match.group(0)) >= 2
+        _normalize_token(match.group(0)) for match in _WORD_PATTERN.finditer(text.lower()) if len(match.group(0)) >= 2
     }
 
 
@@ -2399,11 +2408,7 @@ def _audit_structured_claims(
     allowed: dict[str, set[str]],
     source_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    items_by_anchor = {
-        str(item.get("anchor_id")): item
-        for item in source_items
-        if item.get("anchor_id")
-    }
+    items_by_anchor = {str(item.get("anchor_id")): item for item in source_items if item.get("anchor_id")}
     audited: list[dict[str, Any]] = []
     for index, claim in enumerate(_structured_claim_inputs(content), 1):
         text = str(claim.get("text") or "").strip()
@@ -2415,8 +2420,7 @@ def _audit_structured_claims(
             if not item:
                 continue
             support_text = " ".join(
-                str(item.get(key) or "")
-                for key in ("candidate_claim", "short_excerpt", "title", "heading_path")
+                str(item.get(key) or "") for key in ("candidate_claim", "short_excerpt", "title", "heading_path")
             )
             scored.append((anchor_id, _overlap_score(text, support_text)))
         best_anchor_id = ""
@@ -2581,16 +2585,8 @@ def audit_external_consult_result(
         citation_style=citation_style,
         return_claim_map=True,
     )
-    claims = [
-        claim
-        for claim in pack_audit.get("claims", [])
-        if isinstance(claim, dict)
-    ]
-    prose_usable_claim_ids = [
-        str(claim.get("claim_id"))
-        for claim in claims
-        if claim.get("verdict") == "verified"
-    ]
+    claims = [claim for claim in pack_audit.get("claims", []) if isinstance(claim, dict)]
+    prose_usable_claim_ids = [str(claim.get("claim_id")) for claim in claims if claim.get("verdict") == "verified"]
     prose_claims_requiring_revision = [
         {
             "claim_id": str(claim.get("claim_id")),
@@ -2612,9 +2608,7 @@ def audit_external_consult_result(
         if claim.get("verdict") != VERDICT_VERIFIED
     ]
     structured_usable_claim_ids = [
-        str(claim.get("claim_id"))
-        for claim in structured_claims
-        if claim.get("verdict") == VERDICT_VERIFIED
+        str(claim.get("claim_id")) for claim in structured_claims if claim.get("verdict") == VERDICT_VERIFIED
     ]
     verdict_counts = pack_audit.get("verdict_counts", {})
     prose_non_verified = sum(
@@ -2630,11 +2624,7 @@ def audit_external_consult_result(
         and not unknown_block_ids
         and not unknown_canonical_uris
         and not outside_dois
-        and (
-            not structured_claims_requiring_revision
-            if has_structured_claims
-            else prose_non_verified == 0
-        )
+        and (not structured_claims_requiring_revision if has_structured_claims else prose_non_verified == 0)
     )
     return {
         "ok": ready_for_canonical_reread,
@@ -2656,9 +2646,7 @@ def audit_external_consult_result(
         "prose_claims_requiring_revision": prose_claims_requiring_revision,
         "usable_claim_ids": structured_usable_claim_ids if has_structured_claims else prose_usable_claim_ids,
         "claims_requiring_revision": (
-            structured_claims_requiring_revision
-            if has_structured_claims
-            else prose_claims_requiring_revision
+            structured_claims_requiring_revision if has_structured_claims else prose_claims_requiring_revision
         ),
         "audit": pack_audit,
         "next_action": (

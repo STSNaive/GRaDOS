@@ -552,9 +552,7 @@ def test_run_external_consult_uses_packet_context_without_auto_audit(
             ok=True,
             status="captured",
             session_id="chatgpt-test",
-            response_text="```json\n"
-            + __import__("json").dumps(response)
-            + "\n```",
+            response_text="```json\n" + __import__("json").dumps(response) + "\n```",
             conversation_url="https://chatgpt.com/c/test",
             model=ChatGPTModelSelection(
                 requested="gpt-5.5-pro",
@@ -915,6 +913,51 @@ def test_run_external_consult_returns_recoverable_timeout_receipt(
     assert operation.kind == "external_consult"
     assert operation.status == "pending"
     assert operation.recovery["browser_session_record"] == str(tmp_path / "session.json")
+
+
+def test_consult_chatgpt_pro_marks_pre_submit_login_failure_unrecoverable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = GRaDOSPaths(tmp_path)
+
+    async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
+        _ = (paths_arg, browser_config, kwargs)
+        return ChatGPTBrowserResult(
+            ok=False,
+            status="failed",
+            session_id="chatgpt-login-required",
+            error="ChatGPT login is required before the prompt can be submitted.",
+            error_code="chatgpt_login_required",
+            session_record_path=str(tmp_path / "session.json"),
+            metadata={"last_observed_url": "https://chatgpt.com/"},
+        )
+
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fake_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        consult_chatgpt_pro(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            prompt="Please review this short question.",
+        )
+    )
+    operation = get_operation(_db_path(tmp_path), "chatgpt-login-required")
+
+    assert result["ok"] is False
+    assert result["recoverable"] is False
+    assert result["status"] == "failed"
+    assert (
+        result["next_action"] == "rerun external-consult doctor --live or setup-browser, then retry consult_chatgpt_pro"
+    )
+    assert operation is not None
+    assert operation.status == "failed"
+    assert operation.result is not None
+    assert operation.result["next_action"] == result["next_action"]
 
 
 def test_external_consult_operation_status_saves_captured_session_once(

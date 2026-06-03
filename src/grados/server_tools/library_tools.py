@@ -25,6 +25,7 @@ from grados.config import GRaDOSConfig, GRaDOSPaths, IndexingConfig
 from grados.http_limits import SizeLimitError, ensure_byte_limit
 from grados.local_files import LocalFileReadError, read_bounded_local_file
 from grados.publisher.common import PublisherMetadata, normalize_publisher_metadata, safe_doi_filename
+from grados.server_tools.operation_keys import extract_full_text_idempotency_key
 from grados.server_tools.shared import (
     format_paper_index_resource,
     format_paper_overview_resource,
@@ -63,6 +64,128 @@ _CODEX_INGEST_RECOVERY_NEXT_ACTION = (
 _CODEX_HANDOFF_DEFAULT_WATCH_DIR = "~/Downloads"
 _PARSE_ATTEMPT_FUTURES: dict[str, concurrent.futures.Future[str]] = {}
 _PARSE_ATTEMPT_LOCK = threading.Lock()
+
+
+def _create_extract_full_text_operation(
+    paths: GRaDOSPaths,
+    *,
+    doi: str,
+    publisher: str | None,
+    expected_title: str | None,
+    resume_browser: bool,
+    force_refresh: bool,
+) -> str:
+    from grados.storage.operations import create_operation, update_operation
+
+    idempotency_key = extract_full_text_idempotency_key(doi)
+    if not idempotency_key:
+        return ""
+    progress = {
+        "stage": "fetch_started",
+        "doi": doi,
+        "resume_browser": resume_browser,
+        "force_refresh": force_refresh,
+    }
+    recovery = {
+        "doi": doi,
+        "operation_alias": f"doi:{doi}",
+        "next_action": "get_operation_status",
+    }
+    record, created = create_operation(
+        paths.database_state,
+        kind="extract_paper_full_text",
+        status="pending",
+        stage="fetch_started",
+        idempotency_key=idempotency_key,
+        input_data={
+            "doi": doi,
+            "publisher": publisher or "",
+            "expected_title": expected_title or "",
+            "resume_browser": resume_browser,
+            "force_refresh": force_refresh,
+        },
+        progress=progress,
+        recovery=recovery,
+        result={"result_path": "", "next_action": "get_operation_status"},
+    )
+    if not created:
+        update_operation(
+            paths.database_state,
+            record.operation_id,
+            status="pending",
+            stage="fetch_started",
+            progress=progress,
+            recovery=recovery,
+            result={"result_path": "", "next_action": "get_operation_status"},
+            clear_error=True,
+            heartbeat=True,
+            event_type="extract_paper_full_text_restarted",
+            event_payload=progress,
+        )
+    return record.operation_id
+
+
+def _fetch_operation_progress(doi: str, fetch_result: Any, *, stage: str) -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "doi": doi,
+        "fetch_outcome": str(getattr(fetch_result, "outcome", "") or ""),
+        "fetch_state": str(getattr(fetch_result, "state", "") or ""),
+        "fetch_via": str(getattr(fetch_result, "via", "") or ""),
+        "fetch_source": str(getattr(fetch_result, "source", "") or ""),
+        "browser_session_id": str(getattr(fetch_result, "session_id", "") or ""),
+    }
+
+
+def _update_extract_full_text_operation(
+    paths: GRaDOSPaths,
+    operation_id: str,
+    *,
+    status: str = "pending",
+    stage: str,
+    progress: dict[str, Any] | None = None,
+    recovery: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+    complete: bool = False,
+    fail: bool = False,
+) -> None:
+    if not operation_id:
+        return
+    from grados.storage.operations import complete_operation, fail_operation, update_operation
+
+    if complete:
+        complete_operation(
+            paths.database_state,
+            operation_id,
+            stage=stage,
+            progress=progress,
+            result=result,
+            event_payload=result,
+        )
+        return
+    if fail:
+        fail_operation(
+            paths.database_state,
+            operation_id,
+            stage=stage,
+            error=error,
+            result=result,
+            event_payload=error,
+        )
+        return
+    update_operation(
+        paths.database_state,
+        operation_id,
+        status=status,
+        stage=stage,
+        progress=progress,
+        recovery=recovery,
+        result=result,
+        error=error,
+        clear_error=error is None,
+        heartbeat=status == "pending",
+    )
 
 
 def _format_asset_hint_lines(asset_hints: Sequence[Mapping[str, object]]) -> list[str]:
@@ -431,9 +554,7 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
         operation_id = str(resume.get("operation_id", "") or "")
         next_action = str(resume.get("next_action", "") or _CODEX_HANDOFF_NEXT_ACTION)
         required_host_plugin = str(resume.get("required_host_plugin", "") or "@chrome")
-        required_host_backend = str(
-            resume.get("required_host_backend", "") or "Codex Chrome plugin extension backend"
-        )
+        required_host_backend = str(resume.get("required_host_backend", "") or "Codex Chrome plugin extension backend")
         requested_route = str(resume.get("requested_route", "") or "codex_chrome_plugin_extension")
         documentation_url = str(resume.get("documentation_url", "") or "")
         result += "\n\n### Codex Chrome Extension Download\n"
@@ -463,7 +584,7 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
             "- **Next:** use the Codex `@chrome` plugin / Chrome extension backend to download the PDF, then call "
             "`ingest_codex_downloaded_pdf(doi=..., downloaded_file_path=...)` when the absolute PDF path is known. "
             "If you want to bypass handoff-state recovery entirely, call "
-            "`parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via=\"codex\")`.\n"
+            '`parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`.\n'
         )
         return result.rstrip()
 
@@ -736,6 +857,14 @@ async def extract_paper_full_text(
         if record is not None and record.content_markdown.strip():
             return _already_saved_receipt(doi, record, paths.papers)
 
+    extract_operation_id = _create_extract_full_text_operation(
+        paths,
+        doi=doi,
+        publisher=publisher,
+        expected_title=expected_title,
+        resume_browser=resume_browser,
+        force_refresh=force_refresh,
+    )
     browser_resume = _load_browser_resume(paths, doi) if resume_browser else None
     if resume_browser and browser_resume is None:
         browser_resume = {}
@@ -770,6 +899,14 @@ async def extract_paper_full_text(
         fetch_order=configured_fetch_order,
         browser_resume_override=browser_resume if resume_browser else None,
     )
+    _update_extract_full_text_operation(
+        paths,
+        extract_operation_id,
+        stage="fetch_completed",
+        progress=_fetch_operation_progress(doi, fetch_result, stage="fetch_completed"),
+        recovery={"doi": doi, "operation_alias": f"doi:{doi}", "next_action": "get_operation_status"},
+        result={"result_path": "", "next_action": "get_operation_status"},
+    )
 
     def normalized_fetch_metadata(fetch_candidate: Any) -> PublisherMetadata | None:
         candidate_metadata = normalize_publisher_metadata(fetch_candidate.metadata)
@@ -789,6 +926,18 @@ async def extract_paper_full_text(
             copy_to_library=True,
         )
         if pdf_materialization.outcome == "conflict":
+            _update_extract_full_text_operation(
+                paths,
+                extract_operation_id,
+                stage="pdf_materialization_conflict",
+                progress=_fetch_operation_progress(doi, fetch_candidate, stage="pdf_materialization_conflict"),
+                result={"result_path": "", "next_action": "review_pdf_materialization_conflict"},
+                error={
+                    "error": "pdf_materialization_conflict",
+                    "canonical_pdf": str(pdf_materialization.canonical_pdf_path),
+                },
+                fail=True,
+            )
             remote_warning = _record_remote_metadata_update(
                 metadata_dir=metadata_dir,
                 doi=doi,
@@ -847,6 +996,27 @@ async def extract_paper_full_text(
         result = parse_receipt
         if parse_receipt.startswith("## PDF Parse Accepted"):
             operation_id = _receipt_field(parse_receipt, "Operation ID") or _receipt_field(parse_receipt, "Attempt ID")
+            _update_extract_full_text_operation(
+                paths,
+                extract_operation_id,
+                stage="pdf_materialized_parse_running",
+                progress={
+                    **_fetch_operation_progress(doi, fetch_candidate, stage="pdf_materialized_parse_running"),
+                    "parse_attempt_id": operation_id,
+                    "canonical_pdf": str(pdf_materialization.canonical_pdf_path),
+                },
+                recovery={
+                    "doi": doi,
+                    "operation_alias": f"doi:{doi}",
+                    "parse_attempt_id": operation_id,
+                    "next_action": "get_operation_status",
+                },
+                result={
+                    "result_path": "",
+                    "canonical_pdf": str(pdf_materialization.canonical_pdf_path),
+                    "next_action": "get_operation_status",
+                },
+            )
             result += (
                 "\n\n### Extraction Operation\n"
                 f"- **Operation ID:** {operation_id}\n"
@@ -860,9 +1030,40 @@ async def extract_paper_full_text(
                 "- **Canonical PDF:** "
                 f"{pdf_materialization.canonical_pdf_path}\n"
             )
+        elif has_fulltext:
+            _update_extract_full_text_operation(
+                paths,
+                extract_operation_id,
+                stage="completed",
+                progress=_fetch_operation_progress(doi, fetch_candidate, stage="completed"),
+                result={
+                    "result_path": _receipt_field(parse_receipt, "File"),
+                    "canonical_pdf": str(pdf_materialization.canonical_pdf_path),
+                    "next_action": "read_saved_paper_or_get_saved_paper_structure",
+                },
+                complete=True,
+            )
+        else:
+            _update_extract_full_text_operation(
+                paths,
+                extract_operation_id,
+                stage=status or outcome or "parse_failed",
+                progress=_fetch_operation_progress(doi, fetch_candidate, stage=status or outcome or "parse_failed"),
+                result={"result_path": "", "next_action": "review_parse_failure_or_retry_extract_paper_full_text"},
+                error={"error": status or outcome or "parse_failed"},
+                fail=True,
+            )
         return _append_remote_metadata_warning(result, remote_warning)
 
     if fetch_result.outcome == "metadata_only":
+        _update_extract_full_text_operation(
+            paths,
+            extract_operation_id,
+            stage="metadata_only",
+            progress=_fetch_operation_progress(doi, fetch_result, stage="metadata_only"),
+            result={"result_path": "", "next_action": "retry_with_force_refresh_or_supply_pdf"},
+            complete=True,
+        )
         remote_warning = _record_remote_metadata_update(
             metadata_dir=metadata_dir,
             doi=doi,
@@ -907,6 +1108,34 @@ async def extract_paper_full_text(
                 },
                 event_type="codex_handoff_created",
             )
+        status = "needs_input" if fetch_result.outcome == "host_action_required" else "failed"
+        _update_extract_full_text_operation(
+            paths,
+            extract_operation_id,
+            status=status,
+            stage=fetch_result.state or fetch_result.outcome or status,
+            progress=_fetch_operation_progress(
+                doi, fetch_result, stage=fetch_result.state or fetch_result.outcome or status
+            ),
+            recovery={
+                "doi": doi,
+                "operation_alias": f"doi:{doi}",
+                "next_action": "get_operation_status",
+                **(fetch_result.resume if isinstance(fetch_result.resume, dict) else {}),
+            },
+            result={
+                "result_path": "",
+                "next_action": (
+                    "download_with_chrome_extension_then_call_ingest_codex_downloaded_pdf"
+                    if status == "needs_input"
+                    else "review_fetch_failure_or_retry_extract_paper_full_text"
+                ),
+            },
+            error={"error": fetch_result.outcome or "fetch_failed", "warnings": list(fetch_result.warnings or [])}
+            if status == "failed"
+            else None,
+            fail=status == "failed",
+        )
         remote_warning = _record_remote_metadata_update(
             metadata_dir=metadata_dir,
             doi=doi,
@@ -1013,6 +1242,15 @@ async def extract_paper_full_text(
             result = f"Failed to parse PDF for {doi}\n\nWarnings:\n{warning_block}"
             if debug_block:
                 result += f"\n\nParser debug:\n{debug_block}"
+            _update_extract_full_text_operation(
+                paths,
+                extract_operation_id,
+                stage="parse_failed",
+                progress=_fetch_operation_progress(doi, fetch_result, stage="parse_failed"),
+                result={"result_path": "", "next_action": "review_parse_failure_or_retry_extract_paper_full_text"},
+                error={"error": "parse_failed", "warnings": warnings, "parser_debug": parser_debug},
+                fail=True,
+            )
             remote_warning = _record_remote_metadata_update(
                 metadata_dir=metadata_dir,
                 doi=doi,
@@ -1095,6 +1333,18 @@ async def extract_paper_full_text(
             copy_to_library=True,
         )
         if pdf_materialization.outcome == "conflict":
+            _update_extract_full_text_operation(
+                paths,
+                extract_operation_id,
+                stage="pdf_materialization_conflict",
+                progress=_fetch_operation_progress(doi, fetch_result, stage="pdf_materialization_conflict"),
+                result={"result_path": "", "next_action": "review_pdf_materialization_conflict"},
+                error={
+                    "error": "pdf_materialization_conflict",
+                    "canonical_pdf": str(pdf_materialization.canonical_pdf_path),
+                },
+                fail=True,
+            )
             remote_warning = _record_remote_metadata_update(
                 metadata_dir=metadata_dir,
                 doi=doi,
@@ -1135,8 +1385,7 @@ async def extract_paper_full_text(
         copied_pdf_path=copied_pdf_path,
         pdf_materialization=pdf_materialization,
         index_warning_message=(
-            "Search index refresh failed — canonical markdown was saved to papers/ only. "
-            "Error: {index_error}"
+            "Search index refresh failed — canonical markdown was saved to papers/ only. Error: {index_error}"
         ),
         indexing_config=indexing_config,
     )
@@ -1156,6 +1405,19 @@ async def extract_paper_full_text(
         fetch_manual=fetch_result.manual,
         fetch_trace=fetch_result.trace,
         indexing_config=indexing_config,
+    )
+    _update_extract_full_text_operation(
+        paths,
+        extract_operation_id,
+        stage="completed",
+        progress=_fetch_operation_progress(doi, fetch_result, stage="completed"),
+        result={
+            "result_path": persisted.summary.file_path,
+            "safe_doi": persisted.summary.safe_doi,
+            "uri": persisted.summary.uri,
+            "next_action": "read_saved_paper_or_get_saved_paper_structure",
+        },
+        complete=True,
     )
 
     result = (
@@ -1711,12 +1973,18 @@ def _explicit_codex_download_candidate(
     path = Path(downloaded_file_path).expanduser()
     rejected_path = str(path)
     if not path.is_absolute():
-        return None, [{"path": rejected_path, "name": path.name, "reason": "path_not_absolute", "detail": ""}], "", (
-            "downloaded_file_path must be an absolute path."
+        return (
+            None,
+            [{"path": rejected_path, "name": path.name, "reason": "path_not_absolute", "detail": ""}],
+            "",
+            ("downloaded_file_path must be an absolute path."),
         )
     if not path.exists():
-        return None, [{"path": rejected_path, "name": path.name, "reason": "file_not_found", "detail": ""}], "", (
-            f"downloaded_file_path does not exist: {path}"
+        return (
+            None,
+            [{"path": rejected_path, "name": path.name, "reason": "file_not_found", "detail": ""}],
+            "",
+            (f"downloaded_file_path does not exist: {path}"),
         )
     stable_stat, stable_error = _wait_for_stable_candidate(
         path,
@@ -1725,24 +1993,37 @@ def _explicit_codex_download_candidate(
     )
     if stable_error or stable_stat is None:
         reason, _, detail = stable_error.partition(":")
-        return None, [
-            {"path": rejected_path, "name": path.name, "reason": reason or "unstable_download", "detail": detail}
-        ], reason, "downloaded_file_path did not settle before validation."
+        return (
+            None,
+            [{"path": rejected_path, "name": path.name, "reason": reason or "unstable_download", "detail": detail}],
+            reason,
+            "downloaded_file_path did not settle before validation.",
+        )
     source_hash, _, after_read_stat, hash_error = _read_candidate_pdf_hash(path, max_bytes=max_pdf_bytes)
     if hash_error or after_read_stat is None:
         reason, _, detail = hash_error.partition(":")
-        return None, [
-            {
-                **_candidate_payload(path, stable_stat),
-                "reason": reason or "hash_changed",
-                "detail": detail,
-            }
-        ], reason, "downloaded_file_path failed PDF validation."
-    return {
-        **_candidate_payload(path, after_read_stat),
-        "source_pdf_hash": source_hash,
-        "candidate_source": "downloaded_file_path",
-    }, [], "", ""
+        return (
+            None,
+            [
+                {
+                    **_candidate_payload(path, stable_stat),
+                    "reason": reason or "hash_changed",
+                    "detail": detail,
+                }
+            ],
+            reason,
+            "downloaded_file_path failed PDF validation.",
+        )
+    return (
+        {
+            **_candidate_payload(path, after_read_stat),
+            "source_pdf_hash": source_hash,
+            "candidate_source": "downloaded_file_path",
+        },
+        [],
+        "",
+        "",
+    )
 
 
 def _codex_scan_excluded_paths(paths: GRaDOSPaths, *, doi: str) -> set[Path]:
@@ -1838,28 +2119,34 @@ def _scan_codex_handoff_candidates(
         )
         if stable_error or stable_stat is None:
             stable_reason, _, stable_detail = stable_error.partition(":")
-            rejected.append({
-                **_candidate_payload(path, file_stat),
-                "reason": stable_reason or "unstable_download",
-                "detail": stable_detail,
-            })
+            rejected.append(
+                {
+                    **_candidate_payload(path, file_stat),
+                    "reason": stable_reason or "unstable_download",
+                    "detail": stable_detail,
+                }
+            )
             continue
 
         source_hash, _, after_read_stat, hash_error = _read_candidate_pdf_hash(path, max_bytes=max_pdf_bytes)
         if hash_error or after_read_stat is None:
             hash_reason, _, hash_detail = hash_error.partition(":")
-            rejected.append({
-                **_candidate_payload(path, stable_stat),
-                "reason": hash_reason or "hash_changed",
-                "detail": hash_detail,
-            })
+            rejected.append(
+                {
+                    **_candidate_payload(path, stable_stat),
+                    "reason": hash_reason or "hash_changed",
+                    "detail": hash_detail,
+                }
+            )
             continue
 
-        candidates.append({
-            **_candidate_payload(path, after_read_stat),
-            "source_pdf_hash": source_hash,
-            "candidate_source": str(watch_dir),
-        })
+        candidates.append(
+            {
+                **_candidate_payload(path, after_read_stat),
+                "source_pdf_hash": source_hash,
+                "candidate_source": str(watch_dir),
+            }
+        )
 
     return candidates, rejected, ""
 
@@ -1955,7 +2242,7 @@ async def ingest_codex_downloaded_pdf(
                 "next_action": _CODEX_INGEST_RECOVERY_NEXT_ACTION,
                 "recovery_hint": (
                     "If Chrome already downloaded the PDF, pass downloaded_file_path here or call "
-                    "parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via=\"codex\")."
+                    'parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex").'
                 ),
             },
         )
@@ -2180,8 +2467,7 @@ async def ingest_codex_downloaded_pdf(
             "rejected_candidates": rejected,
             "parse_receipt": parse_receipt,
             "next_action": (
-                "retry_ingest_codex_downloaded_pdf_with_same_downloaded_file_path"
-                "_or_read_saved_paper_if_completed"
+                "retry_ingest_codex_downloaded_pdf_with_same_downloaded_file_path_or_read_saved_paper_if_completed"
             ),
         }
     if parse_receipt.startswith("## Paper Already Saved"):
@@ -2922,8 +3208,7 @@ async def _parse_pdf_file_core(
             copied_pdf_path=pdf_materialization.copied_pdf_path if pdf_materialization else "",
             pdf_materialization=pdf_materialization,
             index_warning_message=(
-                "Search index refresh failed — canonical markdown was saved to papers/ only. "
-                "Error: {index_error}"
+                "Search index refresh failed — canonical markdown was saved to papers/ only. Error: {index_error}"
             ),
             indexing_config=config.indexing,
         )
