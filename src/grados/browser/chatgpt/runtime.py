@@ -1,4 +1,4 @@
-"""ChatGPT browser-mode runner for external synthesis."""
+"""ChatGPT browser-mode runner for external consult."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from grados.browser.chatgpt.login import (
     probe_chatgpt_login,
     wait_for_chatgpt_login,
 )
-from grados.browser.chatgpt.model_selection import ensure_latest_pro_model
+from grados.browser.chatgpt.model_selection import select_chatgpt_model
 from grados.browser.chatgpt.profile import ensure_chatgpt_profile_ready
 from grados.browser.chatgpt.selectors import CHATGPT_BROWSER_CHROME_FLAGS, CHATGPT_URL
 from grados.browser.chatgpt.session_store import (
@@ -31,7 +31,7 @@ from grados.browser.chatgpt.session_store import (
     is_valid_chatgpt_session_id,
     new_session_id,
 )
-from grados.browser.chatgpt.thinking import ensure_pro_extended_thinking
+from grados.browser.chatgpt.thinking import select_chatgpt_thinking
 from grados.browser.chatgpt.types import (
     BROWSER_MODE_VERSION,
     DEFAULT_PROMPT_CHAR_LIMIT,
@@ -56,6 +56,7 @@ from grados.storage.operations import (
 )
 
 _CONVERSATION_URL_CAPTURE_TIMEOUT_SECONDS = 12.0
+_RECOVERABLE_BROWSER_ERROR_CODES = {"assistant_timeout", "capture_failed"}
 
 
 def _recoverable_conversation_url(url: Any) -> str:
@@ -85,6 +86,17 @@ def _conversation_observation_updates(url: Any) -> dict[str, Any]:
     if conversation_url:
         updates["conversation_url"] = conversation_url
     return updates
+
+
+def _is_recoverable_browser_error(exc: ChatGPTBrowserError, record: dict[str, Any]) -> bool:
+    if exc.code in _RECOVERABLE_BROWSER_ERROR_CODES:
+        return True
+    if exc.code != "chatgpt_login_required":
+        return False
+    if _recoverable_conversation_url(record.get("conversation_url")):
+        return True
+    details = exc.details if isinstance(exc.details, dict) else {}
+    return bool(_recoverable_conversation_url(details.get("conversation_url")))
 
 
 def _chatgpt_recovery_payload(
@@ -144,6 +156,8 @@ async def run_chatgpt_browser_session(
     recover_session_id: str = "",
     prompt_char_limit: int = DEFAULT_PROMPT_CHAR_LIMIT,
     assistant_timeout_seconds: float | None = None,
+    model_strategy: str = "select",
+    thinking_strategy: str = "highest",
 ) -> ChatGPTBrowserResult:
     """Run or recover one ChatGPT browser session."""
     store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
@@ -166,7 +180,7 @@ async def run_chatgpt_browser_session(
             ChatGPTBrowserError(
                 code="prompt_too_large",
                 stage="prompt-size",
-                message="External synthesis packet is too large for inline ChatGPT browser submission.",
+                message="External consult packet is too large for inline ChatGPT browser submission.",
                 details={
                     "estimated_chars": len(prompt),
                     "prompt_char_limit": prompt_char_limit,
@@ -206,7 +220,12 @@ async def run_chatgpt_browser_session(
             prompt_hash=prompt_hash,
             prompt=prompt,
             mode=mode,
-            metadata={**(metadata or {}), "browser_mode_version": BROWSER_MODE_VERSION},
+            metadata={
+                **(metadata or {}),
+                "browser_mode_version": BROWSER_MODE_VERSION,
+                "model_strategy": model_strategy,
+                "thinking_strategy": thinking_strategy,
+            },
         )
         _create_chatgpt_operation(
             operation_db_path,
@@ -220,7 +239,7 @@ async def run_chatgpt_browser_session(
         ensure_chatgpt_profile_ready(paths.chatgpt_browser_profile, setup_mode=False)
         async with chatgpt_profile_lock(
             paths.chatgpt_browser_profile,
-            purpose="external_synthesis",
+            purpose="external_consult",
             session_id=session_id,
         ):
             browser_session = await _launch_private_profile(paths, browser_config)
@@ -235,6 +254,8 @@ async def run_chatgpt_browser_session(
                     record=record,
                     operation_db_path=operation_db_path,
                     assistant_timeout_seconds=assistant_timeout_seconds,
+                    model_strategy=model_strategy,
+                    thinking_strategy=thinking_strategy,
                 )
                 final_record = store.read(session_id) or record
                 response_text = str(final_record.get("response_text") or "")
@@ -260,6 +281,8 @@ async def run_chatgpt_browser_session(
                         "session_record": str(store.session_json(session_id)),
                         "prompt_path": str(store.prompt_path(session_id)),
                         "response_path": str(store.response_path(session_id)),
+                        "transcript_path": str(final_record.get("transcript_path") or ""),
+                        "assistant_snapshot_path": str(final_record.get("assistant_snapshot_path") or ""),
                         "pack_id": str(final_record.get("pack_id") or ""),
                         "packet_artifact_id": str(final_record.get("packet_artifact_id") or ""),
                         "prompt_hash": str(final_record.get("prompt_hash") or ""),
@@ -269,7 +292,8 @@ async def run_chatgpt_browser_session(
             finally:
                 await browser_session.cleanup()
     except ChatGPTBrowserError as exc:
-        status = "incomplete_capture" if exc.code in {"assistant_timeout", "capture_failed"} else "failed"
+        latest_record = store.read(session_id) or record or {}
+        status = "incomplete_capture" if _is_recoverable_browser_error(exc, latest_record) else "failed"
         error_updates: dict[str, Any] = {"status": status, "error": exc.to_dict()}
         if isinstance(exc.details, dict):
             error_updates.update(_conversation_observation_updates(exc.details.get("conversation_url")))
@@ -345,6 +369,8 @@ async def _run_page_flow(
     record: dict[str, Any],
     operation_db_path: Any | None = None,
     assistant_timeout_seconds: float | None = None,
+    model_strategy: str = "select",
+    thinking_strategy: str = "highest",
 ) -> None:
     min_turn_index: int | None = None
     recovery_payload: dict[str, Any]
@@ -409,7 +435,7 @@ async def _run_page_flow(
         )
         await open_new_chat(page)
         await ensure_chatgpt_logged_in(page)
-        model = await ensure_latest_pro_model(page)
+        model = await select_chatgpt_model(page, strategy=model_strategy)  # type: ignore[arg-type]
         _update_chatgpt_session_operation(
             store,
             operation_db_path,
@@ -419,7 +445,7 @@ async def _run_page_flow(
             event_type="model_confirmed",
             event_payload=model.to_dict(),
         )
-        thinking = await ensure_pro_extended_thinking(page)
+        thinking = await select_chatgpt_thinking(page, strategy=thinking_strategy)  # type: ignore[arg-type]
         _update_chatgpt_session_operation(
             store,
             operation_db_path,
@@ -481,6 +507,14 @@ async def _run_page_flow(
 
     capture = await capture_final_response(page, min_turn_index=min_turn_index)
     response_path = store.save_response(session_id, capture.response_text)
+    artifact_paths = store.save_capture_artifacts(
+        session_id,
+        response_text=capture.response_text,
+        capture_method=capture.method,
+        capture_warnings=capture.warnings,
+        snapshot=capture.snapshot,
+        min_turn_index=min_turn_index,
+    )
     final_url_updates = _conversation_observation_updates(getattr(page, "url", ""))
     _update_chatgpt_session_operation(
         store,
@@ -489,11 +523,18 @@ async def _run_page_flow(
         status="captured",
         stage="captured",
         progress={"response_captured": True, "result_saved": False},
-        result={"response_path": response_path, "next_action": "save_external_synthesis_result"},
+        result={
+            "response_path": response_path,
+            "transcript_path": artifact_paths["transcript_path"],
+            "assistant_snapshot_path": artifact_paths["assistant_snapshot_path"],
+            "next_action": "save_external_consult_result",
+        },
         event_type="response_captured",
         event_payload={"response_path": response_path, "method": capture.method},
         response_text=capture.response_text,
         response_path=response_path,
+        transcript_path=artifact_paths["transcript_path"],
+        assistant_snapshot_path=artifact_paths["assistant_snapshot_path"],
         capture_method=capture.method,
         capture_warnings=capture.warnings,
         **final_url_updates,
@@ -508,10 +549,12 @@ def _create_chatgpt_operation(
     paths: GRaDOSPaths,
     prompt_path: str,
 ) -> None:
+    raw_metadata = record.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
     create_operation(
         db_path,
         operation_id=session_id,
-        kind="external_synthesis",
+        kind="external_consult",
         status=OPERATION_STATUS_PENDING,
         stage="session_created",
         idempotency_key=str(record.get("prompt_hash") or ""),
@@ -520,6 +563,9 @@ def _create_chatgpt_operation(
             "packet_artifact_id": str(record.get("packet_artifact_id") or ""),
             "prompt_hash": str(record.get("prompt_hash") or ""),
             "mode": str(record.get("mode") or ""),
+            "tool_name": str(metadata.get("tool_name") or ""),
+            "model_strategy": str(metadata.get("model_strategy") or ""),
+            "thinking_strategy": str(metadata.get("thinking_strategy") or ""),
         },
         progress={"response_captured": False, "result_saved": False},
         runtime={
@@ -543,10 +589,12 @@ def _record_chatgpt_operation_recovery(
     record: dict[str, Any],
     paths: GRaDOSPaths,
 ) -> None:
+    raw_metadata = record.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
     existing, created = create_operation(
         db_path,
         operation_id=session_id,
-        kind="external_synthesis",
+        kind="external_consult",
         status=OPERATION_STATUS_PENDING,
         stage="recovering",
         idempotency_key=str(record.get("prompt_hash") or ""),
@@ -555,6 +603,9 @@ def _record_chatgpt_operation_recovery(
             "packet_artifact_id": str(record.get("packet_artifact_id") or ""),
             "prompt_hash": str(record.get("prompt_hash") or ""),
             "mode": str(record.get("mode") or ""),
+            "tool_name": str(metadata.get("tool_name") or ""),
+            "model_strategy": str(metadata.get("model_strategy") or ""),
+            "thinking_strategy": str(metadata.get("thinking_strategy") or ""),
         },
         progress={"response_captured": bool(record.get("response_text") or record.get("response_path"))},
         runtime={
@@ -624,7 +675,7 @@ async def open_chatgpt_login_setup(
     paths.chatgpt_browser_profile.mkdir(parents=True, exist_ok=True)
     async with chatgpt_profile_lock(
         paths.chatgpt_browser_profile,
-        purpose="external_synthesis_setup",
+        purpose="external_consult_setup",
         session_id=new_session_id(),
     ):
         browser_session = await _launch_private_profile(paths, browser_config)
@@ -649,7 +700,7 @@ async def check_chatgpt_login(
     ensure_chatgpt_profile_ready(paths.chatgpt_browser_profile, setup_mode=False)
     async with chatgpt_profile_lock(
         paths.chatgpt_browser_profile,
-        purpose="external_synthesis_doctor",
+        purpose="external_consult_doctor",
         session_id=new_session_id(),
     ):
         browser_session = await _launch_private_profile(paths, browser_config)
@@ -704,6 +755,8 @@ def _model_from_record(record: dict[str, Any]) -> ChatGPTModelSelection | None:
         available_labels=[str(item) for item in raw.get("available_labels") or []],
         strategy=str(raw.get("strategy") or ""),
         verified=bool(raw.get("verified")),
+        warnings=[str(item) for item in raw.get("warnings") or []],
+        error=str(raw.get("error") or ""),
     )
 
 
@@ -717,6 +770,9 @@ def _thinking_from_record(record: dict[str, Any]) -> ChatGPTThinkingSelection | 
         available_labels=[str(item) for item in raw.get("available_labels") or []],
         rank=int(raw.get("rank") or 0),
         verified=bool(raw.get("verified")),
+        strategy=str(raw.get("strategy") or ""),
+        warnings=[str(item) for item in raw.get("warnings") or []],
+        error=str(raw.get("error") or ""),
     )
 
 

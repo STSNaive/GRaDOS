@@ -172,15 +172,17 @@ def test_indepth_defaults_to_disabled() -> None:
     assert config.research.indepth.auto_summarize is True
 
 
-def test_external_synthesis_defaults_to_disabled() -> None:
+def test_external_consult_defaults_to_disabled() -> None:
     config = GRaDOSConfig()
 
-    assert config.research.external_synthesis.enabled is False
+    assert config.research.external_consult.enabled is False
+    assert config.research.external_consult.response_wait_total_seconds == 300.0
 
 
-def test_external_synthesis_only_exposes_enabled_gate() -> None:
+def test_external_consult_exposes_total_wait_budget() -> None:
     config = GRaDOSConfig.model_validate(
-        {"research": {"external_synthesis": {"enabled": True}}}
+        {"research": {"external_consult": {"enabled": True, "response_wait_total_seconds": 450}}}
     )
 
-    assert config.research.external_synthesis.enabled is True
+    assert config.research.external_consult.enabled is True
+    assert config.research.external_consult.response_wait_total_seconds == 450.0

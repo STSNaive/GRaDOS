@@ -21,7 +21,11 @@ async def capture_final_response(page: Any, min_turn_index: int | None = None) -
     }
     copied = await capture_assistant_markdown(page, meta)
     if copied:
-        return ChatGPTCapture(response_text=copied, method="copy_turn_action_button")
+        return ChatGPTCapture(
+            response_text=copied,
+            method="copy_turn_action_button",
+            snapshot=dict(snapshot or {}),
+        )
 
     text = str(snapshot.get("text") if snapshot else "").strip()
     if not text:
@@ -35,4 +39,5 @@ async def capture_final_response(page: Any, min_turn_index: int | None = None) -
         response_text=text,
         method="chatgpt_dom_snapshot_fallback",
         warnings=["copy_button_unavailable"],
+        snapshot=dict(snapshot or {}),
     )

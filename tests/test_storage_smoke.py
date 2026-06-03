@@ -497,7 +497,7 @@ def test_operation_registry_records_lifecycle_events_and_debug_bundle(tmp_path: 
     recoverable_record, _ = create_operation(
         db_path,
         operation_id="op-recovered-1",
-        kind="external_synthesis",
+        kind="external_consult",
         status=OPERATION_STATUS_PENDING,
         stage="waiting_for_assistant",
     )
@@ -512,7 +512,7 @@ def test_operation_registry_records_lifecycle_events_and_debug_bundle(tmp_path: 
     recovered = complete_operation(
         db_path,
         recoverable_record.operation_id,
-        stage="external_synthesis_saved",
+        stage="external_consult_saved",
         result={"result_artifact_id": "artifact-1"},
     )
     assert recovered is not None

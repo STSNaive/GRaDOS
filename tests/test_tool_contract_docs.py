@@ -128,7 +128,15 @@ def test_skill_tool_reference_mirrors_selected_live_schema_guardrails() -> None:
         ),
         ("audit_answer_against_pack", "max_suggestions", "minimum", 1, "`max_suggestions` range 1-25"),
         ("audit_answer_against_pack", "max_suggestions", "maximum", 25, "`max_suggestions` range 1-25"),
-        ("save_external_synthesis_result", "audit", "default", True, "`audit` defaults to true"),
+        ("consult_chatgpt_pro", "prompt", "minLength", 1, "`prompt` minLength=1"),
+        (
+            "consult_chatgpt_pro",
+            "manual_response",
+            "default",
+            None,
+            "`manual_response` defaults to null",
+        ),
+        ("save_external_consult_result", "audit", "default", True, "`audit` defaults to true"),
     ]
     for tool_name, property_name, schema_key, expected, doc_fragment in schema_checks:
         assert _tool_property(tools, tool_name, property_name)[schema_key] == expected
@@ -143,33 +151,62 @@ def test_skill_tool_reference_mirrors_selected_live_schema_guardrails() -> None:
             "`citation_style` enum `author_year` / `numeric`",
         ),
         ("audit_draft_support", "strictness", ["strict", "balanced"], "`strictness` enum `strict` / `balanced`"),
+        (
+            "consult_chatgpt_pro",
+            "mode",
+            ["ask", "review", "synthesize", "critique"],
+            "`mode` enum `ask` / `review` / `synthesize` / `critique`",
+        ),
+        (
+            "consult_chatgpt_pro",
+            "model_strategy",
+            ["select", "current", "ignore"],
+            "`model_strategy` enum `select` / `current` / `ignore`",
+        ),
+        (
+            "consult_chatgpt_pro",
+            "thinking_strategy",
+            ["highest", "current", "ignore"],
+            "`thinking_strategy` enum `highest` / `current` / `ignore`",
+        ),
+        (
+            "consult_chatgpt_pro",
+            "wait_policy",
+            ["auto", "return_pending"],
+            "`wait_policy` enum `auto` / `return_pending`",
+        ),
     ]
     for tool_name, property_name, expected_enum, doc_fragment in enum_checks:
         assert _tool_property(tools, tool_name, property_name)["enum"] == expected_enum
         assert doc_fragment in tools_reference
 
 
-def test_external_synthesis_tool_description_mentions_packet_scope() -> None:
-    description = _live_tools()["audit_external_synthesis_result"].description or ""
+def test_external_consult_tool_description_mentions_packet_scope() -> None:
+    description = _live_tools()["audit_external_consult_result"].description or ""
 
     assert "linked packet" in description
     assert "source evidence pack" in description
     assert "structured claim anchor ids" in description
 
 
-def test_external_synthesis_has_topic_to_packet_route_and_default_save_audit() -> None:
+def test_external_consult_has_topic_to_packet_route_and_default_save_audit() -> None:
     tools = _live_tools()
-    run_description = tools["run_external_synthesis"].description or ""
-    prepare_description = tools["prepare_external_synthesis_from_topic"].description or ""
-    save_description = tools["save_external_synthesis_result"].description or ""
+    consult_description = tools["consult_chatgpt_pro"].description or ""
+    run_description = tools["run_external_consult"].description or ""
+    prepare_description = tools["prepare_external_consult_from_topic"].description or ""
+    save_description = tools["save_external_consult_result"].description or ""
 
-    assert "GRaDOS-native ChatGPT Pro browser synthesis route" in run_description
-    assert "private GRaDOS ChatGPT Chrome profile" in run_description
-    assert "GRaDOS-validated Pro model and Pro Extended thinking route" in run_description
+    assert "GRaDOS-managed private browser profile" in consult_description
+    assert "`prompt`" in consult_description
+    assert "never treats ChatGPT prose as canonical citation evidence" in consult_description
+    assert "auto-audits by default" in consult_description
+    assert "packet context" in run_description
+    assert "consult_chatgpt_pro" in run_description
     assert "fresh evidence pack from a topic" in prepare_description
-    assert "run_external_synthesis" in prepare_description
+    assert "external_consult_packet" in prepare_description
+    assert "consult_chatgpt_pro" in prepare_description
     assert "By default, immediately audits" in save_description
-    assert _tool_property(tools, "save_external_synthesis_result", "audit")["default"] is True
+    assert _tool_property(tools, "save_external_consult_result", "audit")["default"] is True
 
 
 def test_read_evidence_pack_tool_description_is_inspection_only() -> None:

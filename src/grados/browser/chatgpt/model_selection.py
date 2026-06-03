@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 
 from grados.browser.chatgpt.errors import ChatGPTBrowserError
 from grados.browser.chatgpt.protocol import (
@@ -24,6 +24,8 @@ from grados.browser.chatgpt.selectors import (
     MODEL_BUTTON_SELECTOR,
 )
 from grados.browser.chatgpt.types import ChatGPTModelSelection
+
+ModelStrategy = Literal["select", "current", "ignore"]
 
 
 def normalize_model_label(label: str) -> str:
@@ -125,6 +127,49 @@ async def ensure_latest_pro_model(page: Any) -> ChatGPTModelSelection:
     )
 
 
+async def select_chatgpt_model(
+    page: Any,
+    *,
+    strategy: ModelStrategy = "select",
+) -> ChatGPTModelSelection:
+    """Apply the requested ChatGPT model-selection strategy."""
+    if strategy == "select":
+        selected = await ensure_latest_pro_model(page)
+        return ChatGPTModelSelection(
+            requested=selected.requested,
+            resolved_label=selected.resolved_label,
+            available_labels=selected.available_labels,
+            strategy="select",
+            verified=selected.verified,
+            warnings=selected.warnings,
+            error=selected.error,
+        )
+    if strategy == "current":
+        result = await page.evaluate(_current_model_expression())
+        result = result if isinstance(result, dict) else {}
+        label = str(result.get("label") or "").strip()
+        available_labels = _available_labels_from_result(result)
+        return ChatGPTModelSelection(
+            requested="current",
+            resolved_label=label,
+            available_labels=available_labels,
+            strategy="current",
+            verified=bool(label),
+            warnings=[] if label else ["current_model_label_unavailable"],
+            error="" if label else "current_model_label_unavailable",
+        )
+    if strategy == "ignore":
+        return ChatGPTModelSelection(
+            requested="ignored",
+            resolved_label="",
+            available_labels=[],
+            strategy="ignore",
+            verified=False,
+            warnings=["model_selection_skipped"],
+        )
+    raise ValueError("model_strategy must be `select`, `current`, or `ignore`.")
+
+
 def _available_labels_from_result(result: dict[str, Any]) -> list[str]:
     hint = result.get("hint")
     raw = hint.get("availableOptions") if isinstance(hint, dict) else result.get("availableOptions")
@@ -136,6 +181,38 @@ def _available_labels_from_result(result: dict[str, Any]) -> list[str]:
         if label and label not in labels:
             labels.append(label)
     return labels
+
+
+def _current_model_expression() -> str:
+    replacements = {
+        "__MODEL_BUTTON_SELECTOR__": json.dumps(MODEL_BUTTON_SELECTOR),
+        "__COMPOSER_MODEL_SIGNAL_SELECTOR__": json.dumps(COMPOSER_MODEL_SIGNAL_SELECTOR),
+    }
+    expression = r"""
+(() => {
+  const MODEL_BUTTON_SELECTOR = __MODEL_BUTTON_SELECTOR__;
+  const COMPOSER_MODEL_SIGNAL_SELECTOR = __COMPOSER_MODEL_SIGNAL_SELECTOR__;
+  const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  const labels = [];
+  const push = (value) => {
+    const label = normalize(value);
+    if (label && !labels.includes(label)) labels.push(label);
+  };
+  const composer = document.querySelector(COMPOSER_MODEL_SIGNAL_SELECTOR);
+  push(composer?.textContent ?? "");
+  const button = document.querySelector(MODEL_BUTTON_SELECTOR);
+  push(button?.textContent ?? "");
+  push(button?.getAttribute?.("aria-label") ?? "");
+  return {
+    status: labels.length > 0 ? "read-current" : "label-missing",
+    label: labels[0] || "",
+    availableOptions: labels,
+  };
+})()
+"""
+    for key, value in replacements.items():
+        expression = expression.replace(key, value)
+    return expression
 
 
 def _pro_model_selection_expression() -> str:

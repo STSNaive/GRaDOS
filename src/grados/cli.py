@@ -729,12 +729,12 @@ def browser_doctor(live: bool, doi: str) -> None:
     console.print()
 
 
-@main.group("external-synthesis")
-def external_synthesis_group() -> None:
-    """Inspect the optional external synthesis protocol state."""
+@main.group("external-consult")
+def external_consult_group() -> None:
+    """Inspect the optional ChatGPT Pro external consult transport state."""
 
 
-def _external_synthesis_status_payload() -> dict[str, object]:
+def _external_consult_status_payload() -> dict[str, object]:
     from grados.browser.chatgpt.profile import (
         chatgpt_profile_status,
         format_chatgpt_profile_setup_command,
@@ -742,14 +742,14 @@ def _external_synthesis_status_payload() -> dict[str, object]:
 
     paths = GRaDOSPaths()
     config = load_config(paths)
-    enabled = bool(config.research.external_synthesis.enabled)
+    enabled = bool(config.research.external_consult.enabled)
     profile_status = chatgpt_profile_status(paths.chatgpt_browser_profile)
     return {
         "enabled": enabled,
         "status": "enabled" if enabled else "disabled",
         "config_file": str(paths.config_file),
         "config_exists": paths.config_file.is_file(),
-        "protocol": "external_synthesis_browser_v1",
+        "protocol": "external_consult_browser_v1",
         "browser_profile": str(paths.chatgpt_browser_profile),
         "browser_profile_initialized": bool(profile_status["initialized"]),
         "browser_profile_initialized_meaning": "chrome_profile_markers_only_not_login_readiness",
@@ -759,11 +759,11 @@ def _external_synthesis_status_payload() -> dict[str, object]:
     }
 
 
-@external_synthesis_group.command("is-enabled")
+@external_consult_group.command("is-enabled")
 @click.option("-q", "--quiet", is_flag=True, help="Suppress output and use exit status only.")
-def external_synthesis_is_enabled(quiet: bool) -> None:
-    """Return whether the external synthesis protocol is enabled."""
-    payload = _external_synthesis_status_payload()
+def external_consult_is_enabled(quiet: bool) -> None:
+    """Return whether the external consult transport is enabled."""
+    payload = _external_consult_status_payload()
     enabled = bool(payload["enabled"])
     if not quiet:
         click.echo("true" if enabled else "false")
@@ -771,11 +771,11 @@ def external_synthesis_is_enabled(quiet: bool) -> None:
         raise click.exceptions.Exit(1)
 
 
-@external_synthesis_group.command("status")
+@external_consult_group.command("status")
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
-def external_synthesis_status(as_json: bool) -> None:
-    """Show whether the external synthesis protocol is enabled."""
-    payload = _external_synthesis_status_payload()
+def external_consult_status(as_json: bool) -> None:
+    """Show whether the external consult transport is enabled."""
+    payload = _external_consult_status_payload()
 
     if as_json:
         click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -783,7 +783,7 @@ def external_synthesis_status(as_json: bool) -> None:
 
     enabled = bool(payload["enabled"])
     status_text = "[green]enabled[/green]" if enabled else "[dim]disabled[/dim]"
-    console.print(f"External synthesis: {status_text}")
+    console.print(f"External consult: {status_text}")
     console.print(f"Config file: {payload['config_file']}")
     console.print(f"ChatGPT profile: {payload['browser_profile']}")
     profile_status = (
@@ -818,10 +818,10 @@ def _format_chatgpt_live_login_result(result: dict[str, object]) -> str:
     return f"{error} ({', '.join(details)})"
 
 
-@external_synthesis_group.command("doctor")
+@external_consult_group.command("doctor")
 @click.option("--live", is_flag=True, help="Also verify the signed-in ChatGPT session.")
-def external_synthesis_doctor(live: bool) -> None:
-    """Check local external synthesis browser prerequisites."""
+def external_consult_doctor(live: bool) -> None:
+    """Check local external consult browser prerequisites."""
     from grados.browser.chatgpt.profile import chatgpt_profile_status
     from grados.browser.manager import resolve_browser_executable
 
@@ -831,8 +831,8 @@ def external_synthesis_doctor(live: bool) -> None:
     profile = chatgpt_profile_status(paths.chatgpt_browser_profile)
 
     console.print()
-    console.print("[bold]External synthesis doctor[/bold]")
-    console.print(f"  Enabled: {'yes' if config.research.external_synthesis.enabled else 'no'}")
+    console.print("[bold]External consult doctor[/bold]")
+    console.print(f"  Enabled: {'yes' if config.research.external_consult.enabled else 'no'}")
     console.print(f"  Browser executable: {resolution.executable_path if resolution else 'not found'}")
     console.print(f"  ChatGPT profile: {paths.chatgpt_browser_profile}")
     console.print(f"  Profile initialized: {'yes' if profile['initialized'] else 'no'}")
@@ -849,7 +849,7 @@ def external_synthesis_doctor(live: bool) -> None:
     console.print()
 
 
-@external_synthesis_group.command("setup-browser")
+@external_consult_group.command("setup-browser")
 @click.option("--timeout", default=600.0, show_default=True, help="Seconds to wait for login.")
 @click.option(
     "--keep-open/--close-after-login",
@@ -857,7 +857,7 @@ def external_synthesis_doctor(live: bool) -> None:
     show_default=True,
     help="Keep or close the setup browser after login is detected.",
 )
-def external_synthesis_setup_browser(timeout: float, keep_open: bool) -> None:
+def external_consult_setup_browser(timeout: float, keep_open: bool) -> None:
     """Open the private ChatGPT browser profile for first-time login."""
     from grados.browser.chatgpt.runtime import open_chatgpt_login_setup
 
@@ -883,7 +883,6 @@ def external_synthesis_setup_browser(timeout: float, keep_open: bool) -> None:
     if keep_open:
         console.print("[green]Setup browser closed; ChatGPT private profile lock released.[/green]")
     console.print(f"Profile: {paths.chatgpt_browser_profile}")
-
 
 @main.command()
 def status() -> None:

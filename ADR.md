@@ -444,7 +444,7 @@
 - `papers/*.md` 继续是唯一 citation-grade full-text source。
 - 新增 canonical block registry：从当前 canonical Markdown 生成稳定 paragraph blocks，包含 `block_id`、`block_type`、`heading_path`、`ordinal`、`text_sha256`、`prev_hash`、`next_hash` 和 `doc_sha256`；MVP 先支持 paragraph，保留表格、图注、公式等扩展位。
 - `prepare_evidence_pack` 只能把候选 retrieval anchor materialize 成 canonical block snapshot 后再保存 pack；retrieval score、RRF rank 和 selection trace 只能进入 trace/metadata，不进入证据层。
-- 共享 evidence eligibility gate 必须在 pack、external synthesis packet、compare/audit 等 helper surface 计入证据前过滤 title-only、author-line、DOI-only、journal-only、metadata-only、citation-only、References 和 administrative fragments。找不到正文证据时应报告 missing reason，而不是用元数据占位。
+- 共享 evidence eligibility gate 必须在 pack、external consult packet、compare/audit 等 helper surface 计入证据前过滤 title-only、author-line、DOI-only、journal-only、metadata-only、citation-only、References 和 administrative fragments。找不到正文证据时应报告 missing reason，而不是用元数据占位。
 - Evidence pack 复用 `research_artifacts(kind="evidence_pack")`，不新增并行状态库。
 - `verify_evidence_pack` 必须重新读取当前 `papers/*.md` 并重建 block registry；不得读取 Chroma、FTS 或旧 pack 自身来判断 current validity。
 - `audit_answer_against_pack(strict=true)` 只使用 pack 内 evidence items，不全库搜索补证；缺口通过 `suggest_missing_evidence` 暴露为后续动作。
@@ -542,16 +542,17 @@
 - `codex` 下载路径和 ChatGPT Pro 外部综合都可能使用同一个 Codex Chrome extension / Chrome UI surface；如果两者各自独立开关 Chrome，会造成 tab、extension backend 或 conversation lifecycle 冲突。
 
 ### 决策
-- 新增配置 `research.external_synthesis.enabled`，默认关闭；模型与思考强度不再进入 GRaDOS 配置。启用时 host agent 固定选择当前 ChatGPT UI 中最新/最强的 Pro 模型，并选择最高可用 thinking-time 选项。
-- Host agent 通过 `grados external-synthesis is-enabled --quiet` 判断实时 gate，不自行复刻 `GRADOS_HOME` / `config.json` 解析规则；exit 0 表示启用，非 0、命令失败或不可用时按关闭处理。`grados external-synthesis status --json` 只用于诊断。
+- 新增配置 `research.external_consult.enabled`，默认关闭；模型与思考强度不再进入 GRaDOS 配置。启用时 host agent 固定选择当前 ChatGPT UI 中最新/最强的 Pro 模型，并选择最高可用 thinking-time 选项。
+- `research.external_consult.response_wait_total_seconds` 控制 ChatGPT Pro 单次回复的总等待预算；它表达用户想等待的墙钟时间，不暴露 browser 轮次、单轮等待和 settle delay 等实现参数。
+- Host agent 通过 `grados external-consult is-enabled --quiet` 判断实时 gate，不自行复刻 `GRADOS_HOME` / `config.json` 解析规则；exit 0 表示启用，非 0、命令失败或不可用时按关闭处理。`grados external-consult status --json` 只用于诊断。
 - `enabled=false` 时，GRaDOS 行为不变：不打开 Chrome、不调用 ChatGPT、不改变 evidence pack、`read_saved_paper` 或最终综合路径。
 - `enabled=true` 只表示 host-side orchestration 协议。GRaDOS server 仍只负责搜索、抽取、canonical anchors、evidence pack、saved-paper reread 和验证，不直接调用 ChatGPT Pro。
 - GRaDOS 产出的是经过验证的 evidence payload 与约束；具体发送给 ChatGPT 的 prompt 由 Codex host agent 根据用户任务、evidence payload 和协议拼装。Chrome extension / host agent 负责发送、读取和恢复 ChatGPT 对话，GRaDOS 不读取浏览器 UI。
-- ChatGPT 输出只有在 host agent 显式回传时才进入 GRaDOS，例如保存为 `external_synthesis_result` research artifact，并可关联源 `external_synthesis_packet`；回传结果仍必须经 `audit_external_synthesis_result`、`verify_evidence_pack` 或 canonical reread 才能影响最终引用判断。
-- 若回传结果关联了 `external_synthesis_packet`，审计边界以该 packet 实际发送的 anchors、DOI、block id 和 canonical URI 为准；结构化 `claims[].anchor_ids` 是主要交接合同，正文 pack audit 只作为额外风险扫描。
+- ChatGPT 输出只有在 host agent 显式回传时才进入 GRaDOS，例如保存为 `external_consult_result` research artifact，并可关联源 `external_consult_packet`；回传结果仍必须经 `audit_external_consult_result`、`verify_evidence_pack` 或 canonical reread 才能影响最终引用判断。
+- 若回传结果关联了 `external_consult_packet`，审计边界以该 packet 实际发送的 anchors、DOI、block id 和 canonical URI 为准；结构化 `claims[].anchor_ids` 是主要交接合同，正文 pack audit 只作为额外风险扫描。
 - ChatGPT Pro 输出只能作为 reviewer/synthesizer 建议，不是 citation evidence；它不得新增未提供的论文、DOI、事实或引用。最终引用必须回到 GRaDOS 验证后的 canonical paragraph windows。
 - 一次 GRaDOS workflow 使用一个 ChatGPT conversation。host agent 需要在当前 UI 中确认已选择最新/最强 Pro 模型和最高可用 thinking-time；遇到本地化 UI 时选择语义等价项，发送一次英文 protocol prompt，记录可恢复 conversation URL/标识，并把后续 evidence pack、outline、claim review 追加到同一对话。
-- 当 `research.external_synthesis.enabled=true` 且 `extract.fetch_strategy.enabled.codex=true` 时，host agent 必须把 Chrome 当作一个 workflow-level shared resource：同一时间只允许一个 Chrome task；优先先完成 `chrome_acquisition`，再进入 `chrome_synthesis`；确需交错时保持 publisher/PDF tab 与 ChatGPT tab 分离，并恢复同一 ChatGPT conversation。
+- 当 `research.external_consult.enabled=true` 且 `extract.fetch_strategy.enabled.codex=true` 时，host agent 必须把 Chrome 当作一个 workflow-level shared resource：同一时间只允许一个 Chrome task；优先先完成 `chrome_acquisition`，再进入 `chrome_synthesis`；确需交错时保持 publisher/PDF tab 与 ChatGPT tab 分离，并恢复同一 ChatGPT conversation。
 - Chrome extension 不可用、Chrome resource 状态不一致、目标模型无法确认、对话无法恢复、ChatGPT 输出越界、pack 过大或 `verify_evidence_pack current_valid=false` 时，默认停止并报告，不静默降级或自动另开新 ChatGPT 对话。
 
 ### 结果与影响
@@ -593,7 +594,7 @@
 ### 背景
 - 用户希望对 agent 说“用 GRaDOS 获取真实论文信息来设计实验流程/写论文”时，agent 能稳定完成任务。
 - ARIS、STORM、PaperQA、GPT Researcher、AutoResearchClaw、AI-Scientist 等相关项目说明，长写作任务通常需要阶段化 workflow、outline/claim ledger、审稿 gate、citation check、LaTeX/BibTeX 或图表 provenance 等能力。
-- GRaDOS 已经具备 canonical full text、`read_saved_paper`、evidence pack、pack verification、draft/pack audit、external synthesis advisory 和 `research_run_manifest` 等证据基础设施；缺口主要在 host agent 如何把这些能力组织成论文写作流水线。
+- GRaDOS 已经具备 canonical full text、`read_saved_paper`、evidence pack、pack verification、draft/pack audit、external consult advisory 和 `research_run_manifest` 等证据基础设施；缺口主要在 host agent 如何把这些能力组织成论文写作流水线。
 
 ### 决策
 - 不把 GRaDOS core 改造成完整自动科研 runtime。GRaDOS core 继续负责 deterministic evidence substrate：搜索、获取全文、canonical 保存、检索候选、canonical reread、evidence pack、验证和审计。
@@ -607,7 +608,7 @@
 - `claim_matrix` 是写作阶段的 durable claim ledger，可先作为 `save_research_artifact(kind="claim_matrix")` 保存；它不是 citation evidence。最终事实 claim 仍必须回到 canonical paragraph window 或 current-valid evidence pack。
 - `validate_claim_matrix` 和 `prepare_claim_evidence_pack` 是下一步可实现的 deterministic helper 方向，但在 MCP tool 真正实现前，文档必须明确它们不是 live tools。当前可用 gate 仍由 `read_saved_paper`、`prepare_evidence_pack`、`verify_evidence_pack`、`audit_answer_against_pack` 等现有工具组合完成。
 - 论文写作 flow 复用现有 `research_run_manifest` 作为 run/project 索引；后续只扩展 paper-writing 目录视图，不新增第二套 paper manifest。
-- ChatGPT Pro 或其他外部 reviewer 复用 ADR-023 的 packet-bound external synthesis route。写作流程只发送 current-valid evidence packet 与 claim slice，保存并审计 advisory result，再把 audit/revision outcome 挂回 section revision log 或 `research_run_manifest`；reviewer prose 不写回 canonical evidence。
+- ChatGPT Pro 或其他外部 reviewer 复用 ADR-023 的 packet-bound external consult route。写作流程只发送 current-valid evidence packet 与 claim slice，保存并审计 advisory result，再把 audit/revision outcome 挂回 section revision log 或 `research_run_manifest`；reviewer prose 不写回 canonical evidence。
 - 不新增一组 `literature_review`、`experimental_protocol`、`experiment_report`、`manuscript` 同名 MCP tools。profile 是 skill/reference 文档；MCP tool 只在承担确定性校验、canonical materialization 或最终 assurance 时新增。
 
 ### 结果与影响
@@ -625,18 +626,18 @@
 
 ### 背景
 - ADR-020 的 host-side reviewer 协议保住了证据边界，但把 ChatGPT prompt 发送、模型选择、UI 读取和恢复都留给 host agent，导致实际 workflow 难以稳定验证。
-- GRaDOS 已经有 verified evidence pack、external synthesis packet、audit、canonical reread 和 browser profile/session 基础设施，可以把可机械验证的 browser orchestration 收回到项目 runtime。
+- GRaDOS 已经有 verified evidence pack、external consult packet、audit、canonical reread 和 browser profile/session 基础设施，可以把可机械验证的 browser orchestration 收回到项目 runtime。
 - 用户仍需要 default-off 的 ChatGPT Pro advisory 能力；但 ChatGPT 输出不能变成新的证据源，也不能绕过 canonical `papers/*.md` 与 evidence pack。
 
 ### 决策
-- `research.external_synthesis.enabled` 仍是唯一配置 gate，默认关闭。关闭时 GRaDOS 不打开 ChatGPT、不调用 ChatGPT、不改变 evidence reading 流程。
-- 启用后，默认入口是 `run_external_synthesis`。它从 topic 准备 evidence pack 和 packet，或从既有 pack id 验证并 packet 化该 pack，然后使用 GRaDOS 私有 ChatGPT profile 执行 browser flow。
+- `research.external_consult.enabled` 仍是唯一配置 gate，默认关闭。关闭时 GRaDOS 不打开 ChatGPT、不调用 ChatGPT、不改变 evidence reading 流程。
+- 启用后，默认入口是 `run_external_consult`。它从 topic 准备 evidence pack 和 packet，或从既有 pack id 验证并 packet 化该 pack，然后使用 GRaDOS 私有 ChatGPT profile 执行 browser flow。
 - ChatGPT browser runtime 由 GRaDOS 管理：使用 `browser/chatgpt-profile`、`browser/chatgpt-sessions`、profile readiness、login probe、model/thinking selector、response capture、session record 和 profile lock。
 - ChatGPT session/recovery metadata 只把可恢复的 ChatGPT `/c/<id>` URL 当作恢复句柄；首页、project shell 或空 URL 只能作为 `last_observed_url` 诊断信息，不能覆盖已有可恢复 conversation URL。
-- `grados external-synthesis setup-browser` 只负责首次登录私有 profile；`grados external-synthesis doctor [--live]` 负责诊断 profile 与登录状态；运行期 synthesis 与 live diagnosis 共享同一 private profile lock。
+- `grados external-consult setup-browser` 只负责首次登录私有 profile；`grados external-consult doctor [--live]` 负责诊断 profile 与登录状态；运行期 synthesis 与 live diagnosis 共享同一 private profile lock。
 - 模型和 thinking route 是协议默认值，不进入 GRaDOS config。运行时在 ChatGPT UI 中确认 GRaDOS-validated Pro model route 与 Pro Extended thinking route，并记录实际确认到的原始标签。
-- `preview_external_synthesis_packet`、`prepare_external_synthesis_from_topic`、`prepare_external_synthesis_packet`、`save_external_synthesis_result` 和 `audit_external_synthesis_result` 保留给 dry run、恢复和显式 rerun。
-- ChatGPT Pro 输出仍只是 reviewer/synthesizer advisory。结果必须保存为 `external_synthesis_result` 并按关联 packet 或 source pack 审计；最终引用必须回到 verified evidence pack 或 canonical paragraph windows。
+- `preview_external_consult_packet`、`prepare_external_consult_from_topic`、`prepare_external_consult_packet`、`save_external_consult_result` 和 `audit_external_consult_result` 保留给 dry run、恢复和显式 rerun。
+- ChatGPT Pro 输出仍只是 reviewer/synthesizer advisory。结果必须保存为 `external_consult_result` 并按关联 packet 或 source pack 审计；最终引用必须回到 verified evidence pack 或 canonical paragraph windows。
 - 该 route 不替换 `extract.fetch_strategy.codex` PDF acquisition；PDF acquisition 的 Chrome extension handoff 和 ChatGPT synthesis 是两个独立能力。
 
 ### 结果与影响
@@ -713,9 +714,9 @@
 ### 决策
 - 长耗时或用户接管 workflow 先返回 durable receipt，而不是依赖单个 MCP 调用跑到最终完成。Receipt 至少包含 `operation_id` 或兼容 id、`kind`、`status`、`progress`、`next_action`、result/error pointer 和恢复建议。
 - Operation Registry 是轻量 SQLite 控制面，记录 normalized lifecycle row、bounded event ledger、idempotency key、runtime/recovery metadata、heartbeat/stale 状态和 debug bundle 指针；各领域 store 仍保留自己的恢复真值。
-- `get_operation_status(operation_id, detail=false)` 是统一状态/恢复入口。它优先读取 Operation Registry，并可兼容桥接 external synthesis session、DOI-bound parse attempt、indepth research run、local PDF import run 和 Codex download handoff；`detail=true` 可用于 ChatGPT browser session capture/recovery，但不得重新发送原 prompt。
-- `get_operation_status(detail=true)` 对 ChatGPT external synthesis 只从可恢复 `/c/<id>` URL 打开并捕获；如果 Operation Registry 或 session record 只有首页/project shell URL，必须清空污染的恢复 URL 并返回 `conversation_url_missing_or_not_recoverable`，不得重发 prompt 或反复打开 ChatGPT 首页。
-- `run_external_synthesis` 必须先持久化 packet/session/prompt hash 与 submit-once metadata，再等待 ChatGPT；前台等待耗尽时返回 `pending`，后续 status/recovery 只捕获、保存和审计同一次回答。
+- `get_operation_status(operation_id, detail=false)` 是统一状态/恢复入口。它优先读取 Operation Registry，并可兼容桥接 external consult session、DOI-bound parse attempt、indepth research run、local PDF import run 和 Codex download handoff；`detail=true` 可用于 ChatGPT browser session capture/recovery，但不得重新发送原 prompt。
+- `get_operation_status(detail=true)` 对 ChatGPT external consult 只从可恢复 `/c/<id>` URL 打开并捕获；如果 Operation Registry 或 session record 只有首页/project shell URL，必须清空污染的恢复 URL 并返回 `conversation_url_missing_or_not_recoverable`，不得重发 prompt 或反复打开 ChatGPT 首页。
+- `run_external_consult` 必须先持久化 packet/session/prompt hash 与 submit-once metadata，再等待 ChatGPT；配置的总响应等待预算耗尽时返回 `pending`，后续 status/recovery 只捕获、保存和审计同一次回答。
 - `extract_paper_full_text` 的 PDF-obtained 路径先 materialize PDF，再复用 DOI-bound parse attempt；already-saved、metadata-only、native full text 和普通 local read 等短路径保持同步返回。
 - `search_academic_papers(indepth=true)` 和 `import_local_pdf_library` 以 run manifest / operation event ledger 推进批处理；单个 DOI 或文件失败不能吞掉整个 run 的状态。
 - `codex_download_handoff` 使用 `needs_input` operation 表达 host-action 状态、watch-dir scan-only 语义、候选 PDF hash/size/mtime、disambiguation token、parse progress 和完成/失败恢复路径；多候选时不按 DOI 猜测。
@@ -725,7 +726,7 @@
 ### 结果与影响
 - Host agent 收到 pending 时应 poll `get_operation_status`，不要通过重新发送 ChatGPT prompt、重新点击下载、重新导入目录或重复解析同一 PDF 来恢复。
 - 现有各领域 store 继续是当前实现真值；Operation Registry 是跨工具状态面和调试控制面，必须保持现有 receipt 和兼容 id 可恢复。
-- README、CHANGELOG、skill tool reference 和 MCP schema drift tests 共同维护用户可见合同；TODO 只保留未完成的 browser runtime、写作流水线和后续压力验证项。
+- README、CHANGELOG、skill tool reference 和 MCP schema drift tests 共同维护用户可见合同；TODO 只保留未完成的 opt-in live smoke、read-only Resources、写作流水线和长期 adapter 收敛项。
 
 ---
 
@@ -752,3 +753,29 @@
 - 普通研究 agent 默认看到更聚焦的工具面，同时专家/兼容场景仍可启用完整 surface。
 - 文档和 tests 必须同时覆盖默认 surface、`all` / `full` compatibility、精确 allow-list、无效名称 fail-fast，以及 skill/plugin mirror drift。
 - TODO 只保留未完成的 read-only Resource 扩展和后续 host 兼容验证，不再保留已完成 toolset rollout 计划。
+
+---
+
+## ADR-028：ChatGPT Pro external consult 收敛为 consult contract
+
+- 状态：Accepted
+- 日期：2026-06-02
+
+### 背景
+- 第五次回归测试显示，packet-first `run_external_consult` 把“准备固定 evidence packet -> 发送 -> 保存 -> 默认审计”绑成单一路径，不适合 prompt-only 咨询、长回复自动恢复、策略化 model/thinking 选择和 manual/agent 后续审计。
+- GRaDOS 已经具备 ChatGPT 私有 profile、profile lock、session store、conversation URL sanitizer、copy/DOM capture 和 Operation Registry；缺口是把这些能力包装成通用 consult/session/recovery 合同，而不是新增一组分散 browser tools。
+
+### 决策
+- 同时把旧 `external_synthesis` 命名收敛为 `external_consult`：配置键、CLI group、MCP tools、artifact kinds、skill reference 和 plugin mirror 都使用新名；本次不保留旧 config/CLI alias。
+- 默认 MCP 路线改为 `consult_chatgpt_pro`：`prompt` 必填，`pack_id`、`packet_id`、artifact id 和 local path 都只是可选 bounded context。
+- `run_external_consult` 保留为 topic/pack packet-context route：它接受 topic/pack 参数并准备 packet，最终把 packet 作为 consult context 发送；新 prompt-only 调用和文档优先使用 `consult_chatgpt_pro`。
+- ChatGPT Pro 输出保存为 advisory artifact。Prompt-only consult 保存为 `chatgpt_pro_consult_result`；pack-linked consult 可保存为兼容 `external_consult_result`，但默认不自动 audit。
+- Model/thinking 选择改为策略字段：`model_strategy=select/current/ignore`，`thinking_strategy=highest/current/ignore`。策略结果必须记录 raw label、available labels、verified、warning/error；账号级 Pro badge 不能作为模型选择证据。
+- 长回复恢复采用 bounded auto-reattach：初次发送只提交一次 prompt；`research.external_consult.response_wait_total_seconds` 是从首次提交 prompt 开始计算的总等待预算，runtime 自动推导初次等待、每轮等待和 reattach 轮次；`get_operation_status(detail=true)` 可用同一配置继续恢复/capture，不重复发送。`detail=false` 保持只读。
+- Session 记录补充 transcript、assistant snapshot、capture metadata、context manifest、prompt hash、conversation URL 和 event ledger。Transient timeout/capture/login probe 问题保持 recoverable pending；已保存结果不得被后续 transient error 覆盖。
+- ChatGPT Pro prose 不是 canonical evidence；任何最终引用仍必须回到 `papers/*.md`、canonical paragraph windows、current-valid evidence pack 或显式 audit/reread。
+
+### 结果与影响
+- 普通 agent 可直接向 ChatGPT Pro 咨询，而不必先生成 evidence packet 或默认审计。
+- Packet/audit 工具仍可用于 dry run、恢复、显式保存和显式审计；配置 gate 为 `research.external_consult.enabled`。
+- README、skill reference、plugin mirror、server smoke tests 和 live schema guardrails 共同维护新 public contract。

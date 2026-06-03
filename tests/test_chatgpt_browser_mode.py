@@ -26,6 +26,7 @@ from grados.browser.chatgpt.login import (
 from grados.browser.chatgpt.model_selection import (
     _pro_model_selection_expression,
     is_legacy_pro_label,
+    select_chatgpt_model,
     select_latest_pro_label,
 )
 from grados.browser.chatgpt.profile import (
@@ -53,6 +54,7 @@ from grados.browser.chatgpt.session_store import (
 from grados.browser.chatgpt.thinking import (
     _pro_thinking_expression,
     rank_thinking_label,
+    select_chatgpt_thinking,
 )
 from grados.browser.chatgpt.types import ChatGPTCapture
 from grados.browser.chatgpt.urls import (
@@ -75,7 +77,7 @@ def test_chatgpt_profile_initialization_uses_private_profile_markers(tmp_path: P
     assert is_chatgpt_profile_initialized(profile) is True
     status = chatgpt_profile_status(profile)
     assert status["path"] == str(profile)
-    assert status["setup_command"] == "grados external-synthesis setup-browser"
+    assert status["setup_command"] == "grados external-consult setup-browser"
 
 
 def test_profile_lock_uses_chatgpt_lock_file(tmp_path: Path) -> None:
@@ -226,12 +228,12 @@ def test_login_setup_uses_profile_lock_and_closes_by_default(monkeypatch: pytest
     assert result["ok"] is True
     assert result["profile"] == str(paths.chatgpt_browser_profile)
     assert events == [
-        "enter:external_synthesis_setup:True",
+        "enter:external_consult_setup:True",
         "launch",
         "goto:https://chatgpt.com/",
         "wait",
         "cleanup",
-        "exit:external_synthesis_setup",
+        "exit:external_consult_setup",
     ]
 
 
@@ -305,13 +307,13 @@ def test_login_setup_keep_open_holds_lock_until_browser_closes(
     assert result["ok"] is True
     assert result["profile"] == str(paths.chatgpt_browser_profile)
     assert events == [
-        "enter:external_synthesis_setup:True",
+        "enter:external_consult_setup:True",
         "launch",
         "goto:https://chatgpt.com/",
         "wait",
         "wait_for_close",
         "cleanup",
-        "exit:external_synthesis_setup",
+        "exit:external_consult_setup",
     ]
 
 
@@ -338,6 +340,15 @@ def test_chatgpt_recovery_waits_for_assistant_before_capture(
             assert response_text == "final answer"
             events.append("save_response")
             return str(tmp_path / "response.md")
+
+        def save_capture_artifacts(self, session_id: str, **kwargs: Any) -> dict[str, str]:
+            assert session_id == "chatgpt-test"
+            assert kwargs["response_text"] == "final answer"
+            events.append("save_capture_artifacts")
+            return {
+                "transcript_path": str(tmp_path / "transcript.json"),
+                "assistant_snapshot_path": str(tmp_path / "assistant_snapshot.json"),
+            }
 
         def update(self, session_id: str, **kwargs: Any) -> None:
             assert session_id == "chatgpt-test"
@@ -382,6 +393,7 @@ def test_chatgpt_recovery_waits_for_assistant_before_capture(
         "wait_done",
         "capture",
         "save_response",
+        "save_capture_artifacts",
         "update:captured",
     ]
 
@@ -444,7 +456,8 @@ def test_chatgpt_timeout_salvages_recoverable_conversation_url(
     async def fake_login(page: FakePage) -> None:
         events.append("login")
 
-    async def fake_selection(page: FakePage) -> FakeSelection:
+    async def fake_selection(page: FakePage, **kwargs: object) -> FakeSelection:
+        _ = kwargs
         return FakeSelection()
 
     async def fake_clear(page: FakePage) -> None:
@@ -462,8 +475,8 @@ def test_chatgpt_timeout_salvages_recoverable_conversation_url(
     monkeypatch.setattr(runtime, "_launch_private_profile", fake_launch)
     monkeypatch.setattr(runtime, "open_new_chat", fake_open)
     monkeypatch.setattr(runtime, "ensure_chatgpt_logged_in", fake_login)
-    monkeypatch.setattr(runtime, "ensure_latest_pro_model", fake_selection)
-    monkeypatch.setattr(runtime, "ensure_pro_extended_thinking", fake_selection)
+    monkeypatch.setattr(runtime, "select_chatgpt_model", fake_selection)
+    monkeypatch.setattr(runtime, "select_chatgpt_thinking", fake_selection)
     monkeypatch.setattr(runtime, "clear_prompt_composer", fake_clear)
     monkeypatch.setattr(runtime, "read_conversation_turn_count", fake_turn_count)
     monkeypatch.setattr(runtime, "paste_prompt", fake_paste)
@@ -551,12 +564,12 @@ def test_live_login_check_uses_profile_lock(monkeypatch: pytest.MonkeyPatch, tmp
     assert result["ok"] is True
     assert result["profile"] == str(paths.chatgpt_browser_profile)
     assert events == [
-        "enter:external_synthesis_doctor:True",
+        "enter:external_consult_doctor:True",
         "launch",
         "goto:https://chatgpt.com/",
         "probe",
         "cleanup",
-        "exit:external_synthesis_doctor",
+        "exit:external_consult_doctor",
     ]
 
 
@@ -613,6 +626,36 @@ def test_session_store_does_not_overwrite_recoverable_conversation_url_with_shel
     assert polluted["last_observed_url"] == "https://chatgpt.com/"
 
 
+def test_session_store_persists_transcript_and_snapshot(tmp_path: Path) -> None:
+    store = ChatGPTSessionStore(tmp_path / "chatgpt-sessions")
+    session_id = new_session_id()
+    store.create(
+        session_id=session_id,
+        pack_id="",
+        packet_artifact_id="",
+        prompt_hash="hash",
+        prompt="What should I check?",
+        mode="ask",
+    )
+
+    paths = store.save_capture_artifacts(
+        session_id,
+        response_text="Check the canonical paragraphs.",
+        capture_method="copy_turn_action_button",
+        capture_warnings=[],
+        snapshot={"turnIndex": 3, "messageId": "m1"},
+        min_turn_index=2,
+    )
+
+    transcript = __import__("json").loads(Path(paths["transcript_path"]).read_text(encoding="utf-8"))
+    snapshot = __import__("json").loads(Path(paths["assistant_snapshot_path"]).read_text(encoding="utf-8"))
+    assert transcript["turns"][0]["role"] == "user"
+    assert transcript["turns"][0]["text"] == "What should I check?"
+    assert transcript["turns"][1]["role"] == "assistant"
+    assert transcript["turns"][1]["snapshot"]["turnIndex"] == 3
+    assert snapshot["messageId"] == "m1"
+
+
 def test_latest_pro_model_rejects_legacy_pro_when_current_pro_visible() -> None:
     assert is_legacy_pro_label("GPT-5.4 Pro") is True
     assert select_latest_pro_label(["Instant", "GPT-5.4 Pro", "Pro"]) == "Pro"
@@ -628,10 +671,56 @@ def test_latest_pro_model_fails_without_current_pro() -> None:
         raise AssertionError("expected model_unavailable")
 
 
+def test_model_strategy_current_reads_without_switching() -> None:
+    class FakePage:
+        expressions: list[str] = []
+
+        async def evaluate(self, expression: str) -> dict[str, object]:
+            self.expressions.append(expression)
+            assert "dispatchClickSequence" not in expression
+            return {"label": "Pro", "availableOptions": ["Pro"]}
+
+    page = FakePage()
+    result = asyncio.run(select_chatgpt_model(page, strategy="current"))
+
+    assert result.strategy == "current"
+    assert result.resolved_label == "Pro"
+    assert result.verified is True
+    assert len(page.expressions) == 1
+
+
+def test_model_strategy_ignore_does_not_touch_page() -> None:
+    class FakePage:
+        async def evaluate(self, expression: str) -> dict[str, object]:  # pragma: no cover
+            raise AssertionError("ignore strategy must not inspect the page")
+
+    result = asyncio.run(select_chatgpt_model(FakePage(), strategy="ignore"))
+
+    assert result.strategy == "ignore"
+    assert result.verified is False
+    assert result.warnings == ["model_selection_skipped"]
+
+
 def test_pro_extended_thinking_rank_preserves_localized_labels() -> None:
     assert CHATGPT_PRO_THINKING_LEVEL == "extended"
     assert rank_thinking_label("Extended") == 50
     assert rank_thinking_label("深度思考") == 50
+
+
+def test_thinking_strategy_current_and_ignore_are_separate() -> None:
+    class FakePage:
+        async def evaluate(self, expression: str) -> dict[str, object]:
+            assert "dispatchClickSequence" not in expression
+            return {"label": "Extended", "availableOptions": ["Pro", "Extended"]}
+
+    current = asyncio.run(select_chatgpt_thinking(FakePage(), strategy="current"))
+    ignored = asyncio.run(select_chatgpt_thinking(FakePage(), strategy="ignore"))
+
+    assert current.strategy == "current"
+    assert current.resolved_label == "Extended"
+    assert current.rank == 50
+    assert ignored.strategy == "ignore"
+    assert ignored.warnings == ["thinking_selection_skipped"]
 
 
 def test_chatgpt_selectors_match_browser_contract() -> None:

@@ -10,19 +10,21 @@ from grados.browser.chatgpt.types import (
     ChatGPTModelSelection,
     ChatGPTThinkingSelection,
 )
-from grados.config import GRaDOSPaths
+from grados.config import ExternalConsultConfig, GRaDOSPaths
 from grados.publisher.common import safe_doi_filename
 from grados.research.evidence_pack import EvidencePack, EvidencePackItem, prepare_evidence_pack, save_evidence_pack
-from grados.research.external_synthesis import (
-    EXTERNAL_SYNTHESIS_PACKET_KIND,
-    EXTERNAL_SYNTHESIS_RESULT_KIND,
-    audit_external_synthesis_result,
-    get_external_synthesis_operation_status,
-    prepare_external_synthesis_from_topic,
-    prepare_external_synthesis_packet,
-    preview_external_synthesis_packet,
-    run_external_synthesis,
-    save_external_synthesis_result,
+from grados.research.external_consult import (
+    CHATGPT_PRO_CONSULT_RESULT_KIND,
+    EXTERNAL_CONSULT_PACKET_KIND,
+    EXTERNAL_CONSULT_RESULT_KIND,
+    audit_external_consult_result,
+    consult_chatgpt_pro,
+    get_external_consult_operation_status,
+    prepare_external_consult_from_topic,
+    prepare_external_consult_packet,
+    preview_external_consult_packet,
+    run_external_consult,
+    save_external_consult_result,
 )
 from grados.research_state import query_research_artifacts
 from grados.storage.canonical_blocks import build_canonical_block_manifest
@@ -164,17 +166,17 @@ def _prepare_two_item_pack(monkeypatch, tmp_path: Path) -> dict[str, object]:  #
     )
 
 
-def test_preview_external_synthesis_packet_does_not_persist(monkeypatch, tmp_path: Path) -> None:
+def test_preview_external_consult_packet_does_not_persist(monkeypatch, tmp_path: Path) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
 
-    preview = preview_external_synthesis_packet(
+    preview = preview_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
     )
     saved_packets = query_research_artifacts(
         _db_path(tmp_path),
-        kind=EXTERNAL_SYNTHESIS_PACKET_KIND,
+        kind=EXTERNAL_CONSULT_PACKET_KIND,
         detail=True,
     )
 
@@ -207,7 +209,7 @@ def test_prepare_evidence_pack_reports_scoped_doi_coverage(monkeypatch, tmp_path
     assert loaded["pack"]["missing_scoped_dois"] == ["10.1234/missing"]
 
 
-def test_external_synthesis_packet_blocks_missing_scoped_doi_coverage(
+def test_external_consult_packet_blocks_missing_scoped_doi_coverage(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -221,7 +223,7 @@ def test_external_synthesis_packet_blocks_missing_scoped_doi_coverage(
         subquestions=["How much attenuation is reported?"],
         scoped_dois=["10.1234/demo", "10.1234/missing"],
     )
-    preview = preview_external_synthesis_packet(
+    preview = preview_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -233,7 +235,7 @@ def test_external_synthesis_packet_blocks_missing_scoped_doi_coverage(
     assert {"doi": "10.1234/missing", "reason": "missing_paper"} in preview["blocked_items"]
 
 
-def test_prepare_external_synthesis_packet_blocks_reference_only_item(tmp_path: Path) -> None:
+def test_prepare_external_consult_packet_blocks_reference_only_item(tmp_path: Path) -> None:
     save_paper_markdown(
         "10.1234/refs",
         "# Reference Only\n\n## References\n\nSmith et al. 2024. DOI 10.1234/source.",
@@ -275,14 +277,14 @@ def test_prepare_external_synthesis_packet_blocks_reference_only_item(tmp_path: 
         ),
     )
 
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(saved["pack_id"]),
     )
     saved_packets = query_research_artifacts(
         _db_path(tmp_path),
-        kind=EXTERNAL_SYNTHESIS_PACKET_KIND,
+        kind=EXTERNAL_CONSULT_PACKET_KIND,
         detail=True,
     )
 
@@ -293,7 +295,7 @@ def test_prepare_external_synthesis_packet_blocks_reference_only_item(tmp_path: 
     assert saved_packets["count"] == 0
 
 
-def test_prepare_external_synthesis_packet_blocks_author_metadata_item(tmp_path: Path) -> None:
+def test_prepare_external_consult_packet_blocks_author_metadata_item(tmp_path: Path) -> None:
     save_paper_markdown(
         "10.1234/authors",
         "# Author Leakage\n\nAuthors: Alice Smith, Bob Lee\n\n## Results\n\nSubstantive body.",
@@ -335,7 +337,7 @@ def test_prepare_external_synthesis_packet_blocks_author_metadata_item(tmp_path:
         ),
     )
 
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(saved["pack_id"]),
@@ -347,7 +349,7 @@ def test_prepare_external_synthesis_packet_blocks_author_metadata_item(tmp_path:
     assert packet["blocked_items"][0]["reason"] == "author_line"
 
 
-def test_prepare_external_synthesis_packet_does_not_block_on_candidate_claim_only(tmp_path: Path) -> None:
+def test_prepare_external_consult_packet_does_not_block_on_candidate_claim_only(tmp_path: Path) -> None:
     save_paper_markdown(
         "10.1234/claim-edge",
         (
@@ -394,14 +396,14 @@ def test_prepare_external_synthesis_packet_does_not_block_on_candidate_claim_onl
         ),
     )
 
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(saved["pack_id"]),
     )
     saved_packets = query_research_artifacts(
         _db_path(tmp_path),
-        kind=EXTERNAL_SYNTHESIS_PACKET_KIND,
+        kind=EXTERNAL_CONSULT_PACKET_KIND,
         detail=True,
     )
 
@@ -414,21 +416,21 @@ def test_prepare_external_synthesis_packet_does_not_block_on_candidate_claim_onl
     assert saved_packets["count"] == 1
 
 
-def test_prepare_external_synthesis_packet_rejects_stale_pack(
+def test_prepare_external_consult_packet_rejects_stale_pack(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
     _save_demo_paper(tmp_path, _body("Composite damping improved vibration attenuation by 9%."))
 
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
     )
     saved_packets = query_research_artifacts(
         _db_path(tmp_path),
-        kind=EXTERNAL_SYNTHESIS_PACKET_KIND,
+        kind=EXTERNAL_CONSULT_PACKET_KIND,
         detail=True,
     )
 
@@ -439,14 +441,14 @@ def test_prepare_external_synthesis_packet_rejects_stale_pack(
     assert saved_packets["count"] == 0
 
 
-def test_prepare_external_synthesis_from_topic_persists_pack_and_packet(
+def test_prepare_external_consult_from_topic_persists_pack_and_packet(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     _save_demo_paper(tmp_path)
     _patch_search(monkeypatch)
 
-    packet = prepare_external_synthesis_from_topic(
+    packet = prepare_external_consult_from_topic(
         _chroma_dir(tmp_path),
         _db_path(tmp_path),
         _papers_dir(tmp_path),
@@ -455,34 +457,34 @@ def test_prepare_external_synthesis_from_topic_persists_pack_and_packet(
     )
     saved_packets = query_research_artifacts(
         _db_path(tmp_path),
-        kind=EXTERNAL_SYNTHESIS_PACKET_KIND,
+        kind=EXTERNAL_CONSULT_PACKET_KIND,
         detail=True,
     )
 
     assert packet["ok"] is True
     assert packet["saved"] is True
-    assert packet["route"] == "prepare_external_synthesis_from_topic"
+    assert packet["route"] == "prepare_external_consult_from_topic"
     assert packet["pack_id"]
     assert packet["pack_artifact_id"]
     assert packet["evidence_pack"]["evidence_count"] == 1
     assert saved_packets["count"] == 1
 
 
-def test_external_synthesis_result_round_trip_and_audit(monkeypatch, tmp_path: Path) -> None:
+def test_external_consult_result_round_trip_and_audit(monkeypatch, tmp_path: Path) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
     )
     saved_packets = query_research_artifacts(
         _db_path(tmp_path),
-        kind=EXTERNAL_SYNTHESIS_PACKET_KIND,
+        kind=EXTERNAL_CONSULT_PACKET_KIND,
         detail=True,
     )
     saved_packet_content = saved_packets["items"][0]["content"]
 
-    saved = save_external_synthesis_result(
+    saved = save_external_consult_result(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -497,14 +499,14 @@ def test_external_synthesis_result_round_trip_and_audit(monkeypatch, tmp_path: P
             }
         ],
     )
-    audit = audit_external_synthesis_result(
+    audit = audit_external_consult_result(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         result_id=str(saved["artifact_id"]),
     )
     saved_results = query_research_artifacts(
         _db_path(tmp_path),
-        kind=EXTERNAL_SYNTHESIS_RESULT_KIND,
+        kind=EXTERNAL_CONSULT_RESULT_KIND,
         detail=True,
     )
 
@@ -524,7 +526,7 @@ def test_external_synthesis_result_round_trip_and_audit(monkeypatch, tmp_path: P
     assert audit["audit"]["verdict_counts"] == {"verified": 1}
 
 
-def test_run_external_synthesis_uses_browser_and_audits(
+def test_run_external_consult_uses_packet_context_without_auto_audit(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -583,7 +585,7 @@ def test_run_external_synthesis_uses_browser_and_audits(
     )
 
     result = __import__("asyncio").run(
-        run_external_synthesis(
+        run_external_consult(
             _chroma_dir(tmp_path),
             _db_path(tmp_path),
             _papers_dir(tmp_path),
@@ -593,8 +595,8 @@ def test_run_external_synthesis_uses_browser_and_audits(
     )
 
     assert result["ok"] is True
-    assert result["audited"] is True
-    assert result["ready_for_canonical_reread"] is True
+    assert result["audited"] is False
+    assert result["browser_route"] == "consult_chatgpt_pro"
     assert result["browser_session_id"] == "chatgpt-test"
     assert result["model_label"] == "Pro"
     assert "GRaDOS evidence packet" in str(seen["prompt"])
@@ -602,12 +604,274 @@ def test_run_external_synthesis_uses_browser_and_audits(
     assert seen["assistant_timeout_seconds"] == 75.0
 
 
-def test_run_external_synthesis_returns_recoverable_timeout_receipt(
+def test_consult_chatgpt_pro_accepts_plain_prompt_without_audit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = GRaDOSPaths(tmp_path)
+    seen: dict[str, object] = {}
+
+    async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
+        _ = (paths_arg, browser_config)
+        seen.update(kwargs)
+        return ChatGPTBrowserResult(
+            ok=True,
+            status="captured",
+            session_id="chatgpt-20260101T000000-abcdef12",
+            response_text="Advisory answer only.",
+            conversation_url="https://chatgpt.com/c/plain",
+            model=ChatGPTModelSelection(
+                requested="gpt-5.5-pro",
+                resolved_label="Pro",
+                strategy="select",
+                verified=True,
+            ),
+            thinking=ChatGPTThinkingSelection(
+                requested="pro_extended",
+                resolved_label="Extended",
+                rank=50,
+                verified=True,
+                strategy="highest",
+            ),
+            capture=ChatGPTCapture(response_text="Advisory answer only.", method="dom_text"),
+            session_record_path=str(tmp_path / "session.json"),
+            metadata={
+                "prompt_hash": str(kwargs["prompt_hash"]),
+                "response_path": str(tmp_path / "response.md"),
+            },
+        )
+
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fake_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        consult_chatgpt_pro(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            prompt="What should I verify next?",
+            model_strategy="ignore",
+            thinking_strategy="ignore",
+        )
+    )
+    saved_results = query_research_artifacts(
+        _db_path(tmp_path),
+        kind=CHATGPT_PRO_CONSULT_RESULT_KIND,
+        detail=True,
+    )
+
+    assert result["ok"] is True
+    assert result["saved"] is True
+    assert result["audited"] is False
+    assert result["kind"] == "chatgpt_pro_consult"
+    assert "What should I verify next?" in str(seen["prompt"])
+    assert seen["pack_id"] == ""
+    assert seen["model_strategy"] == "ignore"
+    assert saved_results["count"] == 1
+    assert saved_results["items"][0]["content"]["advisory_only"] is True
+
+
+def test_consult_chatgpt_pro_auto_reattaches_without_resubmitting(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = GRaDOSPaths(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds == 2.0
+
+    async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
+        _ = (paths_arg, browser_config)
+        calls.append(dict(kwargs))
+        session_id = "chatgpt-20260101T000000-abcdef12"
+        if len(calls) < 3:
+            return ChatGPTBrowserResult(
+                ok=False,
+                status="incomplete_capture",
+                session_id=session_id,
+                error="Timed out waiting for ChatGPT response generation to finish.",
+                error_code="assistant_timeout",
+                conversation_url="https://chatgpt.com/c/auto",
+                session_record_path=str(tmp_path / "session.json"),
+                metadata={"last_observed_url": "https://chatgpt.com/c/auto"},
+            )
+        return ChatGPTBrowserResult(
+            ok=True,
+            status="captured",
+            session_id=session_id,
+            response_text="Recovered final answer.",
+            conversation_url="https://chatgpt.com/c/auto",
+            capture=ChatGPTCapture(response_text="Recovered final answer.", method="dom_text"),
+            session_record_path=str(tmp_path / "session.json"),
+            metadata={"prompt_hash": str(kwargs["prompt_hash"]), "response_path": str(tmp_path / "response.md")},
+        )
+
+    monkeypatch.setattr("grados.research.external_consult.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fake_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        consult_chatgpt_pro(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            prompt="Please produce a long advisory answer.",
+        )
+    )
+
+    assert result["ok"] is True
+    assert len(calls) == 3
+    assert calls[0]["prompt"]
+    assert calls[1]["prompt"] == ""
+    assert calls[2]["prompt"] == ""
+    assert calls[0]["assistant_timeout_seconds"] == 75.0
+    assert calls[1]["assistant_timeout_seconds"] == 75.0
+    assert calls[0]["metadata"]["response_wait_total_seconds"] == 300.0
+    assert calls[0]["metadata"]["max_browser_wait_attempts"] == 4
+    assert calls[0]["metadata"]["max_reattach_attempts"] == 3
+    assert calls[1]["recover_session_id"] == "chatgpt-20260101T000000-abcdef12"
+    assert result["auto_reattach_attempts"][-1]["ok"] is True
+
+
+def test_consult_chatgpt_pro_derives_reattach_attempts_from_configured_total_wait(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = GRaDOSPaths(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds == 2.0
+
+    async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
+        _ = (paths_arg, browser_config)
+        calls.append(dict(kwargs))
+        return ChatGPTBrowserResult(
+            ok=False,
+            status="incomplete_capture",
+            session_id="chatgpt-20260101T000000-abcdef12",
+            error="Timed out waiting for ChatGPT response generation to finish.",
+            error_code="assistant_timeout",
+            conversation_url="https://chatgpt.com/c/auto",
+            session_record_path=str(tmp_path / "session.json"),
+            metadata={"last_observed_url": "https://chatgpt.com/c/auto"},
+        )
+
+    monkeypatch.setattr("grados.research.external_consult.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fake_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        consult_chatgpt_pro(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            prompt="Please produce a long advisory answer.",
+            external_consult_config=ExternalConsultConfig(response_wait_total_seconds=150.0),
+        )
+    )
+
+    assert result["status"] == "pending"
+    assert len(calls) == 2
+    assert calls[0]["prompt"]
+    assert calls[1]["prompt"] == ""
+    assert calls[0]["assistant_timeout_seconds"] == 75.0
+    assert calls[1]["assistant_timeout_seconds"] == 75.0
+    assert calls[0]["metadata"]["response_wait_total_seconds"] == 150.0
+    assert calls[0]["metadata"]["max_browser_wait_attempts"] == 2
+    assert calls[0]["metadata"]["max_reattach_attempts"] == 1
+    assert calls[1]["metadata"]["auto_reattach_max_attempts"] == 1
+
+
+def test_consult_chatgpt_pro_manual_copy_fallback_saves_response(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = GRaDOSPaths(tmp_path)
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    session_id = new_session_id()
+    store.create(
+        session_id=session_id,
+        pack_id="",
+        packet_artifact_id="",
+        prompt_hash="manual-hash",
+        prompt="Original consult prompt",
+        mode="ask",
+        metadata={
+            "tool_name": "consult_chatgpt_pro",
+            "context_manifest": {"artifacts": []},
+            "model_strategy": "ignore",
+            "thinking_strategy": "ignore",
+        },
+    )
+    store.update(
+        session_id,
+        status="incomplete_capture",
+        conversation_url="https://chatgpt.com/c/manual-copy",
+        min_turn_index=3,
+    )
+
+    async def fail_browser_session(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = (args, kwargs)
+        raise AssertionError("manual copy save should not reopen the browser")
+
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fail_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        consult_chatgpt_pro(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            prompt="Original consult prompt",
+            recover_session_id=session_id,
+            manual_response="Manually pasted final answer.",
+            model_strategy="ignore",
+            thinking_strategy="ignore",
+        )
+    )
+    saved_results = query_research_artifacts(
+        _db_path(tmp_path),
+        kind=CHATGPT_PRO_CONSULT_RESULT_KIND,
+        detail=True,
+    )
+    updated = store.read(session_id) or {}
+
+    assert result["ok"] is True
+    assert result["saved"] is True
+    assert result["capture"]["method"] == "manual_copy"
+    assert result["capture"]["warnings"] == ["manual_copy_fallback"]
+    assert result["conversation_url"] == "https://chatgpt.com/c/manual-copy"
+    assert updated["capture_method"] == "manual_copy"
+    assert updated["manual_copy_fallback"] is True
+    assert Path(str(updated["response_path"])).read_text(encoding="utf-8") == "Manually pasted final answer."
+    assert Path(str(updated["transcript_path"])).is_file()
+    assert Path(str(updated["assistant_snapshot_path"])).is_file()
+    assert saved_results["count"] == 1
+    assert saved_results["items"][0]["content"]["response_text"] == "Manually pasted final answer."
+    assert saved_results["items"][0]["metadata"]["capture"]["method"] == "manual_copy"
+    assert result["browser_session_id"] == session_id
+    assert saved_results["items"][0]["content"]["operation_lookup_sha256"]
+
+
+def test_run_external_consult_returns_recoverable_timeout_receipt(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
     paths = GRaDOSPaths(tmp_path)
+
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds == 2.0
 
     async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
         _ = (paths_arg, browser_config, kwargs)
@@ -621,13 +885,14 @@ def test_run_external_synthesis_returns_recoverable_timeout_receipt(
             metadata={"pack_id": str(receipt["pack_id"])},
         )
 
+    monkeypatch.setattr("grados.research.external_consult.asyncio.sleep", fake_sleep)
     monkeypatch.setattr(
         "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
         fake_browser_session,
     )
 
     result = __import__("asyncio").run(
-        run_external_synthesis(
+        run_external_consult(
             _chroma_dir(tmp_path),
             _db_path(tmp_path),
             _papers_dir(tmp_path),
@@ -647,17 +912,17 @@ def test_run_external_synthesis_returns_recoverable_timeout_receipt(
     assert result["stage"] == "incomplete_capture"
     operation = get_operation(_db_path(tmp_path), "chatgpt-timeout")
     assert operation is not None
-    assert operation.kind == "external_synthesis"
+    assert operation.kind == "external_consult"
     assert operation.status == "pending"
     assert operation.recovery["browser_session_record"] == str(tmp_path / "session.json")
 
 
-def test_external_synthesis_operation_status_saves_captured_session_once(
+def test_external_consult_operation_status_saves_captured_session_once(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -690,7 +955,7 @@ def test_external_synthesis_operation_status_saves_captured_session_once(
     )
 
     first = __import__("asyncio").run(
-        get_external_synthesis_operation_status(
+        get_external_consult_operation_status(
             _db_path(tmp_path),
             _papers_dir(tmp_path),
             paths,
@@ -699,7 +964,7 @@ def test_external_synthesis_operation_status_saves_captured_session_once(
         )
     )
     second = __import__("asyncio").run(
-        get_external_synthesis_operation_status(
+        get_external_consult_operation_status(
             _db_path(tmp_path),
             _papers_dir(tmp_path),
             paths,
@@ -709,7 +974,7 @@ def test_external_synthesis_operation_status_saves_captured_session_once(
     )
     saved_results = query_research_artifacts(
         _db_path(tmp_path),
-        kind=EXTERNAL_SYNTHESIS_RESULT_KIND,
+        kind=EXTERNAL_CONSULT_RESULT_KIND,
         detail=True,
         limit=10,
     )
@@ -720,12 +985,12 @@ def test_external_synthesis_operation_status_saves_captured_session_once(
     assert saved_results["count"] == 1
 
 
-def test_external_synthesis_operation_status_does_not_complete_by_prompt_hash_only(
+def test_external_consult_operation_status_does_not_complete_by_prompt_hash_only(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -744,7 +1009,7 @@ def test_external_synthesis_operation_status_does_not_complete_by_prompt_hash_on
             mode="review",
             metadata={"test": "same_prompt_hash"},
         )
-    save_external_synthesis_result(
+    save_external_consult_result(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -759,7 +1024,7 @@ def test_external_synthesis_operation_status_does_not_complete_by_prompt_hash_on
     )
 
     first = __import__("asyncio").run(
-        get_external_synthesis_operation_status(
+        get_external_consult_operation_status(
             _db_path(tmp_path),
             _papers_dir(tmp_path),
             paths,
@@ -768,7 +1033,7 @@ def test_external_synthesis_operation_status_does_not_complete_by_prompt_hash_on
         )
     )
     second = __import__("asyncio").run(
-        get_external_synthesis_operation_status(
+        get_external_consult_operation_status(
             _db_path(tmp_path),
             _papers_dir(tmp_path),
             paths,
@@ -784,12 +1049,12 @@ def test_external_synthesis_operation_status_does_not_complete_by_prompt_hash_on
     assert second["result_artifact_id"] == ""
 
 
-def test_external_synthesis_operation_status_rejects_shell_conversation_url(
+def test_external_consult_operation_status_rejects_shell_conversation_url(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -820,7 +1085,7 @@ def test_external_synthesis_operation_status_rejects_shell_conversation_url(
     )
 
     result = __import__("asyncio").run(
-        get_external_synthesis_operation_status(
+        get_external_consult_operation_status(
             _db_path(tmp_path),
             _papers_dir(tmp_path),
             paths,
@@ -837,12 +1102,12 @@ def test_external_synthesis_operation_status_rejects_shell_conversation_url(
     assert result["recovery_metadata"]["conversation_url"] == ""
 
 
-def test_external_synthesis_operation_status_clears_polluted_registry_recovery_url(
+def test_external_consult_operation_status_clears_polluted_registry_recovery_url(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -865,7 +1130,7 @@ def test_external_synthesis_operation_status_clears_polluted_registry_recovery_u
     create_operation(
         _db_path(tmp_path),
         operation_id=session_id,
-        kind="external_synthesis",
+        kind="external_consult",
         status="pending",
         stage="incomplete_capture",
         idempotency_key=str(packet["prompt_hash"]),
@@ -877,7 +1142,7 @@ def test_external_synthesis_operation_status_clears_polluted_registry_recovery_u
     )
 
     result = __import__("asyncio").run(
-        get_external_synthesis_operation_status(
+        get_external_consult_operation_status(
             _db_path(tmp_path),
             _papers_dir(tmp_path),
             paths,
@@ -894,12 +1159,12 @@ def test_external_synthesis_operation_status_clears_polluted_registry_recovery_u
     assert operation.recovery["last_observed_url"] == "https://chatgpt.com/"
 
 
-def test_external_synthesis_operation_status_recovers_without_resubmitting_prompt(
+def test_external_consult_operation_status_recovers_without_resubmitting_prompt(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -924,6 +1189,9 @@ def test_external_synthesis_operation_status_recovers_without_resubmitting_promp
     )
     seen: dict[str, object] = {}
 
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds == 2.0
+
     async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
         _ = (paths_arg, browser_config)
         seen.update(kwargs)
@@ -938,13 +1206,14 @@ def test_external_synthesis_operation_status_recovers_without_resubmitting_promp
             conversation_url="https://chatgpt.com/c/recover-once",
         )
 
+    monkeypatch.setattr("grados.research.external_consult.asyncio.sleep", fake_sleep)
     monkeypatch.setattr(
         "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
         fake_browser_session,
     )
 
     result = __import__("asyncio").run(
-        get_external_synthesis_operation_status(
+        get_external_consult_operation_status(
             _db_path(tmp_path),
             _papers_dir(tmp_path),
             paths,
@@ -961,7 +1230,100 @@ def test_external_synthesis_operation_status_recovers_without_resubmitting_promp
     assert result["error"] == "assistant_timeout"
 
 
-def test_external_synthesis_audit_uses_packet_reference_scope(
+def test_operation_status_detail_auto_reattaches_until_capture(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = GRaDOSPaths(tmp_path)
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    session_id = new_session_id()
+    store.create(
+        session_id=session_id,
+        pack_id="",
+        packet_artifact_id="",
+        prompt_hash="hash",
+        prompt="Plain consult prompt",
+        mode="ask",
+        metadata={
+            "tool_name": "consult_chatgpt_pro",
+            "context_manifest": {},
+            "model_strategy": "ignore",
+            "thinking_strategy": "ignore",
+        },
+    )
+    store.update(
+        session_id,
+        status="incomplete_capture",
+        conversation_url="https://chatgpt.com/c/recover-multi",
+        min_turn_index=4,
+    )
+    calls: list[dict[str, object]] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds == 2.0
+
+    async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
+        _ = (paths_arg, browser_config)
+        calls.append(dict(kwargs))
+        if len(calls) < 3:
+            return ChatGPTBrowserResult(
+                ok=False,
+                status="incomplete_capture",
+                session_id=session_id,
+                error="Timed out waiting for ChatGPT response generation to finish.",
+                error_code="assistant_timeout",
+                conversation_url="https://chatgpt.com/c/recover-multi",
+                session_record_path=str(store.session_json(session_id)),
+            )
+        store.update(
+            session_id,
+            status="captured",
+            conversation_url="https://chatgpt.com/c/recover-multi",
+            response_text="Recovered consult answer.",
+            response_path=str(tmp_path / "response.md"),
+            capture_method="fixture",
+            capture_warnings=[],
+        )
+        return ChatGPTBrowserResult(
+            ok=True,
+            status="captured",
+            session_id=session_id,
+            response_text="Recovered consult answer.",
+            conversation_url="https://chatgpt.com/c/recover-multi",
+            capture=ChatGPTCapture(response_text="Recovered consult answer.", method="fixture"),
+            session_record_path=str(store.session_json(session_id)),
+            metadata={"prompt_hash": "hash", "response_path": str(tmp_path / "response.md")},
+        )
+
+    monkeypatch.setattr("grados.research.external_consult.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fake_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        get_external_consult_operation_status(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            operation_id=session_id,
+            detail=True,
+        )
+    )
+    saved_results = query_research_artifacts(
+        _db_path(tmp_path),
+        kind=CHATGPT_PRO_CONSULT_RESULT_KIND,
+        detail=True,
+    )
+
+    assert result["status"] == "completed"
+    assert result["result_artifact_id"]
+    assert len(calls) == 3
+    assert {call["prompt"] for call in calls} == {""}
+    assert saved_results["count"] == 1
+
+
+def test_external_consult_audit_uses_packet_reference_scope(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -972,14 +1334,14 @@ def test_external_synthesis_audit_uses_packet_reference_scope(
         detail=True,
     )
     second_item = pack_artifact["items"][0]["content"]["evidence_items"][1]
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
         max_items=1,
     )
 
-    saved = save_external_synthesis_result(
+    saved = save_external_consult_result(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -995,7 +1357,7 @@ def test_external_synthesis_audit_uses_packet_reference_scope(
             }
         ],
     )
-    audit = audit_external_synthesis_result(
+    audit = audit_external_consult_result(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         result_id=str(saved["artifact_id"]),
@@ -1011,18 +1373,18 @@ def test_external_synthesis_audit_uses_packet_reference_scope(
     assert audit["ready_for_canonical_reread"] is False
 
 
-def test_external_synthesis_structured_claim_anchors_can_gate_without_prose_citations(
+def test_external_consult_structured_claim_anchors_can_gate_without_prose_citations(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
     )
 
-    saved = save_external_synthesis_result(
+    saved = save_external_consult_result(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -1039,7 +1401,7 @@ def test_external_synthesis_structured_claim_anchors_can_gate_without_prose_cita
             "missing_evidence": [],
         },
     )
-    audit = audit_external_synthesis_result(
+    audit = audit_external_consult_result(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         result_id=str(saved["artifact_id"]),
@@ -1052,12 +1414,12 @@ def test_external_synthesis_structured_claim_anchors_can_gate_without_prose_cita
     assert audit["structured_claims"][0]["verdict"] == "verified"
 
 
-def test_external_synthesis_audit_flags_pack_external_references(
+def test_external_consult_audit_flags_pack_external_references(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     receipt = _prepare_pack(monkeypatch, tmp_path)
-    saved = save_external_synthesis_result(
+    saved = save_external_consult_result(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         pack_id=str(receipt["pack_id"]),
@@ -1073,7 +1435,7 @@ def test_external_synthesis_audit_flags_pack_external_references(
         ],
     )
 
-    audit = audit_external_synthesis_result(
+    audit = audit_external_consult_result(
         _db_path(tmp_path),
         _papers_dir(tmp_path),
         result_id=str(saved["artifact_id"]),

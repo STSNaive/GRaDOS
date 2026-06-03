@@ -1,19 +1,25 @@
-"""Internal types for ChatGPT browser-mode external synthesis."""
+"""Internal types for ChatGPT browser-mode external consult."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-BROWSER_MODE_VERSION = "external-synthesis-browser-v1"
+BROWSER_MODE_VERSION = "external-consult-browser-v1"
 DEFAULT_PROMPT_CHAR_LIMIT = 120_000
 
 ChatGPTBrowserStatus = Literal[
+    "created",
+    "prompt_submitted_once",
+    "waiting_for_assistant",
+    "recovering",
     "captured",
     "saved",
+    "completed",
     "audited",
     "incomplete_capture",
     "failed",
+    "cancelled",
 ]
 
 
@@ -24,6 +30,8 @@ class ChatGPTModelSelection:
     available_labels: list[str] = field(default_factory=list)
     strategy: str = "latest_pro"
     verified: bool = False
+    warnings: list[str] = field(default_factory=list)
+    error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -36,6 +44,9 @@ class ChatGPTThinkingSelection:
     available_labels: list[str] = field(default_factory=list)
     rank: int = 0
     verified: bool = False
+    strategy: str = "highest"
+    warnings: list[str] = field(default_factory=list)
+    error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -46,6 +57,7 @@ class ChatGPTCapture:
     response_text: str
     method: str
     warnings: list[str] = field(default_factory=list)
+    snapshot: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

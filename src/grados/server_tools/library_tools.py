@@ -481,6 +481,12 @@ def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
     if action:
         result += f"- **Action:** {action}\n"
     result += "- **Retry:** call `extract_paper_full_text` with `resume_browser=true` after verification.\n"
+    result += "- **Attention Marker:** look for a retained browser tab titled `GRaDOS ACTION REQUIRED - ...`.\n"
+    result += (
+        "- **Manual Download:** if you already downloaded the PDF, call "
+        "`ingest_codex_downloaded_pdf(doi=..., downloaded_file_path=...)` or "
+        "`parse_pdf_file(file_path=..., doi=..., copy_to_library=true)` with the absolute path.\n"
+    )
     return result.rstrip()
 
 

@@ -50,6 +50,12 @@ class ChatGPTSessionStore:
     def response_path(self, session_id: str) -> Path:
         return self.session_dir(session_id) / "response.md"
 
+    def snapshot_path(self, session_id: str) -> Path:
+        return self.session_dir(session_id) / "assistant_snapshot.json"
+
+    def transcript_path(self, session_id: str) -> Path:
+        return self.session_dir(session_id) / "transcript.json"
+
     def create(
         self,
         *,
@@ -122,3 +128,54 @@ class ChatGPTSessionStore:
     def save_response(self, session_id: str, response_text: str) -> str:
         self.response_path(session_id).write_text(response_text, encoding="utf-8")
         return str(self.response_path(session_id))
+
+    def read_prompt(self, session_id: str) -> str:
+        try:
+            return self.prompt_path(session_id).read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+    def save_capture_artifacts(
+        self,
+        session_id: str,
+        *,
+        response_text: str,
+        capture_method: str,
+        capture_warnings: list[str] | None = None,
+        snapshot: dict[str, Any] | None = None,
+        min_turn_index: int | None = None,
+    ) -> dict[str, str]:
+        snapshot_payload = dict(snapshot or {})
+        snapshot_payload.setdefault("minTurnIndex", min_turn_index)
+        self.snapshot_path(session_id).write_text(
+            json.dumps(snapshot_payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        transcript = {
+            "session_id": session_id,
+            "created_at": utc_now(),
+            "min_turn_index": min_turn_index,
+            "capture": {
+                "method": capture_method,
+                "warnings": list(capture_warnings or []),
+            },
+            "turns": [
+                {
+                    "role": "user",
+                    "text": self.read_prompt(session_id),
+                },
+                {
+                    "role": "assistant",
+                    "text": response_text,
+                    "snapshot": snapshot_payload,
+                },
+            ],
+        }
+        self.transcript_path(session_id).write_text(
+            json.dumps(transcript, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return {
+            "assistant_snapshot_path": str(self.snapshot_path(session_id)),
+            "transcript_path": str(self.transcript_path(session_id)),
+        }

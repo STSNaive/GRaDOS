@@ -1,16 +1,24 @@
-"""Host-side ChatGPT Pro external synthesis packet helpers."""
+"""Host-side ChatGPT Pro external consult packet helpers."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
 import re
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from grados.browser.chatgpt.urls import is_recoverable_chatgpt_conversation_url
-from grados.config import GRaDOSPaths, HeadlessBrowserConfig
+from grados.config import (
+    DEFAULT_EXTERNAL_CONSULT_RESPONSE_WAIT_TOTAL_SECONDS,
+    ExternalConsultConfig,
+    GRaDOSPaths,
+    HeadlessBrowserConfig,
+)
 from grados.research.draft_audit import (
     VERDICT_MAJOR_DISTORTION,
     VERDICT_UNVERIFIABLE,
@@ -29,23 +37,31 @@ from grados.research.pack_audit import audit_answer_against_pack
 from grados.research_state import query_research_artifacts, save_research_artifact
 
 __all__ = [
-    "EXTERNAL_SYNTHESIS_PACKET_KIND",
-    "EXTERNAL_SYNTHESIS_RESULT_KIND",
-    "audit_external_synthesis_result",
-    "prepare_external_synthesis_from_topic",
-    "prepare_external_synthesis_packet",
-    "preview_external_synthesis_packet",
-    "get_external_synthesis_operation_status",
-    "run_external_synthesis",
-    "save_external_synthesis_result",
+    "EXTERNAL_CONSULT_PACKET_KIND",
+    "EXTERNAL_CONSULT_RESULT_KIND",
+    "audit_external_consult_result",
+    "consult_chatgpt_pro",
+    "prepare_external_consult_from_topic",
+    "prepare_external_consult_packet",
+    "preview_external_consult_packet",
+    "get_external_consult_operation_status",
+    "run_external_consult",
+    "save_external_consult_result",
 ]
 
-EXTERNAL_SYNTHESIS_PACKET_KIND = "external_synthesis_packet"
-EXTERNAL_SYNTHESIS_RESULT_KIND = "external_synthesis_result"
-EXTERNAL_SYNTHESIS_PROTOCOL_VERSION = "external-synthesis-v1"
-DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS = 75.0
+EXTERNAL_CONSULT_PACKET_KIND = "external_consult_packet"
+EXTERNAL_CONSULT_RESULT_KIND = "external_consult_result"
+CHATGPT_PRO_CONSULT_RESULT_KIND = "chatgpt_pro_consult_result"
+EXTERNAL_CONSULT_PROTOCOL_VERSION = "external-consult-v1"
+CHATGPT_PRO_CONSULT_PROTOCOL_VERSION = "chatgpt-pro-consult-v1"
+DEFAULT_EXTERNAL_CONSULT_FOREGROUND_WAIT_SECONDS = 75.0
+DEFAULT_CHATGPT_PRO_CONSULT_REATTACH_SETTLE_SECONDS = 2.0
 
-ExternalSynthesisMode = Literal["review", "synthesize"]
+ExternalConsultMode = Literal["review", "synthesize"]
+ChatGPTProConsultMode = Literal["ask", "review", "synthesize", "critique"]
+ChatGPTProModelStrategy = Literal["select", "current", "ignore"]
+ChatGPTProThinkingStrategy = Literal["highest", "current", "ignore"]
+ChatGPTProWaitPolicy = Literal["auto", "return_pending"]
 
 _ANCHOR_ID_PATTERN = re.compile(r"\banchor_[0-9]{3,}\b")
 _DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
@@ -57,11 +73,80 @@ _CANONICAL_URI_PATTERN = re.compile(r"\bgrados://papers/[^\s,;)\]}>\"']+")
 _WORD_PATTERN = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]{2,}", re.IGNORECASE)
 
 
-def _normalize_mode(mode: str | None) -> ExternalSynthesisMode:
+@dataclass(frozen=True)
+class _ChatGPTProConsultWaitSettings:
+    response_wait_total_seconds: float
+    per_attempt_wait_seconds: float
+    max_browser_wait_attempts: int
+    initial_wait_seconds: float
+    max_reattach_after_initial: int
+
+
+def _resolve_chatgpt_pro_consult_wait_settings(
+    external_consult_config: ExternalConsultConfig | None,
+) -> _ChatGPTProConsultWaitSettings:
+    total_seconds = float(
+        getattr(
+            external_consult_config,
+            "response_wait_total_seconds",
+            DEFAULT_EXTERNAL_CONSULT_RESPONSE_WAIT_TOTAL_SECONDS,
+        )
+        or DEFAULT_EXTERNAL_CONSULT_RESPONSE_WAIT_TOTAL_SECONDS
+    )
+    if total_seconds < 1.0:
+        total_seconds = DEFAULT_EXTERNAL_CONSULT_RESPONSE_WAIT_TOTAL_SECONDS
+    per_attempt_seconds = min(DEFAULT_EXTERNAL_CONSULT_FOREGROUND_WAIT_SECONDS, total_seconds)
+    max_browser_attempts = max(
+        1,
+        int(math.ceil(total_seconds / DEFAULT_EXTERNAL_CONSULT_FOREGROUND_WAIT_SECONDS)),
+    )
+    return _ChatGPTProConsultWaitSettings(
+        response_wait_total_seconds=total_seconds,
+        per_attempt_wait_seconds=per_attempt_seconds,
+        max_browser_wait_attempts=max_browser_attempts,
+        initial_wait_seconds=per_attempt_seconds,
+        max_reattach_after_initial=max(0, max_browser_attempts - 1),
+    )
+
+
+def _normalize_mode(mode: str | None) -> ExternalConsultMode:
     normalized = (mode or "review").strip().lower()
     if normalized not in {"review", "synthesize"}:
         raise ValueError("mode must be `review` or `synthesize`.")
     return normalized  # type: ignore[return-value]
+
+
+def _normalize_consult_mode(mode: str | None) -> ChatGPTProConsultMode:
+    normalized = (mode or "ask").strip().lower()
+    if normalized not in {"ask", "review", "synthesize", "critique"}:
+        raise ValueError("mode must be `ask`, `review`, `synthesize`, or `critique`.")
+    return normalized  # type: ignore[return-value]
+
+
+def _normalize_model_strategy(strategy: str | None) -> ChatGPTProModelStrategy:
+    normalized = (strategy or "select").strip().lower()
+    if normalized not in {"select", "current", "ignore"}:
+        raise ValueError("model_strategy must be `select`, `current`, or `ignore`.")
+    return normalized  # type: ignore[return-value]
+
+
+def _normalize_thinking_strategy(strategy: str | None) -> ChatGPTProThinkingStrategy:
+    normalized = (strategy or "highest").strip().lower()
+    if normalized not in {"highest", "current", "ignore"}:
+        raise ValueError("thinking_strategy must be `highest`, `current`, or `ignore`.")
+    return normalized  # type: ignore[return-value]
+
+
+def _normalize_wait_policy(policy: str | None) -> ChatGPTProWaitPolicy:
+    normalized = (policy or "auto").strip().lower()
+    if normalized not in {"auto", "return_pending"}:
+        raise ValueError("wait_policy must be `auto` or `return_pending`.")
+    return normalized  # type: ignore[return-value]
+
+
+def _external_result_mode(mode: str | None) -> ExternalConsultMode:
+    normalized = (mode or "review").strip().lower()
+    return "synthesize" if normalized == "synthesize" else "review"
 
 
 def _load_pack(db_path: Path, pack_id: str) -> tuple[EvidencePack | None, dict[str, Any]]:
@@ -87,7 +172,7 @@ def _load_pack(db_path: Path, pack_id: str) -> tuple[EvidencePack | None, dict[s
 def _blocked_packet_result(
     *,
     pack_id: str,
-    mode: ExternalSynthesisMode,
+    mode: ExternalConsultMode,
     verify_result: dict[str, Any],
     error: str,
     blocked_items: list[dict[str, Any]] | None = None,
@@ -214,7 +299,7 @@ def _build_packet(
     pack: EvidencePack,
     verify_result: dict[str, Any],
     *,
-    mode: ExternalSynthesisMode,
+    mode: ExternalConsultMode,
     max_items: int,
     max_excerpt_chars: int,
 ) -> dict[str, Any]:
@@ -225,8 +310,8 @@ def _build_packet(
         for index, item in enumerate(pack.evidence_items[:max_items], 1)
     ]
     payload: dict[str, Any] = {
-        "schema_version": EXTERNAL_SYNTHESIS_PROTOCOL_VERSION,
-        "kind": EXTERNAL_SYNTHESIS_PACKET_KIND,
+        "schema_version": EXTERNAL_CONSULT_PROTOCOL_VERSION,
+        "kind": EXTERNAL_CONSULT_PACKET_KIND,
         "mode": mode,
         "pack_id": pack.pack_id,
         "pack_sha256": pack.pack_sha256,
@@ -364,13 +449,13 @@ def _packet_preview(
         ),
         "host_guidance": [
             "Use one ChatGPT Pro conversation per GRaDOS workflow.",
-            "Save the Pro response with save_external_synthesis_result before using it.",
-            "Run audit_external_synthesis_result and reread canonical windows before final citation.",
+            "Save the Pro response with save_external_consult_result before using it.",
+            "Run audit_external_consult_result and reread canonical windows before final citation.",
         ],
     }
 
 
-def preview_external_synthesis_packet(
+def preview_external_consult_packet(
     db_path: Path,
     papers_dir: Path,
     *,
@@ -407,7 +492,7 @@ def preview_external_synthesis_packet(
     return _packet_preview(packet, _validate_packet(packet))
 
 
-def prepare_external_synthesis_packet(
+def prepare_external_consult_packet(
     db_path: Path,
     papers_dir: Path,
     *,
@@ -449,7 +534,7 @@ def prepare_external_synthesis_packet(
     host_prompt, _ = _render_host_prompt(packet)
     artifact_metadata = {
         **(metadata or {}),
-        "protocol": EXTERNAL_SYNTHESIS_PROTOCOL_VERSION,
+        "protocol": EXTERNAL_CONSULT_PROTOCOL_VERSION,
         "pack_id": pack.pack_id,
         "pack_sha256": pack.pack_sha256,
         "prompt_hash": packet["prompt_hash"],
@@ -458,8 +543,8 @@ def prepare_external_synthesis_packet(
     }
     receipt = save_research_artifact(
         db_path,
-        kind=EXTERNAL_SYNTHESIS_PACKET_KIND,
-        title=f"External synthesis packet: {pack.topic or pack.pack_id}",
+        kind=EXTERNAL_CONSULT_PACKET_KIND,
+        title=f"External consult packet: {pack.topic or pack.pack_id}",
         content=packet,
         metadata=artifact_metadata,
     )
@@ -467,14 +552,14 @@ def prepare_external_synthesis_packet(
         **preview,
         "saved": True,
         "artifact_id": receipt["artifact_id"],
-        "kind": EXTERNAL_SYNTHESIS_PACKET_KIND,
+        "kind": EXTERNAL_CONSULT_PACKET_KIND,
         "metadata": receipt["metadata"],
         "packet": packet,
         "host_prompt": host_prompt,
     }
 
 
-def prepare_external_synthesis_from_topic(
+def prepare_external_consult_from_topic(
     chroma_dir: Path,
     db_path: Path,
     papers_dir: Path,
@@ -509,10 +594,10 @@ def prepare_external_synthesis_from_topic(
 
     packet_metadata = {
         **(metadata or {}),
-        "source": "prepare_external_synthesis_from_topic",
+        "source": "prepare_external_consult_from_topic",
         "evidence_pack_artifact_id": str(pack_receipt.get("artifact_id") or ""),
     }
-    packet = prepare_external_synthesis_packet(
+    packet = prepare_external_consult_packet(
         db_path,
         papers_dir,
         pack_id=pack_id,
@@ -523,7 +608,7 @@ def prepare_external_synthesis_from_topic(
     )
     return {
         **packet,
-        "route": "prepare_external_synthesis_from_topic",
+        "route": "prepare_external_consult_from_topic",
         "pack_id": pack_id,
         "pack_artifact_id": str(pack_receipt.get("artifact_id") or ""),
         "evidence_pack": pack_receipt,
@@ -601,7 +686,7 @@ def _ensure_external_operation(
     create_operation(
         db_path,
         operation_id=operation_id,
-        kind="external_synthesis",
+        kind="external_consult",
         status=status,
         stage=stage,
         idempotency_key=prompt_hash,
@@ -624,7 +709,7 @@ def _ensure_external_operation(
         recovery=recovery,
         result=result,
         error=error,
-        event_type="external_synthesis_status",
+        event_type="external_consult_status",
         event_payload={"status": status, "stage": stage, "pack_id": pack_id},
     )
 
@@ -636,36 +721,44 @@ def _find_external_result_for_session(
     prompt_hash: str = "",
     allow_prompt_hash_fallback: bool = False,
 ) -> dict[str, Any] | None:
-    artifacts = query_research_artifacts(
-        db_path,
-        kind=EXTERNAL_SYNTHESIS_RESULT_KIND,
-        detail=True,
-        limit=100,
-    )
-    for artifact in artifacts.get("items", []):
-        if not isinstance(artifact, dict):
-            continue
-        metadata = artifact.get("metadata")
-        if not isinstance(metadata, dict):
-            metadata = {}
-        content = artifact.get("content")
-        if not isinstance(content, dict):
-            content = {}
-        if session_id and str(metadata.get("browser_session_id") or "") == session_id:
-            return artifact
-        session_hash = _operation_lookup_sha256(session_id)
-        if session_hash and session_hash in {
-            str(metadata.get("operation_lookup_sha256") or ""),
-            str(content.get("operation_lookup_sha256") or ""),
-        }:
-            return artifact
-        if (
-            allow_prompt_hash_fallback
-            and prompt_hash
-            and str(content.get("prompt_hash") or metadata.get("prompt_hash") or "") == prompt_hash
-        ):
-            if str(metadata.get("runtime") or "") == "grados_chatgpt_browser":
+    for kind in (EXTERNAL_CONSULT_RESULT_KIND, CHATGPT_PRO_CONSULT_RESULT_KIND):
+        artifacts = query_research_artifacts(
+            db_path,
+            kind=kind,
+            detail=True,
+            limit=100,
+        )
+        for artifact in artifacts.get("items", []):
+            if not isinstance(artifact, dict):
+                continue
+            metadata = artifact.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            content = artifact.get("content")
+            if not isinstance(content, dict):
+                content = {}
+            if session_id and str(metadata.get("browser_session_id") or "") == session_id:
                 return artifact
+            session_hash = _operation_lookup_sha256(session_id)
+            if session_hash and session_hash in {
+                str(metadata.get("operation_lookup_sha256") or ""),
+                str(content.get("operation_lookup_sha256") or ""),
+            }:
+                return artifact
+            candidate_prompt_hash = str(
+                content.get("prompt_hash")
+                or content.get("rendered_prompt_hash")
+                or metadata.get("prompt_hash")
+                or metadata.get("rendered_prompt_hash")
+                or ""
+            )
+            if (
+                allow_prompt_hash_fallback
+                and prompt_hash
+                and candidate_prompt_hash == prompt_hash
+            ):
+                if str(metadata.get("runtime") or "") == "grados_chatgpt_browser":
+                    return artifact
     return None
 
 
@@ -695,7 +788,7 @@ def _external_operation_status_payload(
     return {
         "found": True,
         "operation_id": operation_id,
-        "kind": "external_synthesis",
+        "kind": "external_consult",
         "status": operation_status,
         "stage": session_status,
         "created_at": str(record.get("created_at") or ""),
@@ -707,7 +800,7 @@ def _external_operation_status_payload(
             "result_saved": completed,
         },
         "next_action": (
-            "read_saved_external_synthesis_result_or_audit"
+            "read_saved_external_consult_result_or_audit"
             if completed
             else "call_get_operation_status_with_detail_true_after_chatgpt_finishes"
             if operation_status == "pending"
@@ -723,6 +816,7 @@ def _external_operation_status_payload(
         "browser_session_id": operation_id,
         "browser_session_record": str(record.get("session_record") or ""),
         "recovery_metadata": recovery_metadata,
+        "auto_reattach_attempts": list(record.get("auto_reattach_attempts") or []),
         "error": error,
     }
 
@@ -752,12 +846,36 @@ def _save_captured_session_result(
 
     pack_id = str(record.get("pack_id") or "")
     if not pack_id:
-        return {
-            "ok": False,
-            "saved": False,
-            "error": "browser_session_pack_missing",
-            "message": "Saved ChatGPT browser session has no linked evidence pack id.",
-        }
+        raw_metadata_value = record.get("metadata")
+        raw_metadata: dict[str, Any] = raw_metadata_value if isinstance(raw_metadata_value, dict) else {}
+        raw_context_manifest = raw_metadata.get("context_manifest")
+        context_manifest = raw_context_manifest if isinstance(raw_context_manifest, dict) else {}
+        prompt_text = ""
+        try:
+            prompt_text = Path(session_record_path).with_name("prompt.txt").read_text(encoding="utf-8")
+        except OSError:
+            prompt_text = str(raw_metadata.get("prompt") or "")
+        return _save_chatgpt_pro_consult_result(
+            db_path,
+            prompt=prompt_text,
+            rendered_prompt_hash=str(record.get("prompt_hash") or ""),
+            response=response_text,
+            mode=str(record.get("mode") or raw_metadata.get("consult_mode") or "ask"),
+            context_manifest=context_manifest,
+            conversation_url=_recoverable_conversation_url(record.get("conversation_url")),
+            model_label=_selection_label(record, "model_selection"),
+            thinking_label=_selection_label(record, "thinking_selection"),
+            metadata={
+                **raw_metadata,
+                "runtime": "grados_chatgpt_browser",
+                "browser_session_id": operation_id,
+                "browser_session_record": session_record_path,
+                "capture": {
+                    "method": str(record.get("capture_method") or ""),
+                    "warnings": list(record.get("capture_warnings") or []),
+                },
+            },
+        )
 
     structured_response = _structured_response_from_text(response_text)
     structured_claims = None
@@ -769,7 +887,9 @@ def _save_captured_session_result(
         structured_gaps = _coerce_string_list(
             structured_response.get("missing_evidence") or structured_response.get("gaps")
         )
-    return save_external_synthesis_result(
+    record_metadata_value = record.get("metadata")
+    record_metadata: dict[str, Any] = record_metadata_value if isinstance(record_metadata_value, dict) else {}
+    return save_external_consult_result(
         db_path,
         papers_dir,
         pack_id=pack_id,
@@ -779,10 +899,11 @@ def _save_captured_session_result(
         conversation_url=_recoverable_conversation_url(record.get("conversation_url")),
         model_label=_selection_label(record, "model_selection"),
         thinking_label=_selection_label(record, "thinking_selection"),
-        mode=str(record.get("mode") or "review"),
+        mode=_external_result_mode(str(record.get("mode") or "review")),
         claims=structured_claims,
         gaps=structured_gaps,
         metadata={
+            **record_metadata,
             "runtime": "grados_chatgpt_browser",
             "browser_session_id": operation_id,
             "browser_session_record": session_record_path,
@@ -791,8 +912,161 @@ def _save_captured_session_result(
                 "warnings": list(record.get("capture_warnings") or []),
             },
         },
-        audit=True,
+        audit=False,
     )
+
+
+def _save_manual_chatgpt_pro_response(
+    db_path: Path,
+    papers_dir: Path,
+    paths: GRaDOSPaths,
+    *,
+    session_id: str,
+    response_text: str,
+) -> dict[str, Any]:
+    from grados.browser.chatgpt.session_store import ChatGPTSessionStore
+    from grados.storage.operations import complete_operation, fail_operation
+
+    pasted_response = response_text.strip()
+    if not pasted_response:
+        return {
+            "ok": False,
+            "saved": False,
+            "error": "manual_response_required",
+            "message": "`manual_response` must contain the pasted ChatGPT response.",
+        }
+
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    record = store.read(session_id)
+    if record is None:
+        return {
+            "ok": False,
+            "saved": False,
+            "error": "chatgpt_session_not_found",
+            "message": "The requested ChatGPT browser session record was not found.",
+        }
+
+    prompt_hash = str(record.get("prompt_hash") or "")
+    existing = _find_external_result_for_session(
+        db_path,
+        session_id=session_id,
+        prompt_hash=prompt_hash,
+        allow_prompt_hash_fallback=False,
+    )
+    if existing is not None:
+        return {
+            "ok": True,
+            "saved": True,
+            "already_saved": True,
+            "artifact_id": str(existing.get("artifact_id") or ""),
+            "result_artifact_id": str(existing.get("artifact_id") or ""),
+            "kind": str(existing.get("kind") or ""),
+            "next_action": "read_existing_chatgpt_pro_consult_result",
+        }
+
+    response_path = store.save_response(session_id, pasted_response)
+    warnings = ["manual_copy_fallback"]
+    artifact_paths = store.save_capture_artifacts(
+        session_id,
+        response_text=pasted_response,
+        capture_method="manual_copy",
+        capture_warnings=warnings,
+        snapshot={
+            "source": "manual_copy_fallback",
+            "manual": True,
+            "conversationUrl": _recoverable_conversation_url(record.get("conversation_url")),
+        },
+        min_turn_index=int(record.get("min_turn_index") or 0) or None,
+    )
+    updated = store.update(
+        session_id,
+        status="captured",
+        response_text=pasted_response,
+        response_path=response_path,
+        transcript_path=artifact_paths["transcript_path"],
+        assistant_snapshot_path=artifact_paths["assistant_snapshot_path"],
+        capture_method="manual_copy",
+        capture_warnings=warnings,
+        manual_copy_fallback=True,
+    )
+    session_record_path = str(store.session_json(session_id))
+    saved = _save_captured_session_result(
+        db_path,
+        papers_dir,
+        operation_id=session_id,
+        record=updated,
+        session_record_path=session_record_path,
+    )
+    operation_result = {
+        "artifact_id": str(saved.get("artifact_id") or ""),
+        "result_artifact_id": str(saved.get("artifact_id") or ""),
+        "result_path": response_path,
+        "pack_id": str(updated.get("pack_id") or ""),
+        "packet_artifact_id": str(updated.get("packet_artifact_id") or ""),
+        "prompt_hash": prompt_hash,
+        "next_action": saved.get("next_action", "verify_any_claims_with_canonical_grados_reads"),
+        "capture_method": "manual_copy",
+    }
+    _ensure_external_operation(
+        db_path,
+        operation_id=session_id,
+        pack_id=str(updated.get("pack_id") or ""),
+        packet_artifact_id=str(updated.get("packet_artifact_id") or ""),
+        prompt_hash=prompt_hash,
+        mode=str(updated.get("mode") or "ask"),
+        status="pending",
+        stage="manual_copy_captured",
+        recovery=_external_recovery_metadata(
+            recover_session_id=session_id,
+            packet_artifact_id=str(updated.get("packet_artifact_id") or ""),
+            prompt_hash=prompt_hash,
+            browser_session_record=session_record_path,
+            conversation_url=_recoverable_conversation_url(updated.get("conversation_url")),
+            last_observed_url=_last_observed_conversation_url(updated),
+        ),
+        result=operation_result,
+    )
+    if saved.get("saved"):
+        complete_operation(
+            db_path,
+            session_id,
+            stage="chatgpt_pro_consult_saved",
+            progress={"response_captured": True, "result_saved": True},
+            result=operation_result,
+        )
+    else:
+        fail_operation(
+            db_path,
+            session_id,
+            stage="manual_chatgpt_pro_response_save_failed",
+            result=operation_result,
+            error={"message": str(saved.get("error") or "manual_chatgpt_pro_response_save_failed")},
+        )
+    return {
+        "ok": bool(saved.get("ok")),
+        "saved": bool(saved.get("saved")),
+        "audited": False,
+        "tool_name": "consult_chatgpt_pro",
+        "kind": "chatgpt_pro_consult",
+        "operation_id": session_id,
+        "status": "completed" if saved.get("saved") else "failed",
+        "stage": "manual_copy_captured",
+        "artifact_id": saved.get("artifact_id", ""),
+        "result_artifact_id": saved.get("artifact_id", ""),
+        "result_path": response_path,
+        "pack_id": str(updated.get("pack_id") or ""),
+        "packet_artifact_id": str(updated.get("packet_artifact_id") or ""),
+        "prompt_hash": prompt_hash,
+        "browser_session_id": session_id,
+        "browser_session_record": session_record_path,
+        "conversation_url": _recoverable_conversation_url(updated.get("conversation_url")),
+        "capture": {"method": "manual_copy", "warnings": warnings},
+        "transcript_path": artifact_paths["transcript_path"],
+        "assistant_snapshot_path": artifact_paths["assistant_snapshot_path"],
+        "result": saved,
+        "advisory_only": True,
+        "next_action": saved.get("next_action", "verify_any_claims_with_canonical_grados_reads"),
+    }
 
 
 def _mark_external_operation_saved(
@@ -809,7 +1083,7 @@ def _mark_external_operation_saved(
     complete_operation(
         db_path,
         operation_id,
-        stage="external_synthesis_saved",
+        stage="external_consult_saved",
         progress={"response_captured": True, "result_saved": True},
         result={
             "artifact_id": str(saved.get("artifact_id") or ""),
@@ -818,12 +1092,347 @@ def _mark_external_operation_saved(
             "pack_id": str(record.get("pack_id") or ""),
             "packet_artifact_id": str(record.get("packet_artifact_id") or ""),
             "prompt_hash": str(record.get("prompt_hash") or ""),
-            "next_action": saved.get("next_action", "audit_external_synthesis_result"),
+            "next_action": saved.get("next_action", "audit_external_consult_result"),
         },
     )
 
 
-async def get_external_synthesis_operation_status(
+def _prompt_sha256(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def _truncate_context_text(text: str, *, max_chars: int = 12_000) -> str:
+    normalized = text.strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 80].rstrip() + "\n\n[...truncated by GRaDOS consult context guard...]"
+
+
+def _artifact_context_section(db_path: Path, artifact_id: str) -> tuple[str, dict[str, Any] | None, str]:
+    artifact = _read_artifact(db_path, artifact_id)
+    if artifact is None:
+        return "", None, f"artifact_not_found:{artifact_id}"
+    content = artifact.get("content")
+    if isinstance(content, str):
+        body = content
+    else:
+        body = json.dumps(content, ensure_ascii=False, indent=2, sort_keys=True)
+    manifest: dict[str, Any] = {
+        "artifact_id": artifact_id,
+        "kind": str(artifact.get("kind") or ""),
+        "title": str(artifact.get("title") or ""),
+        "metadata": artifact.get("metadata") if isinstance(artifact.get("metadata"), dict) else {},
+    }
+    section = f"Artifact context `{artifact_id}` ({manifest['kind']}):\n{_truncate_context_text(body)}"
+    return section, manifest, ""
+
+
+def _path_context_section(path_value: str) -> tuple[str, dict[str, Any] | None, str]:
+    path = Path(path_value).expanduser()
+    try:
+        resolved = path.resolve()
+        if not resolved.is_file():
+            return "", None, f"context_path_not_file:{path_value}"
+        text = resolved.read_text(encoding="utf-8")
+    except OSError as exc:
+        return "", None, f"context_path_unreadable:{path_value}:{exc.__class__.__name__}"
+    manifest = {"path": str(resolved), "sha256": _prompt_sha256(text), "chars": len(text)}
+    return f"File context `{resolved}`:\n{_truncate_context_text(text)}", manifest, ""
+
+
+def _pack_context_section(
+    db_path: Path,
+    papers_dir: Path,
+    pack_id: str,
+) -> tuple[str, dict[str, Any] | None, str]:
+    pack, loaded = _load_pack(db_path, pack_id)
+    if pack is None:
+        return "", None, f"pack_not_found:{pack_id}:{loaded.get('error')}"
+    verify_result = verify_evidence_pack(db_path, papers_dir, pack_id=pack.pack_id)
+    items = _source_items_from_pack(pack)
+    body = {
+        "pack_id": pack.pack_id,
+        "topic": pack.topic,
+        "pack_sha256": pack.pack_sha256,
+        "current_valid": bool(verify_result.get("current_valid")),
+        "items": items,
+    }
+    manifest = {
+        "pack_id": pack.pack_id,
+        "pack_sha256": pack.pack_sha256,
+        "current_valid": bool(verify_result.get("current_valid")),
+        "item_count": len(items),
+    }
+    return (
+        "GRaDOS evidence pack context:\n"
+        + _truncate_context_text(json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True)),
+        manifest,
+        "",
+    )
+
+
+def _packet_context_section(db_path: Path, packet_id: str) -> tuple[str, dict[str, Any] | None, str]:
+    artifact = _read_artifact(db_path, packet_id)
+    if artifact is None or artifact.get("kind") != EXTERNAL_CONSULT_PACKET_KIND:
+        return "", None, f"packet_artifact_not_found:{packet_id}"
+    content = artifact.get("content")
+    if not isinstance(content, dict):
+        return "", None, f"packet_artifact_invalid:{packet_id}"
+    manifest = {
+        "packet_artifact_id": packet_id,
+        "pack_id": str(content.get("pack_id") or ""),
+        "prompt_hash": str(content.get("prompt_hash") or ""),
+        "item_count": int(content.get("item_count") or 0),
+    }
+    return (
+        "GRaDOS evidence packet context:\n"
+        + _truncate_context_text(json.dumps(content, ensure_ascii=False, indent=2, sort_keys=True)),
+        manifest,
+        "",
+    )
+
+
+def _build_consult_context(
+    db_path: Path,
+    papers_dir: Path,
+    *,
+    context_artifact_ids: list[str] | None = None,
+    context_paths: list[str] | None = None,
+    pack_id: str = "",
+    packet_id: str = "",
+) -> tuple[list[str], dict[str, Any]]:
+    sections: list[str] = []
+    warnings: list[str] = []
+    artifacts: list[dict[str, Any]] = []
+    paths: list[dict[str, Any]] = []
+    packs: list[dict[str, Any]] = []
+    packets: list[dict[str, Any]] = []
+
+    for artifact_id in context_artifact_ids or []:
+        section, manifest, warning = _artifact_context_section(db_path, str(artifact_id))
+        if section:
+            sections.append(section)
+        if manifest:
+            artifacts.append(manifest)
+        if warning:
+            warnings.append(warning)
+
+    for context_path in context_paths or []:
+        section, manifest, warning = _path_context_section(str(context_path))
+        if section:
+            sections.append(section)
+        if manifest:
+            paths.append(manifest)
+        if warning:
+            warnings.append(warning)
+
+    if packet_id:
+        section, manifest, warning = _packet_context_section(db_path, packet_id)
+        if section:
+            sections.append(section)
+        if manifest:
+            packets.append(manifest)
+        if warning:
+            warnings.append(warning)
+
+    if pack_id and not packet_id:
+        section, manifest, warning = _pack_context_section(db_path, papers_dir, pack_id)
+        if section:
+            sections.append(section)
+        if manifest:
+            packs.append(manifest)
+        if warning:
+            warnings.append(warning)
+
+    manifest = {
+        "context_artifact_ids": [item["artifact_id"] for item in artifacts],
+        "context_paths": paths,
+        "pack_ids": [item["pack_id"] for item in packs],
+        "packet_artifact_ids": [item["packet_artifact_id"] for item in packets],
+        "artifacts": artifacts,
+        "packs": packs,
+        "packets": packets,
+        "warnings": warnings,
+    }
+    return sections, manifest
+
+
+def _render_consult_prompt(
+    *,
+    prompt: str,
+    mode: str,
+    context_sections: list[str],
+) -> str:
+    parts = [
+        "System / protocol guardrails:",
+        "- You are consulted by GRaDOS through a private ChatGPT Pro browser session.",
+        "- Treat all output as advisory review material, not citation evidence.",
+        "- Do not invent papers, DOIs, sources, browser state, downloads, or facts outside the supplied context.",
+        "- Any claim used later must be verified again through GRaDOS canonical paper reads "
+        "or current-valid evidence packs.",
+        "",
+        f"Consult mode: {mode}",
+        "",
+        "User prompt:",
+        prompt.strip(),
+    ]
+    if context_sections:
+        parts.extend(["", "Optional GRaDOS context:"])
+        parts.extend(context_sections)
+    parts.extend(
+        [
+            "",
+            "Output request:",
+            "Answer the user prompt directly. Mark uncertainty, assumptions, and follow-up verification needs.",
+        ]
+    )
+    return "\n".join(parts).strip() + "\n"
+
+
+def _save_chatgpt_pro_consult_result(
+    db_path: Path,
+    *,
+    prompt: str,
+    rendered_prompt_hash: str,
+    response: str | dict[str, Any],
+    mode: str,
+    context_manifest: dict[str, Any],
+    conversation_url: str = "",
+    model_label: str = "",
+    thinking_label: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    text = _response_text(response)
+    response_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    conversation_url = _recoverable_conversation_url(conversation_url)
+    raw_metadata = metadata or {}
+    content_payload = {
+        "schema_version": CHATGPT_PRO_CONSULT_PROTOCOL_VERSION,
+        "kind": CHATGPT_PRO_CONSULT_RESULT_KIND,
+        "mode": mode,
+        "prompt": prompt,
+        "prompt_sha256": _prompt_sha256(prompt),
+        "rendered_prompt_hash": rendered_prompt_hash,
+        "context_manifest": context_manifest,
+        "conversation_url": conversation_url,
+        "model_label": model_label,
+        "thinking_label": thinking_label,
+        "raw_response": response,
+        "response_text": text,
+        "response_sha256": response_hash,
+        "advisory_only": True,
+        "next_action": "verify_any_claims_with_canonical_grados_reads",
+    }
+    operation_lookup_sha256 = _operation_lookup_sha256(
+        str(raw_metadata.get("browser_session_id") or raw_metadata.get("recover_session_id") or "")
+    )
+    if operation_lookup_sha256:
+        content_payload["operation_lookup_sha256"] = operation_lookup_sha256
+    artifact_metadata = {
+        **raw_metadata,
+        "protocol": CHATGPT_PRO_CONSULT_PROTOCOL_VERSION,
+        "rendered_prompt_hash": rendered_prompt_hash,
+        "prompt_sha256": _prompt_sha256(prompt),
+        "response_sha256": response_hash,
+        "mode": mode,
+        "model_label": model_label,
+        "thinking_label": thinking_label,
+        "conversation_url": conversation_url,
+    }
+    if operation_lookup_sha256:
+        artifact_metadata["operation_lookup_sha256"] = operation_lookup_sha256
+    receipt = save_research_artifact(
+        db_path,
+        kind=CHATGPT_PRO_CONSULT_RESULT_KIND,
+        title="ChatGPT Pro consult result",
+        content=content_payload,
+        metadata=artifact_metadata,
+    )
+    return {
+        "ok": True,
+        "saved": True,
+        "audited": False,
+        "artifact_id": receipt["artifact_id"],
+        "kind": CHATGPT_PRO_CONSULT_RESULT_KIND,
+        "response_sha256": response_hash,
+        "advisory_only": True,
+        "metadata": receipt["metadata"],
+        "next_action": "verify_any_claims_with_canonical_grados_reads",
+    }
+
+
+def _recoverable_browser_result(result: Any) -> bool:
+    return bool(
+        getattr(result, "status", "") == "incomplete_capture"
+        or getattr(result, "error_code", "") in {"assistant_timeout", "capture_failed", "chatgpt_login_required"}
+    )
+
+
+async def _auto_reattach_chatgpt_session(
+    paths: GRaDOSPaths,
+    browser_config: HeadlessBrowserConfig,
+    *,
+    deadline: float,
+    wait_settings: _ChatGPTProConsultWaitSettings,
+    max_reattach_attempts: int,
+    session_id: str,
+    pack_id: str,
+    packet_artifact_id: str,
+    prompt_hash: str,
+    mode: str,
+    metadata: dict[str, Any],
+    model_strategy: str,
+    thinking_strategy: str,
+) -> tuple[Any, list[dict[str, Any]]]:
+    from grados.browser.chatgpt.runtime import run_chatgpt_browser_session
+
+    attempts: list[dict[str, Any]] = []
+    last_result: Any = None
+    for attempt_index in range(1, max_reattach_attempts + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        wait_seconds = min(wait_settings.per_attempt_wait_seconds, remaining)
+        browser_result = await run_chatgpt_browser_session(
+            paths,
+            browser_config,
+            prompt="",
+            pack_id=pack_id,
+            packet_artifact_id=packet_artifact_id,
+            prompt_hash=prompt_hash,
+            mode=mode,
+            metadata={
+                **metadata,
+                "auto_reattach_attempt": attempt_index,
+                "auto_reattach_max_attempts": max_reattach_attempts,
+                "response_wait_total_seconds": wait_settings.response_wait_total_seconds,
+                "per_attempt_wait_seconds": wait_settings.per_attempt_wait_seconds,
+                "max_browser_wait_attempts": wait_settings.max_browser_wait_attempts,
+            },
+            recover_session_id=session_id,
+            assistant_timeout_seconds=wait_seconds,
+            model_strategy=model_strategy,
+            thinking_strategy=thinking_strategy,
+        )
+        attempts.append(
+            {
+                "attempt": attempt_index,
+                "ok": bool(browser_result.ok),
+                "status": browser_result.status,
+                "error": browser_result.error_code or browser_result.error,
+                "conversation_url": browser_result.conversation_url,
+                "wait_seconds": wait_seconds,
+            }
+        )
+        last_result = browser_result
+        if browser_result.ok or not _recoverable_browser_result(browser_result):
+            return browser_result, attempts
+        if attempt_index < max_reattach_attempts:
+            await asyncio.sleep(DEFAULT_CHATGPT_PRO_CONSULT_REATTACH_SETTLE_SECONDS)
+    return last_result, attempts
+
+
+async def get_external_consult_operation_status(
     db_path: Path,
     papers_dir: Path,
     paths: GRaDOSPaths,
@@ -831,16 +1440,16 @@ async def get_external_synthesis_operation_status(
     operation_id: str,
     detail: bool = False,
     browser_config: HeadlessBrowserConfig | None = None,
+    external_consult_config: ExternalConsultConfig | None = None,
 ) -> dict[str, Any]:
-    """Inspect or recover one durable ChatGPT external-synthesis operation."""
-    from grados.browser.chatgpt.runtime import run_chatgpt_browser_session
+    """Inspect or recover one durable ChatGPT external-consult operation."""
     from grados.browser.chatgpt.session_store import ChatGPTSessionStore, is_valid_chatgpt_session_id
 
     if not is_valid_chatgpt_session_id(operation_id):
         return {
             "found": False,
             "operation_id": operation_id,
-            "kind": "external_synthesis",
+            "kind": "external_consult",
             "status": "not_found",
             "error": "invalid_browser_session_id",
         }
@@ -850,7 +1459,7 @@ async def get_external_synthesis_operation_status(
         return {
             "found": False,
             "operation_id": operation_id,
-            "kind": "external_synthesis",
+            "kind": "external_consult",
             "status": "not_found",
             "error": "browser_session_not_found",
         }
@@ -896,25 +1505,34 @@ async def get_external_synthesis_operation_status(
         return _external_operation_status_payload(
             operation_id=operation_id,
             record=record,
-            error=str(saved.get("error") or "external_synthesis_save_failed"),
+            error=str(saved.get("error") or "external_consult_save_failed"),
         )
 
     conversation_url = _recoverable_conversation_url(record.get("conversation_url"))
     if detail and conversation_url:
-        browser_result = await run_chatgpt_browser_session(
+        wait_settings = _resolve_chatgpt_pro_consult_wait_settings(external_consult_config)
+        record_metadata_value = record.get("metadata")
+        record_metadata: dict[str, Any] = (
+            record_metadata_value if isinstance(record_metadata_value, dict) else {}
+        )
+        browser_result, reattach_attempts = await _auto_reattach_chatgpt_session(
             paths,
             browser_config or HeadlessBrowserConfig(),
-            prompt="",
+            deadline=time.monotonic() + wait_settings.response_wait_total_seconds,
+            wait_settings=wait_settings,
+            max_reattach_attempts=wait_settings.max_browser_wait_attempts,
+            session_id=operation_id,
             pack_id=str(record.get("pack_id") or ""),
             packet_artifact_id=str(record.get("packet_artifact_id") or ""),
             prompt_hash=prompt_hash,
             mode=str(record.get("mode") or "review"),
-            metadata=dict(record.get("metadata") or {}),
-            recover_session_id=operation_id,
-            assistant_timeout_seconds=DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS,
+            metadata={**record_metadata, "recovery_source": "get_operation_status_detail_true"},
+            model_strategy=_normalize_model_strategy(str(record_metadata.get("model_strategy") or "select")),
+            thinking_strategy=_normalize_thinking_strategy(str(record_metadata.get("thinking_strategy") or "highest")),
         )
         refreshed = store.read(operation_id) or record
         refreshed["session_record"] = session_record_path
+        refreshed["auto_reattach_attempts"] = reattach_attempts
         if browser_result.ok:
             saved = _save_captured_session_result(
                 db_path,
@@ -940,7 +1558,7 @@ async def get_external_synthesis_operation_status(
             return _external_operation_status_payload(
                 operation_id=operation_id,
                 record=refreshed,
-                error=str(saved.get("error") or "external_synthesis_save_failed"),
+                error=str(saved.get("error") or "external_consult_save_failed"),
             )
         return _external_operation_status_payload(
             operation_id=operation_id,
@@ -970,7 +1588,7 @@ async def get_external_synthesis_operation_status(
                 "error": "conversation_url_missing_or_not_recoverable",
                 "message": "Saved ChatGPT browser session has no recoverable ChatGPT conversation URL.",
             },
-            event_type="external_synthesis_recovery_unavailable",
+            event_type="external_consult_recovery_unavailable",
             event_payload=recovery_metadata,
         )
         return _external_operation_status_payload(
@@ -982,7 +1600,371 @@ async def get_external_synthesis_operation_status(
     return _external_operation_status_payload(operation_id=operation_id, record=record)
 
 
-async def run_external_synthesis(
+async def consult_chatgpt_pro(
+    db_path: Path,
+    papers_dir: Path,
+    paths: GRaDOSPaths,
+    *,
+    prompt: str,
+    context_artifact_ids: list[str] | None = None,
+    context_paths: list[str] | None = None,
+    pack_id: str = "",
+    packet_id: str = "",
+    mode: str = "ask",
+    model_strategy: str = "select",
+    thinking_strategy: str = "highest",
+    wait_policy: str = "auto",
+    manual_response: str = "",
+    metadata: dict[str, Any] | None = None,
+    recover_session_id: str = "",
+    browser_config: HeadlessBrowserConfig | None = None,
+    external_consult_config: ExternalConsultConfig | None = None,
+) -> dict[str, Any]:
+    """Consult ChatGPT Pro through the GRaDOS-managed private browser profile."""
+    from grados.browser.chatgpt.runtime import run_chatgpt_browser_session
+    from grados.storage.operations import complete_operation, fail_operation
+
+    resolved_mode = _normalize_consult_mode(mode)
+    resolved_model_strategy = _normalize_model_strategy(model_strategy)
+    resolved_thinking_strategy = _normalize_thinking_strategy(thinking_strategy)
+    resolved_wait_policy = _normalize_wait_policy(wait_policy)
+    wait_settings = _resolve_chatgpt_pro_consult_wait_settings(external_consult_config)
+    source_pack_id = pack_id.strip()
+    packet_artifact_id = packet_id.strip()
+    auto_reattach_attempts: list[dict[str, Any]] = []
+
+    if not recover_session_id and not prompt.strip():
+        return {
+            "ok": False,
+            "saved": False,
+            "sendable": False,
+            "error": "consult_prompt_required",
+            "message": "`prompt` is required for consult_chatgpt_pro.",
+        }
+
+    if manual_response.strip():
+        if not recover_session_id:
+            return {
+                "ok": False,
+                "saved": False,
+                "sendable": False,
+                "error": "manual_response_requires_recover_session_id",
+                "message": "`manual_response` must be paired with a ChatGPT `recover_session_id`.",
+            }
+        return _save_manual_chatgpt_pro_response(
+            db_path,
+            papers_dir,
+            paths,
+            session_id=recover_session_id,
+            response_text=manual_response,
+        )
+
+    context_sections: list[str] = []
+    context_manifest: dict[str, Any] = {}
+    rendered_prompt = ""
+    rendered_prompt_hash = ""
+    metadata_payload = dict(metadata or {})
+    browser_result: Any = None
+    if recover_session_id:
+        rendered_prompt_hash = str(metadata_payload.get("rendered_prompt_hash") or "")
+        context_manifest = dict(metadata_payload.get("context_manifest") or {})
+        browser_result, auto_reattach_attempts = await _auto_reattach_chatgpt_session(
+            paths,
+            browser_config or HeadlessBrowserConfig(),
+            deadline=time.monotonic() + wait_settings.response_wait_total_seconds,
+            wait_settings=wait_settings,
+            max_reattach_attempts=wait_settings.max_browser_wait_attempts,
+            session_id=recover_session_id,
+            pack_id=source_pack_id,
+            packet_artifact_id=packet_artifact_id,
+            prompt_hash=rendered_prompt_hash,
+            mode=resolved_mode,
+            metadata={
+                **metadata_payload,
+                "tool_name": "consult_chatgpt_pro",
+                "recovery_source": "consult_chatgpt_pro",
+            },
+            model_strategy=resolved_model_strategy,
+            thinking_strategy=resolved_thinking_strategy,
+        )
+    else:
+        context_sections, context_manifest = _build_consult_context(
+            db_path,
+            papers_dir,
+            context_artifact_ids=context_artifact_ids,
+            context_paths=context_paths,
+            pack_id=source_pack_id,
+            packet_id=packet_artifact_id,
+        )
+        if not source_pack_id and context_manifest.get("packets"):
+            first_packet = context_manifest["packets"][0]
+            if isinstance(first_packet, dict):
+                source_pack_id = str(first_packet.get("pack_id") or "")
+        rendered_prompt = _render_consult_prompt(
+            prompt=prompt,
+            mode=resolved_mode,
+            context_sections=context_sections,
+        )
+        rendered_prompt_hash = _prompt_sha256(rendered_prompt)
+        metadata_payload = {
+            **metadata_payload,
+            "tool_name": "consult_chatgpt_pro",
+            "consult_mode": resolved_mode,
+            "prompt_sha256": _prompt_sha256(prompt),
+            "rendered_prompt_hash": rendered_prompt_hash,
+            "context_manifest": context_manifest,
+            "model_strategy": resolved_model_strategy,
+            "thinking_strategy": resolved_thinking_strategy,
+            "wait_policy": resolved_wait_policy,
+            "response_wait_total_seconds": wait_settings.response_wait_total_seconds,
+            "per_attempt_wait_seconds": wait_settings.per_attempt_wait_seconds,
+            "max_browser_wait_attempts": wait_settings.max_browser_wait_attempts,
+            "max_reattach_attempts": wait_settings.max_reattach_after_initial,
+        }
+        response_wait_deadline = time.monotonic() + wait_settings.response_wait_total_seconds
+        browser_result = await run_chatgpt_browser_session(
+            paths,
+            browser_config or HeadlessBrowserConfig(),
+            prompt=rendered_prompt,
+            pack_id=source_pack_id,
+            packet_artifact_id=packet_artifact_id,
+            prompt_hash=rendered_prompt_hash,
+            mode=resolved_mode,
+            metadata=metadata_payload,
+            assistant_timeout_seconds=wait_settings.initial_wait_seconds,
+            model_strategy=resolved_model_strategy,
+            thinking_strategy=resolved_thinking_strategy,
+        )
+        if (
+            resolved_wait_policy == "auto"
+            and not browser_result.ok
+            and _recoverable_browser_result(browser_result)
+            and wait_settings.max_reattach_after_initial > 0
+        ):
+            reattached_result, auto_reattach_attempts = await _auto_reattach_chatgpt_session(
+                paths,
+                browser_config or HeadlessBrowserConfig(),
+                deadline=response_wait_deadline,
+                wait_settings=wait_settings,
+                max_reattach_attempts=wait_settings.max_reattach_after_initial,
+                session_id=browser_result.session_id,
+                pack_id=source_pack_id,
+                packet_artifact_id=packet_artifact_id,
+                prompt_hash=rendered_prompt_hash,
+                mode=resolved_mode,
+                metadata=metadata_payload,
+                model_strategy=resolved_model_strategy,
+                thinking_strategy=resolved_thinking_strategy,
+            )
+            if reattached_result is not None:
+                browser_result = reattached_result
+
+    if browser_result is None:
+        return {
+            "ok": False,
+            "saved": False,
+            "sendable": False,
+            "error": "chatgpt_consult_recovery_unavailable",
+        }
+
+    browser_payload = browser_result.to_dict()
+    source_pack_id = str(browser_result.metadata.get("pack_id") or source_pack_id)
+    packet_artifact_id = str(browser_result.metadata.get("packet_artifact_id") or packet_artifact_id)
+    rendered_prompt_hash = str(browser_result.metadata.get("prompt_hash") or rendered_prompt_hash)
+    last_observed_url = str(browser_payload.get("metadata", {}).get("last_observed_url") or "")
+    recovery_metadata = _external_recovery_metadata(
+        recover_session_id=browser_result.session_id,
+        packet_artifact_id=packet_artifact_id,
+        prompt_hash=rendered_prompt_hash,
+        browser_session_record=browser_result.session_record_path,
+        conversation_url=browser_result.conversation_url,
+        last_observed_url=last_observed_url,
+        next_action="get_operation_status_detail_true",
+    )
+
+    if not browser_result.ok:
+        recoverable = _recoverable_browser_result(browser_result)
+        operation_status = "pending" if recoverable else "failed"
+        _ensure_external_operation(
+            db_path,
+            operation_id=browser_result.session_id,
+            pack_id=source_pack_id,
+            packet_artifact_id=packet_artifact_id,
+            prompt_hash=rendered_prompt_hash,
+            mode=resolved_mode,
+            status=operation_status,
+            stage=browser_result.status,
+            recovery=recovery_metadata,
+            result={"result_path": "", "result_artifact_id": "", "next_action": "get_operation_status_detail_true"},
+            error={"error": browser_result.error_code or "chatgpt_browser_failed", "message": browser_result.error},
+        )
+        return {
+            "ok": False,
+            "sendable": True,
+            "saved": False,
+            "audited": False,
+            "tool_name": "consult_chatgpt_pro",
+            "kind": "chatgpt_pro_consult",
+            "operation_id": browser_result.session_id,
+            "status": operation_status,
+            "stage": browser_result.status,
+            "recoverable": recoverable,
+            "browser_session_id": browser_result.session_id,
+            "browser_session_record": browser_result.session_record_path,
+            "conversation_url": browser_result.conversation_url,
+            "last_observed_url": last_observed_url,
+            "packet_artifact_id": packet_artifact_id,
+            "pack_id": source_pack_id,
+            "prompt_hash": rendered_prompt_hash,
+            "context_manifest": context_manifest,
+            "auto_reattach_attempts": auto_reattach_attempts,
+            "error": browser_result.error_code or "chatgpt_browser_failed",
+            "message": browser_result.error,
+            "next_action": (
+                "call get_operation_status with detail=true after ChatGPT finishes"
+                if recoverable
+                else "inspect browser error and retry when fixed"
+            ),
+            "recovery_metadata": recovery_metadata,
+            "manual_copy_fallback": {
+                "available": bool(browser_result.conversation_url or last_observed_url),
+                "recover_session_id": browser_result.session_id,
+                "browser_session_record": browser_result.session_record_path,
+                "conversation_url": browser_result.conversation_url,
+                "last_observed_url": last_observed_url,
+                "save_entry": "consult_chatgpt_pro",
+                "response_field": "manual_response",
+                "next_action": (
+                    "copy the final assistant response manually, then call consult_chatgpt_pro "
+                    "with recover_session_id and manual_response"
+                ),
+            },
+            "browser": browser_payload,
+        }
+
+    save_metadata = {
+        **metadata_payload,
+        "runtime": "grados_chatgpt_browser",
+        "tool_name": "consult_chatgpt_pro",
+        "browser_mode_version": browser_payload.get("browser_mode_version"),
+        "browser_session_id": browser_result.session_id,
+        "browser_session_record": browser_result.session_record_path,
+        "conversation_url": browser_result.conversation_url,
+        "model_strategy": resolved_model_strategy,
+        "model_selection": browser_payload.get("model"),
+        "thinking_strategy": resolved_thinking_strategy,
+        "thinking_selection": browser_payload.get("thinking"),
+        "capture": browser_payload.get("capture"),
+        "auto_reattach_attempts": auto_reattach_attempts,
+    }
+    if source_pack_id:
+        structured_response = _structured_response_from_text(browser_result.response_text)
+        structured_claims = None
+        structured_gaps = None
+        if isinstance(structured_response, dict):
+            raw_claims = structured_response.get("claims")
+            if isinstance(raw_claims, list):
+                structured_claims = [dict(item) for item in raw_claims if isinstance(item, dict)]
+            structured_gaps = _coerce_string_list(
+                structured_response.get("missing_evidence") or structured_response.get("gaps")
+            )
+        saved = save_external_consult_result(
+            db_path,
+            papers_dir,
+            pack_id=source_pack_id,
+            response=browser_result.response_text,
+            packet_artifact_id=packet_artifact_id,
+            prompt_hash=rendered_prompt_hash,
+            conversation_url=browser_result.conversation_url,
+            model_label=browser_result.model_label,
+            thinking_label=browser_result.thinking_label,
+            mode=_external_result_mode(resolved_mode),
+            claims=structured_claims,
+            gaps=structured_gaps,
+            metadata=save_metadata,
+            audit=False,
+        )
+    else:
+        saved = _save_chatgpt_pro_consult_result(
+            db_path,
+            prompt=prompt,
+            rendered_prompt_hash=rendered_prompt_hash,
+            response=browser_result.response_text,
+            mode=resolved_mode,
+            context_manifest=context_manifest,
+            conversation_url=browser_result.conversation_url,
+            model_label=browser_result.model_label,
+            thinking_label=browser_result.thinking_label,
+            metadata=save_metadata,
+        )
+
+    operation_result = {
+        "artifact_id": str(saved.get("artifact_id") or ""),
+        "result_artifact_id": str(saved.get("artifact_id") or ""),
+        "result_path": str(browser_payload.get("metadata", {}).get("response_path", "")),
+        "pack_id": source_pack_id,
+        "packet_artifact_id": packet_artifact_id,
+        "prompt_hash": rendered_prompt_hash,
+        "next_action": saved.get("next_action", "verify_any_claims_with_canonical_grados_reads"),
+    }
+    _ensure_external_operation(
+        db_path,
+        operation_id=browser_result.session_id,
+        pack_id=source_pack_id,
+        packet_artifact_id=packet_artifact_id,
+        prompt_hash=rendered_prompt_hash,
+        mode=resolved_mode,
+        status="pending",
+        stage="captured",
+        recovery=recovery_metadata,
+        result=operation_result,
+    )
+    if saved.get("saved"):
+        complete_operation(
+            db_path,
+            browser_result.session_id,
+            stage="chatgpt_pro_consult_saved",
+            progress={"response_captured": True, "result_saved": True},
+            result=operation_result,
+        )
+    else:
+        fail_operation(
+            db_path,
+            browser_result.session_id,
+            stage="chatgpt_pro_consult_save_failed",
+            result=operation_result,
+            error={"message": str(saved.get("error") or "chatgpt_pro_consult_save_failed")},
+        )
+    return {
+        "ok": bool(saved.get("ok")),
+        "sendable": True,
+        "saved": bool(saved.get("saved")),
+        "audited": False,
+        "tool_name": "consult_chatgpt_pro",
+        "kind": "chatgpt_pro_consult",
+        "operation_id": browser_result.session_id,
+        "status": "completed" if saved.get("saved") else "failed",
+        "stage": "captured",
+        "artifact_id": saved.get("artifact_id", ""),
+        "result_artifact_id": saved.get("artifact_id", ""),
+        "result_path": str(browser_payload.get("metadata", {}).get("response_path", "")),
+        "pack_id": source_pack_id,
+        "packet_artifact_id": packet_artifact_id,
+        "prompt_hash": rendered_prompt_hash,
+        "context_manifest": context_manifest,
+        "browser_session_id": browser_result.session_id,
+        "conversation_url": browser_result.conversation_url,
+        "model_label": browser_result.model_label,
+        "thinking_label": browser_result.thinking_label,
+        "auto_reattach_attempts": auto_reattach_attempts,
+        "browser": browser_payload,
+        "result": saved,
+        "advisory_only": True,
+        "next_action": saved.get("next_action", "verify_any_claims_with_canonical_grados_reads"),
+    }
+
+
+async def run_external_consult(
     chroma_dir: Path,
     db_path: Path,
     papers_dir: Path,
@@ -999,279 +1981,93 @@ async def run_external_synthesis(
     metadata: dict[str, Any] | None = None,
     recover_session_id: str = "",
     browser_config: HeadlessBrowserConfig | None = None,
+    external_consult_config: ExternalConsultConfig | None = None,
 ) -> dict[str, Any]:
-    """Run the default GRaDOS-native ChatGPT Pro browser synthesis route."""
-    from grados.browser.chatgpt.runtime import run_chatgpt_browser_session
-
+    """Prepare topic/pack packet context, then consult ChatGPT Pro."""
     resolved_mode = _normalize_mode(mode)
-    packet: dict[str, Any] = {}
-    host_prompt = ""
     source_pack_id = pack_id.strip()
-    packet_artifact_id = ""
-    prompt_hash = ""
-
     if recover_session_id:
-        browser_result = await run_chatgpt_browser_session(
+        result = await consult_chatgpt_pro(
+            db_path,
+            papers_dir,
             paths,
-            browser_config or HeadlessBrowserConfig(),
             prompt="",
             pack_id=source_pack_id,
-            packet_artifact_id="",
-            prompt_hash="",
             mode=resolved_mode,
-            metadata=metadata,
+            metadata={**(metadata or {}), "route": "run_external_consult"},
             recover_session_id=recover_session_id,
-            assistant_timeout_seconds=DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS,
-        )
-    else:
-        if bool(topic.strip()) == bool(source_pack_id):
-            return {
-                "ok": False,
-                "sendable": False,
-                "saved": False,
-                "error": "invalid_external_synthesis_input",
-                "message": "Provide exactly one of topic or pack_id.",
-            }
-        if topic.strip():
-            packet = prepare_external_synthesis_from_topic(
-                chroma_dir,
-                db_path,
-                papers_dir,
-                topic=topic,
-                subquestions=subquestions,
-                scoped_dois=scoped_dois,
-                evidence_max_windows=evidence_max_windows,
-                mode=resolved_mode,
-                max_items=max_items,
-                max_excerpt_chars=max_excerpt_chars,
-                metadata=metadata,
-            )
-        else:
-            packet = prepare_external_synthesis_packet(
-                db_path,
-                papers_dir,
-                pack_id=source_pack_id,
-                mode=resolved_mode,
-                max_items=max_items,
-                max_excerpt_chars=max_excerpt_chars,
-                metadata=metadata,
-            )
-        if not packet.get("sendable"):
-            return packet
-        source_pack_id = str(packet.get("pack_id") or source_pack_id)
-        packet_artifact_id = str(packet.get("artifact_id") or "")
-        prompt_hash = str(packet.get("prompt_hash") or "")
-        host_prompt = str(packet.get("host_prompt") or "")
-        browser_result = await run_chatgpt_browser_session(
-            paths,
-            browser_config or HeadlessBrowserConfig(),
-            prompt=host_prompt,
-            pack_id=source_pack_id,
-            packet_artifact_id=packet_artifact_id,
-            prompt_hash=prompt_hash,
-            mode=resolved_mode,
-            metadata={
-                **(metadata or {}),
-                "packet_artifact_id": packet_artifact_id,
-                "prompt_hash": prompt_hash,
-                "foreground_wait_seconds": DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS,
-            },
-            assistant_timeout_seconds=DEFAULT_EXTERNAL_SYNTHESIS_FOREGROUND_WAIT_SECONDS,
-        )
-
-    browser_payload = browser_result.to_dict()
-    if not browser_result.ok:
-        recoverable = browser_result.status == "incomplete_capture" or browser_result.error_code in {
-            "assistant_timeout",
-            "capture_failed",
-        }
-        operation_status = "pending" if recoverable else "failed"
-        packet_sendable = bool(packet.get("sendable")) if packet else bool(recover_session_id)
-        last_observed_url = str(browser_payload.get("metadata", {}).get("last_observed_url") or "")
-        recovery_metadata = _external_recovery_metadata(
-            recover_session_id=browser_result.session_id,
-            packet_artifact_id=packet_artifact_id,
-            prompt_hash=prompt_hash,
-            browser_session_record=browser_result.session_record_path,
-            conversation_url=browser_result.conversation_url,
-            last_observed_url=last_observed_url,
-            next_action="get_operation_status_detail_true" if recoverable else "",
-        )
-        _ensure_external_operation(
-            db_path,
-            operation_id=browser_result.session_id,
-            pack_id=source_pack_id,
-            packet_artifact_id=packet_artifact_id,
-            prompt_hash=prompt_hash,
-            mode=resolved_mode,
-            status=operation_status,
-            stage=browser_result.status,
-            recovery=recovery_metadata,
-            result={"result_path": "", "result_artifact_id": "", "next_action": ""},
-            error={"error": browser_result.error_code or "chatgpt_browser_failed", "message": browser_result.error},
+            browser_config=browser_config,
+            external_consult_config=external_consult_config,
         )
         return {
-            "ok": False,
-            "sendable": packet_sendable,
-            "packet_sendable": packet_sendable,
-            "saved": False,
-            "operation_id": browser_result.session_id,
-            "kind": "external_synthesis",
-            "status": operation_status,
-            "stage": browser_result.status,
-            "progress": {
-                "stage": browser_result.status,
-                "response_captured": False,
-                "result_saved": False,
-            },
-            "error": browser_result.error_code or "chatgpt_browser_failed",
-            "message": browser_result.error,
-            "recoverable": recoverable,
-            "browser_session_id": browser_result.session_id,
-            "browser_session_record": browser_result.session_record_path,
-            "conversation_url": browser_result.conversation_url,
-            "last_observed_url": last_observed_url,
-            "packet_artifact_id": packet_artifact_id,
-            "prompt_hash": prompt_hash,
-            "result_artifact_id": "",
-            "result_path": "",
-            "next_action": (
-                "call get_operation_status with detail=true after ChatGPT finishes"
-                if recoverable
-                else "inspect browser error and retry when fixed"
-            ),
-            "recovery_metadata": recovery_metadata,
-            "browser": browser_payload,
-            "packet": packet,
+            **result,
+            "route": "run_external_consult",
+            "browser_route": "consult_chatgpt_pro",
         }
 
-    source_pack_id = str(browser_result.metadata.get("pack_id") or source_pack_id)
-    packet_artifact_id = str(browser_result.metadata.get("packet_artifact_id") or packet_artifact_id)
-    prompt_hash = str(browser_result.metadata.get("prompt_hash") or prompt_hash)
-    if not source_pack_id:
+    if bool(topic.strip()) == bool(source_pack_id):
         return {
             "ok": False,
             "sendable": False,
             "saved": False,
-            "error": "browser_session_pack_missing",
-            "message": "Captured ChatGPT browser session has no linked evidence pack id.",
-            "browser": browser_payload,
+            "error": "invalid_external_consult_input",
+            "message": "Provide exactly one of topic or pack_id.",
         }
-
-    save_metadata = {
-        **(metadata or {}),
-        "runtime": "grados_chatgpt_browser",
-        "browser_mode_version": browser_payload.get("browser_mode_version"),
-        "browser_session_id": browser_result.session_id,
-        "browser_session_record": browser_result.session_record_path,
-        "model_selection": browser_payload.get("model"),
-        "thinking_selection": browser_payload.get("thinking"),
-        "capture": browser_payload.get("capture"),
-    }
-    structured_response = _structured_response_from_text(browser_result.response_text)
-    structured_claims = None
-    structured_gaps = None
-    if isinstance(structured_response, dict):
-        raw_claims = structured_response.get("claims")
-        if isinstance(raw_claims, list):
-            structured_claims = [dict(item) for item in raw_claims if isinstance(item, dict)]
-        structured_gaps = _coerce_string_list(
-            structured_response.get("missing_evidence") or structured_response.get("gaps")
-        )
-    saved = save_external_synthesis_result(
-        db_path,
-        papers_dir,
-        pack_id=source_pack_id,
-        response=browser_result.response_text,
-        packet_artifact_id=packet_artifact_id,
-        prompt_hash=prompt_hash,
-        conversation_url=browser_result.conversation_url,
-        model_label=browser_result.model_label,
-        thinking_label=browser_result.thinking_label,
-        mode=resolved_mode,
-        claims=structured_claims,
-        gaps=structured_gaps,
-        metadata=save_metadata,
-        audit=True,
-    )
-    from grados.storage.operations import complete_operation, fail_operation
-
-    operation_result = {
-        "artifact_id": str(saved.get("artifact_id") or ""),
-        "result_artifact_id": str(saved.get("artifact_id") or ""),
-        "result_path": str(browser_payload.get("metadata", {}).get("response_path", "")),
-        "pack_id": source_pack_id,
-        "packet_artifact_id": packet_artifact_id,
-        "prompt_hash": prompt_hash,
-        "next_action": saved.get("next_action", "audit_external_synthesis_result"),
-    }
-    operation_recovery = _external_recovery_metadata(
-        recover_session_id=browser_result.session_id,
-        packet_artifact_id=packet_artifact_id,
-        prompt_hash=prompt_hash,
-        browser_session_record=browser_result.session_record_path,
-        conversation_url=browser_result.conversation_url,
-        last_observed_url=str(browser_payload.get("metadata", {}).get("last_observed_url") or ""),
-    )
-    _ensure_external_operation(
-        db_path,
-        operation_id=browser_result.session_id,
-        pack_id=source_pack_id,
-        packet_artifact_id=packet_artifact_id,
-        prompt_hash=prompt_hash,
-        mode=resolved_mode,
-        status="pending",
-        stage="captured",
-        recovery=operation_recovery,
-        result=operation_result,
-    )
-    if saved.get("saved"):
-        complete_operation(
+    if topic.strip():
+        packet = prepare_external_consult_from_topic(
+            chroma_dir,
             db_path,
-            browser_result.session_id,
-            stage="external_synthesis_saved",
-            progress={"response_captured": True, "result_saved": True},
-            result=operation_result,
+            papers_dir,
+            topic=topic,
+            subquestions=subquestions,
+            scoped_dois=scoped_dois,
+            evidence_max_windows=evidence_max_windows,
+            mode=resolved_mode,
+            max_items=max_items,
+            max_excerpt_chars=max_excerpt_chars,
+            metadata=metadata,
         )
     else:
-        fail_operation(
+        packet = prepare_external_consult_packet(
             db_path,
-            browser_result.session_id,
-            stage="external_synthesis_save_failed",
-            result=operation_result,
-            error={"message": str(saved.get("error") or "external_synthesis_save_failed")},
+            papers_dir,
+            pack_id=source_pack_id,
+            mode=resolved_mode,
+            max_items=max_items,
+            max_excerpt_chars=max_excerpt_chars,
+            metadata=metadata,
         )
-    return {
-        "ok": bool(saved.get("ok")),
-        "sendable": True,
-        "packet_sendable": True,
-        "saved": bool(saved.get("saved")),
-        "audited": bool(saved.get("audited")),
-        "operation_id": browser_result.session_id,
-        "kind": "external_synthesis",
-        "status": "completed" if saved.get("saved") else "failed",
-        "stage": "captured",
-        "progress": {
-            "stage": "captured",
-            "response_captured": True,
-            "result_saved": bool(saved.get("saved")),
+    if not packet.get("sendable"):
+        return packet
+    packet_artifact_id = str(packet.get("artifact_id") or "")
+    result = await consult_chatgpt_pro(
+        db_path,
+        papers_dir,
+        paths,
+        prompt=(
+            "Review this GRaDOS evidence packet as advisory material. "
+            "Focus on gaps, distortions, unsupported claims, and canonical reread needs."
+            if resolved_mode == "review"
+            else "Synthesize this GRaDOS evidence packet as advisory material and mark verification needs."
+        ),
+        pack_id=str(packet.get("pack_id") or source_pack_id),
+        packet_id=packet_artifact_id,
+        mode=resolved_mode,
+        metadata={
+            **(metadata or {}),
+            "route": "run_external_consult",
+            "packet_artifact_id": packet_artifact_id,
+            "packet_prompt_hash": str(packet.get("prompt_hash") or ""),
         },
-        "artifact_id": saved.get("artifact_id", ""),
-        "result_artifact_id": saved.get("artifact_id", ""),
-        "result_path": str(browser_payload.get("metadata", {}).get("response_path", "")),
-        "pack_id": source_pack_id,
-        "packet_artifact_id": packet_artifact_id,
-        "prompt_hash": prompt_hash,
-        "browser_session_id": browser_result.session_id,
-        "conversation_url": browser_result.conversation_url,
-        "model_label": browser_result.model_label,
-        "thinking_label": browser_result.thinking_label,
-        "browser": browser_payload,
+        browser_config=browser_config,
+        external_consult_config=external_consult_config,
+    )
+    return {
+        **result,
+        "packet_sendable": bool(packet.get("sendable")),
         "packet": packet,
-        "result": saved,
-        "audit": saved.get("audit"),
-        "ready_for_canonical_reread": bool(saved.get("ready_for_canonical_reread")),
-        "next_action": saved.get("next_action", "audit_external_synthesis_result"),
+        "route": "run_external_consult",
+        "browser_route": "consult_chatgpt_pro",
     }
 
 
@@ -1315,7 +2111,7 @@ def _coerce_string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
-def save_external_synthesis_result(
+def save_external_consult_result(
     db_path: Path,
     papers_dir: Path,
     *,
@@ -1345,7 +2141,7 @@ def save_external_synthesis_result(
     packet_content: dict[str, Any] | None = None
     if packet_artifact_id:
         packet_artifact = _read_artifact(db_path, packet_artifact_id)
-        if packet_artifact is None or packet_artifact.get("kind") != EXTERNAL_SYNTHESIS_PACKET_KIND:
+        if packet_artifact is None or packet_artifact.get("kind") != EXTERNAL_CONSULT_PACKET_KIND:
             return {
                 "ok": False,
                 "saved": False,
@@ -1381,8 +2177,8 @@ def save_external_synthesis_result(
             response.get("gaps") or response.get("missing_evidence")
         )
     content_payload: dict[str, Any] = {
-        "schema_version": EXTERNAL_SYNTHESIS_PROTOCOL_VERSION,
-        "kind": EXTERNAL_SYNTHESIS_RESULT_KIND,
+        "schema_version": EXTERNAL_CONSULT_PROTOCOL_VERSION,
+        "kind": EXTERNAL_CONSULT_RESULT_KIND,
         "mode": resolved_mode,
         "pack_id": pack.pack_id,
         "pack_sha256": pack.pack_sha256,
@@ -1398,7 +2194,7 @@ def save_external_synthesis_result(
         "gaps": structured_gaps or [],
         "verify_at_save": verify_result,
         "advisory_only": True,
-        "next_action": "audit_external_synthesis_result",
+        "next_action": "audit_external_consult_result",
     }
     if operation_lookup_sha256:
         content_payload["operation_lookup_sha256"] = operation_lookup_sha256
@@ -1410,7 +2206,7 @@ def save_external_synthesis_result(
         }
     artifact_metadata = {
         **raw_metadata,
-        "protocol": EXTERNAL_SYNTHESIS_PROTOCOL_VERSION,
+        "protocol": EXTERNAL_CONSULT_PROTOCOL_VERSION,
         "pack_id": pack.pack_id,
         "pack_sha256": pack.pack_sha256,
         "packet_artifact_id": packet_artifact_id,
@@ -1425,8 +2221,8 @@ def save_external_synthesis_result(
         artifact_metadata["operation_lookup_sha256"] = operation_lookup_sha256
     receipt = save_research_artifact(
         db_path,
-        kind=EXTERNAL_SYNTHESIS_RESULT_KIND,
-        title=f"External synthesis result: {pack.topic or pack.pack_id}",
+        kind=EXTERNAL_CONSULT_RESULT_KIND,
+        title=f"External consult result: {pack.topic or pack.pack_id}",
         content=content_payload,
         metadata=artifact_metadata,
     )
@@ -1435,17 +2231,17 @@ def save_external_synthesis_result(
         "saved": True,
         "audited": False,
         "artifact_id": receipt["artifact_id"],
-        "kind": EXTERNAL_SYNTHESIS_RESULT_KIND,
+        "kind": EXTERNAL_CONSULT_RESULT_KIND,
         "pack_id": pack.pack_id,
         "packet_artifact_id": packet_artifact_id,
         "prompt_hash": prompt_hash,
         "response_sha256": response_hash,
         "verify": verify_result,
-        "next_action": "audit_external_synthesis_result",
+        "next_action": "audit_external_consult_result",
         "metadata": receipt["metadata"],
     }
     if audit:
-        audit_result = audit_external_synthesis_result(
+        audit_result = audit_external_consult_result(
             db_path,
             papers_dir,
             result_id=str(receipt["artifact_id"]),
@@ -1686,7 +2482,7 @@ def _audit_structured_claims(
     return audited
 
 
-def audit_external_synthesis_result(
+def audit_external_consult_result(
     db_path: Path,
     papers_dir: Path,
     *,
@@ -1698,11 +2494,11 @@ def audit_external_synthesis_result(
     artifact = _read_artifact(db_path, result_id)
     if artifact is None:
         return {"ok": False, "result_id": result_id, "error": "result_not_found"}
-    if artifact.get("kind") != EXTERNAL_SYNTHESIS_RESULT_KIND:
+    if artifact.get("kind") != EXTERNAL_CONSULT_RESULT_KIND:
         return {
             "ok": False,
             "result_id": result_id,
-            "error": "artifact_is_not_external_synthesis_result",
+            "error": "artifact_is_not_external_consult_result",
             "kind": artifact.get("kind", ""),
         }
     content = artifact.get("content")
@@ -1722,7 +2518,7 @@ def audit_external_synthesis_result(
     packet_content: dict[str, Any] | None = None
     if packet_artifact_id:
         packet_artifact = _read_artifact(db_path, packet_artifact_id)
-        if packet_artifact is None or packet_artifact.get("kind") != EXTERNAL_SYNTHESIS_PACKET_KIND:
+        if packet_artifact is None or packet_artifact.get("kind") != EXTERNAL_CONSULT_PACKET_KIND:
             return {
                 "ok": False,
                 "result_id": result_id,
@@ -1868,6 +2664,6 @@ def audit_external_synthesis_result(
         "next_action": (
             "Reread verified canonical windows with read_saved_paper before final citation."
             if ready_for_canonical_reread
-            else "Revise or gather evidence before using this external synthesis."
+            else "Revise or gather evidence before using this external consult."
         ),
     }

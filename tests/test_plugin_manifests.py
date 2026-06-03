@@ -52,7 +52,7 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     mirrored_files = [
         "SKILL.md",
         "agents/openai.yaml",
-        "references/external_synthesis.md",
+        "references/external_consult.md",
         "references/indepth.md",
         "references/paper_writing.md",
         "references/tools.md",
@@ -73,30 +73,32 @@ def test_plugin_manifests_reference_existing_repo_files() -> None:
     paper_writing_reference = (
         canonical_skill_root / "references" / "paper_writing.md"
     ).read_text(encoding="utf-8")
-    external_synthesis_reference = (
-        canonical_skill_root / "references" / "external_synthesis.md"
+    external_consult_reference = (
+        canonical_skill_root / "references" / "external_consult.md"
     ).read_text(encoding="utf-8")
     assert "`codex` is a disabled-by-default fetch-strategy entry" in tools_reference
     assert "ChatGPT Pro" not in skill_text
     assert "references/paper_writing.md" in skill_text
     assert "experimental protocols, research reports, manuscripts" in skill_text
-    assert "references/external_synthesis.md" in skill_text
-    assert "grados external-synthesis is-enabled --quiet" in skill_text
-    assert "uvx grados external-synthesis is-enabled --quiet" in skill_text
-    assert "grados external-synthesis status --json" not in skill_text
-    assert "grados external-synthesis status --json" not in external_synthesis_reference
+    assert "references/external_consult.md" in skill_text
+    assert "grados external-consult is-enabled --quiet" in skill_text
+    assert "uvx grados external-consult is-enabled --quiet" in skill_text
+    assert "grados external-consult status --json" not in skill_text
+    assert "grados external-consult status --json" not in external_consult_reference
     assert "same `GRADOS_HOME` as the active server" in skill_text
-    assert "exits with code 0" in external_synthesis_reference
-    assert "`grados:run_external_synthesis`" in tools_reference
-    assert "GRaDOS-validated Pro model route" in external_synthesis_reference
-    assert "Pro Extended thinking route" in external_synthesis_reference
-    assert "GRaDOS-native ChatGPT Pro browser mode" in external_synthesis_reference
-    assert "private ChatGPT profile" in external_synthesis_reference
-    assert 'kind="external_synthesis_packet"' in external_synthesis_reference
-    assert "`run_external_synthesis`" in external_synthesis_reference
-    assert "`save_external_synthesis_result`" in external_synthesis_reference
-    assert "`audit_external_synthesis_result`" in external_synthesis_reference
-    assert "PDF acquisition" in external_synthesis_reference
+    assert "exits with code 0" in external_consult_reference
+    assert "`grados:consult_chatgpt_pro`" in tools_reference
+    assert "`grados:run_external_consult`" in tools_reference
+    assert "`consult_chatgpt_pro`" in external_consult_reference
+    assert 'model_strategy="select"' in external_consult_reference
+    assert 'thinking_strategy="highest"' in external_consult_reference
+    assert "GRaDOS-native ChatGPT Pro browser consult mode" in external_consult_reference
+    assert "private ChatGPT profile" in external_consult_reference
+    assert 'kind="external_consult_packet"' in external_consult_reference
+    assert "`run_external_consult`" in external_consult_reference
+    assert "`save_external_consult_result`" in external_consult_reference
+    assert "`audit_external_consult_result`" in external_consult_reference
+    assert "PDF acquisition" in external_consult_reference
     assert "writing_profiles/experimental_protocol.md" in paper_writing_reference
     assert "writing_profiles/literature_review.md" in paper_writing_reference
     assert "writing_profiles/experiment_report.md" in paper_writing_reference

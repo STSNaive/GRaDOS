@@ -25,7 +25,8 @@ from grados.secrets import SecretResolutionSummary, iter_api_key_specs, resolve_
 
 __all__ = [
     "CodexHandoffConfig",
-    "ExternalSynthesisConfig",
+    "DEFAULT_EXTERNAL_CONSULT_RESPONSE_WAIT_TOTAL_SECONDS",
+    "ExternalConsultConfig",
     "GRaDOSConfig",
     "GRaDOSPaths",
     "IndexingConfig",
@@ -34,6 +35,8 @@ __all__ = [
     "load_config",
     "resolve_data_root",
 ]
+
+DEFAULT_EXTERNAL_CONSULT_RESPONSE_WAIT_TOTAL_SECONDS = 300.0
 
 # ── Path resolution ──────────────────────────────────────────────────────────
 
@@ -522,20 +525,28 @@ class IndepthConfig(BaseModel):
     )
 
 
-class ExternalSynthesisConfig(BaseModel):
+class ExternalConsultConfig(BaseModel):
     enabled: bool = Field(
         default=False,
         description=(
-            "Enable GRaDOS-native ChatGPT Pro browser synthesis after verified evidence "
-            "packet preparation. GRaDOS uses a private Chrome profile and still treats "
-            "the returned response as advisory until packet audit and canonical reread."
+            "Enable the GRaDOS-native ChatGPT Pro browser consult transport. "
+            "GRaDOS uses a private Chrome profile, can send prompt-only or bounded "
+            "context consults, and still treats returned responses as advisory."
+        ),
+    )
+    response_wait_total_seconds: float = Field(
+        default=DEFAULT_EXTERNAL_CONSULT_RESPONSE_WAIT_TOTAL_SECONDS,
+        ge=1.0,
+        description=(
+            "Total wall-clock response wait budget for a ChatGPT Pro consult, counted from the "
+            "initial prompt submission. GRaDOS derives per-attempt waits and reattach attempts from this value."
         ),
     )
 
 
 class ResearchConfig(BaseModel):
     indepth: IndepthConfig = Field(default_factory=IndepthConfig)
-    external_synthesis: ExternalSynthesisConfig = Field(default_factory=ExternalSynthesisConfig)
+    external_consult: ExternalConsultConfig = Field(default_factory=ExternalConsultConfig)
 
 
 class GRaDOSConfig(BaseModel):
@@ -659,14 +670,17 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     data["research"]["indepth"]["_comment_auto_summarize"] = (
         "Generate query-independent paper_summary artifacts after successful full-text saves."
     )
-    data["research"]["_comment_external_synthesis"] = (
-        "Default-off GRaDOS-native ChatGPT Pro browser reviewer/synthesizer. "
-        "GRaDOS sends only verified evidence packets, saves advisory output, and audits it."
+    data["research"]["_comment_external_consult"] = (
+        "Default-off GRaDOS-native ChatGPT Pro browser consult transport. "
+        "GRaDOS can send prompt-only or bounded-context consults and saves advisory output."
     )
-    data["research"]["external_synthesis"]["_comment_enabled"] = (
-        "Default off. When true, GRaDOS may open its private ChatGPT Chrome profile only "
-        "after verified evidence preparation; GRaDOS-validated Pro model and Pro Extended thinking route "
-        "are protocol defaults recorded as metadata, not config keys."
+    data["research"]["external_consult"]["_comment_enabled"] = (
+        "Default off. When true, GRaDOS may open its private ChatGPT Chrome profile for "
+        "consult_chatgpt_pro. Model and thinking strategy choices are request metadata, not config keys."
+    )
+    data["research"]["external_consult"]["_comment_response_wait_total_seconds"] = (
+        "Total seconds to wait for one ChatGPT Pro response before returning pending. "
+        "GRaDOS automatically splits this across the initial send and bounded reattach/capture attempts."
     )
 
     # Timeout / retry surface (ADR-008)

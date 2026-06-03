@@ -271,11 +271,11 @@ Rules:
 ## External Reviewer Boundary
 
 ChatGPT Pro or another reviewer may be used only as an advisory reviewer when
-the GRaDOS external synthesis gate is enabled. Send only current-valid evidence
+the GRaDOS external consult gate is enabled. Send only current-valid evidence
 pack material and the relevant claim slice. Request structured outputs with
 `claims[].anchor_ids`, gaps, caveats, and revision suggestions.
 
-Use the existing `run_external_synthesis` packet/save/audit route when it is
+Use the existing `run_external_consult` packet/save/audit route when it is
 available; do not create a second reviewer transport or evidence source for
 paper writing.
 

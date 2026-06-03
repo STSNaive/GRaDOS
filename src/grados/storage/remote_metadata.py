@@ -50,6 +50,7 @@ class RemoteMetadataRecord(BaseModel):
     authors: str = "[]"
     year: str = ""
     journal: str = ""
+    publisher: str = ""
     source: str = ""
     source_id: str = ""
     has_abstract: bool = False
@@ -166,7 +167,8 @@ def _coerce_remote_record(record: Any) -> RemoteMetadataRecord | None:
             title=record.title.strip(),
             authors=_serialize_authors(record.authors),
             year=record.year.strip(),
-            journal="",
+            journal=record.journal.strip(),
+            publisher=record.publisher.strip(),
             source=record.source.strip() or record.publisher.strip(),
             source_id=source_id,
             has_abstract=bool(record.abstract.strip()),
@@ -199,6 +201,7 @@ def _coerce_remote_record(record: Any) -> RemoteMetadataRecord | None:
             authors=_serialize_authors(record.authors),
             year=record.year.strip(),
             journal=record.journal.strip(),
+            publisher=record.publisher.strip(),
             source=record.publisher.strip(),
             source_id=source_id,
             has_abstract=bool(record.abstract.strip()),
@@ -213,6 +216,7 @@ def _coerce_remote_record(record: Any) -> RemoteMetadataRecord | None:
         title = str(payload.get("title", "") or "").strip()
         abstract = str(payload.get("abstract", "") or "").strip()
         year = str(payload.get("year", "") or "").strip()
+        publisher = str(payload.get("publisher", "") or "").strip()
         source = str(payload.get("source", "") or "").strip()
         source_id = str(payload.get("source_id", "") or "").strip()
         safe_doi = str(payload.get("safe_doi", "") or "").strip() or (safe_doi_filename(doi) if doi else "")
@@ -235,6 +239,7 @@ def _coerce_remote_record(record: Any) -> RemoteMetadataRecord | None:
                 "authors": authors_json,
                 "year": year,
                 "journal": str(payload.get("journal", "") or "").strip(),
+                "publisher": publisher,
                 "source": source,
                 "source_id": source_id,
                 "has_abstract": bool(payload.get("has_abstract", bool(abstract))),
@@ -266,6 +271,7 @@ def _record_from_chroma_row(metadata: dict[str, Any], document: str = "") -> Rem
         "authors": str(metadata.get("authors", "[]") or "[]"),
         "year": str(metadata.get("year", "") or ""),
         "journal": str(metadata.get("journal", "") or ""),
+        "publisher": str(metadata.get("publisher", "") or ""),
         "source": str(metadata.get("source", "") or ""),
         "source_id": str(metadata.get("source_id", "") or ""),
         "has_abstract": bool(metadata.get("has_abstract", False)),
@@ -341,6 +347,7 @@ def _merge_records(existing: RemoteMetadataRecord | None, incoming: RemoteMetada
         "authors": _serialize_authors(incoming_authors or existing_authors),
         "year": incoming.year or existing.year,
         "journal": incoming.journal or existing.journal,
+        "publisher": incoming.publisher or existing.publisher,
         "source": incoming.source or existing.source,
         "source_id": incoming.source_id or existing.source_id,
         "has_abstract": existing.has_abstract or incoming.has_abstract or bool(merged_abstract),

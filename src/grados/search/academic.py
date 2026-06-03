@@ -28,6 +28,7 @@ class PaperMetadata:
     doi: str = ""
     abstract: str = ""
     publisher: str = ""
+    journal: str = ""
     authors: list[str] = field(default_factory=list)
     year: str = ""
     url: str = ""
@@ -54,6 +55,28 @@ def _strip_html(text: str) -> str:
 def _json_object(response: httpx.Response) -> dict[str, Any]:
     payload: Any = response.json()
     return cast(dict[str, Any], payload) if isinstance(payload, dict) else {}
+
+
+def _first_string(value: Any) -> str:
+    if isinstance(value, list):
+        for item in value:
+            text = str(item or "").strip()
+            if text:
+                return text
+        return ""
+    return str(value or "").strip()
+
+
+def _crossref_year(item: dict[str, Any]) -> str:
+    for key in ("published-print", "published-online", "published", "issued"):
+        date_parts = (item.get(key) or {}).get("date-parts", [[""]])
+        try:
+            year = str(date_parts[0][0] or "")
+        except (IndexError, TypeError):
+            year = ""
+        if year:
+            return year
+    return ""
 
 
 # ── Crossref ─────────────────────────────────────────────────────────────────
@@ -97,7 +120,21 @@ async def search_crossref(
                 "query": query,
                 "rows": state.rows,
                 "cursor": state.cursor,
-                "select": "DOI,title,abstract,publisher,author,published-print,URL",
+                "select": ",".join(
+                    [
+                        "DOI",
+                        "title",
+                        "abstract",
+                        "publisher",
+                        "container-title",
+                        "author",
+                        "published-print",
+                        "published-online",
+                        "published",
+                        "issued",
+                        "URL",
+                    ]
+                ),
             },
             etiquette_email,
         )
@@ -117,8 +154,9 @@ async def search_crossref(
             doi=item.get("DOI", ""),
             abstract=_strip_html(item.get("abstract", "")),
             publisher=item.get("publisher", ""),
+            journal=_first_string(item.get("container-title")),
             authors=[f"{a.get('given', '')} {a.get('family', '')}".strip() for a in (item.get("author") or [])],
-            year=str((item.get("published-print") or {}).get("date-parts", [[""]])[0][0] or ""),
+            year=_crossref_year(item),
             url=item.get("URL", ""),
             source="Crossref",
         ))
@@ -242,6 +280,7 @@ async def search_pubmed(
                 doi=doi,
                 abstract=abstracts.get(pmid, ""),
                 publisher=paper.get("fulljournalname", ""),
+                journal=paper.get("fulljournalname", ""),
                 authors=[a.get("name", "") for a in (paper.get("authors") or [])],
                 year=(paper.get("pubdate") or "").split(" ")[0] if paper.get("pubdate") else "",
                 url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
@@ -322,6 +361,7 @@ async def search_wos(
             doi=(hit.get("identifiers") or {}).get("doi", ""),
             abstract=hit.get("abstract", ""),
             publisher=(hit.get("source") or {}).get("sourceTitle", ""),
+            journal=(hit.get("source") or {}).get("sourceTitle", ""),
             authors=[a.get("displayName", "") for a in (hit.get("names", {}).get("authors") or [])],
             year=str((hit.get("source") or {}).get("publishYear", "")),
             url=(hit.get("links") or {}).get("record", ""),
@@ -399,6 +439,7 @@ async def search_elsevier(
             doi=item.get("prism:doi", ""),
             abstract=item.get("dc:description", ""),
             publisher=item.get("prism:publicationName", ""),
+            journal=item.get("prism:publicationName", ""),
             authors=[a.get("authname", "") for a in (item.get("author") or [])],
             year=(item.get("prism:coverDate") or "").split("-")[0],
             url=item.get("prism:url", ""),
@@ -467,11 +508,18 @@ async def search_springer(
     for item in records:
         urls = item.get("url", [])
         url = urls[0].get("value", "") if urls else ""
+        journal = (
+            item.get("journalTitle")
+            or item.get("publicationName")
+            or item.get("publicationTitle")
+            or ""
+        )
         papers.append(PaperMetadata(
             title=item.get("title", ""),
             doi=item.get("doi", ""),
             abstract=item.get("abstract", ""),
             publisher=item.get("publisher", ""),
+            journal=journal,
             authors=[c.get("creator", "") for c in (item.get("creators") or [])],
             year=(item.get("publicationDate") or "").split("-")[0],
             url=url,

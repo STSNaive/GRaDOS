@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 
 from grados.browser.chatgpt.errors import ChatGPTBrowserError
 from grados.browser.chatgpt.protocol import (
@@ -18,6 +18,8 @@ from grados.browser.chatgpt.selectors import (
     MODEL_BUTTON_SELECTOR,
 )
 from grados.browser.chatgpt.types import ChatGPTThinkingSelection
+
+ThinkingStrategy = Literal["highest", "current", "ignore"]
 
 _THINKING_RANKS: list[tuple[int, tuple[str, ...]]] = [
     (60, CHATGPT_THINKING_LEVEL_TOKENS["heavy"]),
@@ -88,7 +90,44 @@ async def ensure_pro_extended_thinking(page: Any) -> ChatGPTThinkingSelection:
         available_labels=available_labels,
         rank=resolved_rank,
         verified=True,
+        strategy="highest",
     )
+
+
+async def select_chatgpt_thinking(
+    page: Any,
+    *,
+    strategy: ThinkingStrategy = "highest",
+) -> ChatGPTThinkingSelection:
+    """Apply the requested ChatGPT thinking-effort strategy."""
+    if strategy == "highest":
+        return await ensure_pro_extended_thinking(page)
+    if strategy == "current":
+        result = await page.evaluate(_current_thinking_expression())
+        result = result if isinstance(result, dict) else {}
+        label = str(result.get("label") or "").strip()
+        available_labels = _available_labels_from_result(result)
+        return ChatGPTThinkingSelection(
+            requested="current",
+            resolved_label=label,
+            available_labels=available_labels,
+            rank=rank_thinking_label(label),
+            verified=bool(label),
+            strategy="current",
+            warnings=[] if label else ["current_thinking_label_unavailable"],
+            error="" if label else "current_thinking_label_unavailable",
+        )
+    if strategy == "ignore":
+        return ChatGPTThinkingSelection(
+            requested="ignored",
+            resolved_label="",
+            available_labels=[],
+            rank=0,
+            verified=False,
+            strategy="ignore",
+            warnings=["thinking_selection_skipped"],
+        )
+    raise ValueError("thinking_strategy must be `highest`, `current`, or `ignore`.")
 
 
 def _available_labels_from_result(result: dict[str, Any]) -> list[str]:
@@ -101,6 +140,45 @@ def _available_labels_from_result(result: dict[str, Any]) -> list[str]:
         if label and label not in labels:
             labels.append(label)
     return labels
+
+
+def _current_thinking_expression() -> str:
+    replacements = {
+        "__MODEL_BUTTON_SELECTOR__": json.dumps(MODEL_BUTTON_SELECTOR),
+    }
+    expression = r"""
+(() => {
+  const MODEL_BUTTON_SELECTOR = __MODEL_BUTTON_SELECTOR__;
+  const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  const labels = [];
+  const push = (value) => {
+    const label = normalize(value);
+    if (label && !labels.includes(label)) labels.push(label);
+  };
+  const button = document.querySelector(MODEL_BUTTON_SELECTOR);
+  push(button?.textContent ?? "");
+  push(button?.getAttribute?.("aria-label") ?? "");
+  const thinkingSelector = [
+    '[data-model-picker-thinking-effort-action="true"]',
+    'button[aria-label*="thinking" i]',
+  ].join(", ");
+  for (const node of document.querySelectorAll(thinkingSelector)) {
+    push(node.textContent ?? "");
+    push(node.getAttribute?.("aria-label") ?? "");
+  }
+  const thinkingPattern =
+    /thinking|extended|standard|heavy|light|high|medium|low|思考|深度|标准|高|中|低/i;
+  const thinkingLabels = labels.filter((label) => thinkingPattern.test(label));
+  return {
+    status: thinkingLabels.length > 0 ? "read-current" : "label-missing",
+    label: thinkingLabels[0] || "",
+    availableOptions: labels,
+  };
+})()
+"""
+    for key, value in replacements.items():
+        expression = expression.replace(key, value)
+    return expression
 
 
 def _pro_thinking_expression() -> str:

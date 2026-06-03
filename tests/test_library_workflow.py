@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from grados.config import GRaDOSPaths, IndexingConfig
 from grados.extract.parse import ParsePipelineResult
 from grados.publisher.common import safe_doi_filename
 from grados.storage.frontmatter import read_frontmatter_metadata
+from grados.storage.remote_metadata import RemoteMetadataRecord
 from grados.workflows.library import (
     LibraryDocumentArtifact,
     build_library_document_artifact,
@@ -224,3 +227,319 @@ def test_review_and_persist_library_document_applies_shared_contracts(
     ]
     assert persisted.debug == ["docling:ok"]
     assert captured["indexing_config"] is indexing_config
+
+
+def test_persist_reviewed_library_document_completes_blank_metadata_from_exact_remote_doi(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    paths = GRaDOSPaths(tmp_path / "grados-home")
+    paths.ensure_directories()
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        remote_metadata,
+        "get_remote_metadata_by_doi",
+        lambda metadata_dir, doi: RemoteMetadataRecord(
+            doi=doi,
+            title="Springer Completion",
+            year="2026",
+            journal="Meccanica",
+            publisher="Springer Nature",
+            source="Springer Nature",
+        ),
+    )
+
+    artifact = LibraryDocumentArtifact(
+        markdown="# Springer Completion\n\n## Abstract\n\n" + ("canonical content " * 40),
+        parser_used="Docling",
+    )
+    review = review_library_document(
+        artifact,
+        qa_validator=lambda markdown, minimum, expected: True,
+        qa_min_characters=50,
+    )
+    persisted = persist_reviewed_library_document(
+        review,
+        paths=paths,
+        doi="10.1234/springer",
+        title="Springer Completion",
+        source="Springer TDM",
+        fetch_outcome="native_full_text",
+        year="",
+        journal="",
+        publisher="",
+    )
+    saved_metadata = read_frontmatter_metadata(Path(persisted.summary.file_path).read_text(encoding="utf-8"))
+    completion_sources = json.loads(saved_metadata["metadata_completion_sources"])
+
+    assert saved_metadata["year"] == "2026"
+    assert saved_metadata["journal"] == "Meccanica"
+    assert saved_metadata["publisher"] == "Springer Nature"
+    assert completion_sources == {
+        "journal": "Springer Nature",
+        "publisher": "Springer Nature",
+        "year": "Springer Nature",
+    }
+
+
+def test_persist_reviewed_library_document_does_not_overwrite_existing_metadata(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    paths = GRaDOSPaths(tmp_path / "grados-home")
+    paths.ensure_directories()
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        remote_metadata,
+        "get_remote_metadata_by_doi",
+        lambda metadata_dir, doi: RemoteMetadataRecord(
+            doi=doi,
+            title="Conflict Completion",
+            year="2026",
+            journal="Meccanica",
+            publisher="Springer Nature",
+            source="Springer Nature",
+        ),
+    )
+
+    artifact = LibraryDocumentArtifact(
+        markdown="# Conflict Completion\n\n## Abstract\n\n" + ("canonical content " * 40),
+        parser_used="Docling",
+    )
+    review = review_library_document(
+        artifact,
+        qa_validator=lambda markdown, minimum, expected: True,
+        qa_min_characters=50,
+    )
+    persisted = persist_reviewed_library_document(
+        review,
+        paths=paths,
+        doi="10.1234/conflict",
+        title="Conflict Completion",
+        source="Parser",
+        fetch_outcome="native_full_text",
+        year="2025",
+        journal="Other Journal",
+        publisher="Existing Publisher",
+    )
+    saved_metadata = read_frontmatter_metadata(Path(persisted.summary.file_path).read_text(encoding="utf-8"))
+
+    assert saved_metadata["year"] == "2025"
+    assert saved_metadata["journal"] == "Other Journal"
+    assert saved_metadata["publisher"] == "Existing Publisher"
+    assert "metadata_completion_sources" not in saved_metadata
+    assert any("Remote metadata year conflict ignored" in warning for warning in persisted.warnings)
+    assert any("Remote metadata journal conflict ignored" in warning for warning in persisted.warnings)
+    assert any("Remote metadata publisher conflict ignored" in warning for warning in persisted.warnings)
+
+
+def test_persist_reviewed_library_document_does_not_use_provider_as_publisher(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    paths = GRaDOSPaths(tmp_path / "grados-home")
+    paths.ensure_directories()
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        remote_metadata,
+        "get_remote_metadata_by_doi",
+        lambda metadata_dir, doi: RemoteMetadataRecord(
+            doi=doi,
+            title="Provider Separated",
+            year="2026",
+            journal="Journal of Metadata",
+            publisher="Actual Publisher",
+            source="Crossref",
+        ),
+    )
+
+    artifact = LibraryDocumentArtifact(
+        markdown="# Provider Separated\n\n## Abstract\n\n" + ("canonical content " * 40),
+        parser_used="Docling",
+    )
+    review = review_library_document(
+        artifact,
+        qa_validator=lambda markdown, minimum, expected: True,
+        qa_min_characters=50,
+    )
+    persisted = persist_reviewed_library_document(
+        review,
+        paths=paths,
+        doi="10.1234/provider-separated",
+        title="Provider Separated",
+        source="Parser",
+        fetch_outcome="native_full_text",
+        year="",
+        journal="",
+        publisher="",
+    )
+    saved_metadata = read_frontmatter_metadata(Path(persisted.summary.file_path).read_text(encoding="utf-8"))
+    completion_sources = json.loads(saved_metadata["metadata_completion_sources"])
+
+    assert saved_metadata["publisher"] == "Actual Publisher"
+    assert saved_metadata["publisher"] != "Crossref"
+    assert completion_sources["publisher"] == "Crossref"
+
+
+def test_persist_reviewed_library_document_ignores_nonmatching_remote_doi(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    paths = GRaDOSPaths(tmp_path / "grados-home")
+    paths.ensure_directories()
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        remote_metadata,
+        "get_remote_metadata_by_doi",
+        lambda metadata_dir, doi: RemoteMetadataRecord(
+            doi="10.9999/other",
+            title="Similar Title",
+            year="2026",
+            journal="Meccanica",
+            publisher="Springer Nature",
+            source="Springer Nature",
+        ),
+    )
+
+    artifact = LibraryDocumentArtifact(
+        markdown="# Similar Title\n\n## Abstract\n\n" + ("canonical content " * 40),
+        parser_used="Docling",
+    )
+    review = review_library_document(
+        artifact,
+        qa_validator=lambda markdown, minimum, expected: True,
+        qa_min_characters=50,
+    )
+    persisted = persist_reviewed_library_document(
+        review,
+        paths=paths,
+        doi="10.1234/requested",
+        title="Similar Title",
+        source="Parser",
+        fetch_outcome="native_full_text",
+        year="",
+        journal="",
+        publisher="",
+    )
+    saved_metadata = read_frontmatter_metadata(Path(persisted.summary.file_path).read_text(encoding="utf-8"))
+
+    assert saved_metadata.get("year", "") == ""
+    assert saved_metadata.get("journal", "") == ""
+    assert saved_metadata.get("publisher", "") == ""
+    assert "metadata_completion_sources" not in saved_metadata
+
+
+def test_persist_reviewed_library_document_reports_remote_api_field_absent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    paths = GRaDOSPaths(tmp_path / "grados-home")
+    paths.ensure_directories()
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        remote_metadata,
+        "get_remote_metadata_by_doi",
+        lambda metadata_dir, doi: RemoteMetadataRecord(
+            doi=doi,
+            title="Missing Remote Fields",
+            year="",
+            journal="",
+            publisher="Springer Nature",
+            source="Springer Nature",
+        ),
+    )
+
+    artifact = LibraryDocumentArtifact(
+        markdown="# Missing Remote Fields\n\n## Abstract\n\n" + ("canonical content " * 40),
+        parser_used="Docling",
+    )
+    review = review_library_document(
+        artifact,
+        qa_validator=lambda markdown, minimum, expected: True,
+        qa_min_characters=50,
+    )
+    persisted = persist_reviewed_library_document(
+        review,
+        paths=paths,
+        doi="10.1234/missing-fields",
+        title="Missing Remote Fields",
+        source="Parser",
+        fetch_outcome="native_full_text",
+        year="",
+        journal="",
+        publisher="",
+    )
+    saved_metadata = read_frontmatter_metadata(Path(persisted.summary.file_path).read_text(encoding="utf-8"))
+
+    assert saved_metadata.get("year", "") == ""
+    assert saved_metadata.get("journal", "") == ""
+    assert saved_metadata["publisher"] == "Springer Nature"
+    assert "metadata_completion_sources" in saved_metadata
+    assert any(
+        "Remote metadata api_field_absent for 10.1234/missing-fields: year, journal" in warning
+        for warning in persisted.warnings
+    )
+
+
+def test_persist_reviewed_library_document_ignores_non_metadata_handoff_record(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import grados.storage.remote_metadata as remote_metadata
+    import grados.storage.vector as vector
+
+    paths = GRaDOSPaths(tmp_path / "grados-home")
+    paths.ensure_directories()
+    monkeypatch.setattr(vector, "index_paper", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        remote_metadata,
+        "get_remote_metadata_by_doi",
+        lambda metadata_dir, doi: SimpleNamespace(
+            fetch_status="host_action_required",
+            fetch_via="codex",
+            fetch_resume='{"kind":"codex"}',
+        ),
+    )
+
+    artifact = LibraryDocumentArtifact(
+        markdown="# Codex Pending\n\n## Abstract\n\n" + ("canonical content " * 40),
+        parser_used="Docling",
+    )
+    review = review_library_document(
+        artifact,
+        qa_validator=lambda markdown, minimum, expected: True,
+        qa_min_characters=50,
+    )
+    persisted = persist_reviewed_library_document(
+        review,
+        paths=paths,
+        doi="10.1234/codex-pending",
+        title="Codex Pending",
+        source="Codex Chrome Extension",
+        fetch_outcome="local_parse",
+        year="",
+        journal="",
+        publisher="",
+    )
+    saved_metadata = read_frontmatter_metadata(Path(persisted.summary.file_path).read_text(encoding="utf-8"))
+
+    assert saved_metadata.get("year", "") == ""
+    assert saved_metadata.get("journal", "") == ""
+    assert saved_metadata.get("publisher", "") == ""
+    assert "metadata_completion_sources" not in saved_metadata
+    assert persisted.warnings == []

@@ -134,6 +134,9 @@ class EvidenceGridRow:
     support_strength: str
     dense_score: float = 0.0
     lexical_score: float = 0.0
+    eligibility: str = "citation_grade"
+    rejection_reason: str = ""
+    evidence_warning: str = ""
 
 
 @dataclass(frozen=True)

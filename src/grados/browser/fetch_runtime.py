@@ -86,6 +86,8 @@ class BrowserFetchState:
     capture_url: str = ""
     capture_content_type: str = ""
     capture_bytes: int = 0
+    manual_interactive_wait_started: bool = False
+    manual_pdf_page_urls: set[str] = field(default_factory=set)
 
     def pdf_captured(self) -> bool:
         return self.pdf_buffer is not None
@@ -164,13 +166,44 @@ class BrowserFetchState:
             self.challenge_seen = True
             self.final_url = url
             self.challenge_reason = "bot_or_verification_challenge"
+            attention_marker = await self._mark_challenge_attention(page)
             self.record_event(
                 "publisher_challenge",
                 url=url,
-                details={"title": title[:200], "reason": self.challenge_reason},
+                details={
+                    "title": title[:200],
+                    "reason": self.challenge_reason,
+                    "attention_marker": attention_marker,
+                },
             )
             return True
         return False
+
+    async def _mark_challenge_attention(self, page: Any) -> dict[str, str]:
+        marker = {
+            "bring_to_front": "unavailable",
+            "title_prefix": "unavailable",
+        }
+        if hasattr(page, "bring_to_front"):
+            try:
+                await page.bring_to_front()
+                marker["bring_to_front"] = "ok"
+            except Exception as exc:
+                marker["bring_to_front"] = f"error:{exc.__class__.__name__}"
+        if hasattr(page, "evaluate"):
+            try:
+                await page.evaluate(
+                    """prefix => {
+                        const current = String(document.title || "");
+                        if (!current.startsWith(prefix)) document.title = `${prefix}${current}`;
+                        return document.title;
+                    }""",
+                    "GRaDOS ACTION REQUIRED - ",
+                )
+                marker["title_prefix"] = "ok"
+            except Exception as exc:
+                marker["title_prefix"] = f"error:{exc.__class__.__name__}"
+        return marker
 
     def get_action_state(self, page: Any) -> dict[str, Any]:
         pid = id(page)
@@ -449,7 +482,18 @@ async def run_browser_polling_loop(
     deadline = time.monotonic() + deadline_seconds
     current_sleep = poll_min
 
+    def track_context_pages() -> None:
+        for candidate in list(getattr(context, "pages", []) or []):
+            listeners.track_page(candidate)
+
+    def capture_for_current_state(data: bytes, content_type: str = "", source_url: str = "", **kwargs: Any) -> bool:
+        source_kind = str(kwargs.get("source_kind") or "capture")
+        if state.challenge_seen and source_kind == "backfill":
+            source_kind = "pdf_url_backfill_after_manual"
+        return state.try_capture(data, content_type, source_url, source_kind=source_kind)
+
     while time.monotonic() < deadline and not state.pdf_captured():
+        track_context_pages()
         saw_open_page = False
         saw_actionable_page = False
         for page in list(listeners.tracked_pages):
@@ -457,6 +501,15 @@ async def run_browser_polling_loop(
                 continue
 
             saw_open_page = True
+            page_url = str(getattr(page, "url", "") or "")
+            if (
+                state.challenge_seen
+                and is_pdf_like_browser_response(page_url)
+                and page_url not in state.manual_pdf_page_urls
+            ):
+                state.manual_pdf_page_urls.add(page_url)
+                state.record_event("manual_user_opened_pdf_page", url=page_url)
+
             blocked = await state.inspect_challenge(page)
             if blocked:
                 continue
@@ -466,7 +519,7 @@ async def run_browser_polling_loop(
                 page,
                 context,
                 state.attempted_urls,
-                state.try_capture,
+                capture_for_current_state,
                 state.pdf_captured,
                 state.report_warning,
                 state.max_capture_bytes,
@@ -497,7 +550,7 @@ async def run_browser_polling_loop(
                 page,
                 context,
                 state.attempted_urls,
-                state.try_capture,
+                capture_for_current_state,
                 state.pdf_captured,
                 state.report_warning,
                 state.max_capture_bytes,
@@ -507,15 +560,23 @@ async def run_browser_polling_loop(
         if state.pdf_captured():
             break
         if saw_open_page and state.challenge_seen and not saw_actionable_page:
-            state.record_event(
-                "polling_stopped_for_manual_resume",
-                url=state.final_url,
-                details={"reason": state.challenge_reason or "publisher_challenge"},
-            )
-            break
+            if not state.manual_interactive_wait_started:
+                state.manual_interactive_wait_started = True
+                state.record_event(
+                    "manual_interactive_wait_started",
+                    url=state.final_url,
+                    details={"reason": state.challenge_reason or "publisher_challenge"},
+                )
 
         await asyncio.sleep(current_sleep)
         current_sleep = next_browser_poll_delay(current_sleep, poll_min, poll_max)
+
+    if state.challenge_seen and not state.pdf_captured() and state.manual_interactive_wait_started:
+        state.record_event(
+            "manual_interactive_wait_timeout",
+            url=state.final_url,
+            details={"reason": state.challenge_reason or "publisher_challenge"},
+        )
 
 
 async def try_backfill_from_url(

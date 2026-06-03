@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from grados.config import GRaDOSPaths
 from grados.extract.parse import ParsePipelineResult
+from grados.publisher.common import normalize_doi
 
 if TYPE_CHECKING:
     from grados.config import IndexingConfig
@@ -97,6 +99,80 @@ _PDF_PROVENANCE_FRONTMATTER_KEYS = {
     "source_pdf_hash",
     "acquisition_via",
 }
+
+
+def _complete_blank_canonical_metadata(
+    *,
+    paths: GRaDOSPaths,
+    doi: str,
+    year: str,
+    journal: str,
+    publisher: str,
+) -> tuple[str, str, str, dict[str, str], list[str]]:
+    """Fill blank canonical metadata fields from exact DOI remote metadata only."""
+    normalized_doi = normalize_doi(doi)
+    if not normalized_doi:
+        return year, journal, publisher, {}, []
+    try:
+        from grados.storage.remote_metadata import RemoteMetadataRecord, get_remote_metadata_by_doi
+
+        candidate = get_remote_metadata_by_doi(paths.database_remote_metadata, normalized_doi)
+    except Exception as exc:
+        return year, journal, publisher, {}, [f"Remote metadata completion skipped: {exc.__class__.__name__}: {exc}"]
+
+    if not isinstance(candidate, RemoteMetadataRecord) or normalize_doi(candidate.doi) != normalized_doi:
+        return year, journal, publisher, {}, []
+
+    completed_year = year.strip()
+    completed_journal = journal.strip()
+    completed_publisher = publisher.strip()
+    sources: dict[str, str] = {}
+    warnings: list[str] = []
+    source_label = candidate.source or candidate.fetch_via or "remote_metadata"
+
+    if not completed_year and candidate.year:
+        completed_year = candidate.year.strip()
+        sources["year"] = source_label
+    elif completed_year and candidate.year and completed_year != candidate.year.strip():
+        warnings.append(
+            f"Remote metadata year conflict ignored for {normalized_doi}: "
+            f"canonical={completed_year}; remote={candidate.year.strip()}"
+        )
+
+    if not completed_journal and candidate.journal:
+        completed_journal = candidate.journal.strip()
+        sources["journal"] = source_label
+    elif completed_journal and candidate.journal and completed_journal.lower() != candidate.journal.strip().lower():
+        warnings.append(
+            f"Remote metadata journal conflict ignored for {normalized_doi}: "
+            f"canonical={completed_journal}; remote={candidate.journal.strip()}"
+        )
+
+    absent_fields: list[str] = []
+    if not completed_year and not candidate.year:
+        absent_fields.append("year")
+    if not completed_journal and not candidate.journal:
+        absent_fields.append("journal")
+    if absent_fields:
+        warnings.append(
+            f"Remote metadata api_field_absent for {normalized_doi}: "
+            f"{', '.join(absent_fields)}"
+        )
+
+    if not completed_publisher and candidate.publisher:
+        completed_publisher = candidate.publisher.strip()
+        sources["publisher"] = source_label
+    elif (
+        completed_publisher
+        and candidate.publisher
+        and completed_publisher.lower() != candidate.publisher.strip().lower()
+    ):
+        warnings.append(
+            f"Remote metadata publisher conflict ignored for {normalized_doi}: "
+            f"canonical={completed_publisher}; remote={candidate.publisher.strip()}"
+        )
+
+    return completed_year, completed_journal, completed_publisher, sources, warnings
 
 
 async def build_library_document_artifact(
@@ -416,6 +492,21 @@ def persist_reviewed_library_document(
             frontmatter["parsed_manifest_path"] = sidecar.manifest_path
     except Exception as exc:
         warnings.append(f"Parsed sidecar write failed: {exc.__class__.__name__}: {exc}")
+
+    year, journal, publisher, completion_sources, completion_warnings = _complete_blank_canonical_metadata(
+        paths=paths,
+        doi=doi,
+        year=year,
+        journal=journal,
+        publisher=publisher,
+    )
+    warnings.extend(completion_warnings)
+    if completion_sources:
+        frontmatter["metadata_completion_sources"] = json.dumps(
+            completion_sources,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
     summary = save_paper_markdown(
         doi=doi,

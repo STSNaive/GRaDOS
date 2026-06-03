@@ -23,7 +23,7 @@ def is_chatgpt_profile_initialized(profile_dir: Path) -> bool:
 
 
 def format_chatgpt_profile_setup_command(profile_dir: Path) -> str:
-    return "grados external-synthesis setup-browser"
+    return "grados external-consult setup-browser"
 
 
 def chatgpt_profile_status(profile_dir: Path) -> dict[str, object]:

@@ -172,12 +172,14 @@
             "_comment_enabled": "Default off. When enabled, search uses the same limit for metadata candidates and full-text attempts.",
             "_comment_auto_summarize": "Generate query-independent paper_summary artifacts after successful full-text saves."
         },
-        "external_synthesis": {
+        "external_consult": {
             "enabled": false,
-            "_comment_enabled": "Default off. When true, GRaDOS may open its private ChatGPT Chrome profile only after verified evidence preparation; GRaDOS-validated Pro model and Pro Extended thinking route are protocol defaults recorded as metadata, not config keys."
+            "response_wait_total_seconds": 300.0,
+            "_comment_enabled": "Default off. When true, GRaDOS may open its private ChatGPT Chrome profile for consult_chatgpt_pro. Model and thinking strategy choices are request metadata, not config keys.",
+            "_comment_response_wait_total_seconds": "Total seconds to wait for one ChatGPT Pro response before returning pending. GRaDOS automatically splits this across the initial send and bounded reattach/capture attempts."
         },
         "_comment_indepth": "Indepth mode is disabled by default. Enable per request with `--indepth` or set research.indepth.enabled=true to make search materialize returned candidates.",
-        "_comment_external_synthesis": "Default-off GRaDOS-native ChatGPT Pro browser reviewer/synthesizer. GRaDOS sends only verified evidence packets, saves advisory output, and audits it."
+        "_comment_external_consult": "Default-off GRaDOS-native ChatGPT Pro browser consult transport. GRaDOS can send prompt-only or bounded-context consults and saves advisory output."
     },
     "indexing": {
         "provider": "harrier",

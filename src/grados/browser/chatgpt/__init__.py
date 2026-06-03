@@ -1,4 +1,4 @@
-"""ChatGPT browser mode for GRaDOS external synthesis."""
+"""ChatGPT browser mode for GRaDOS external consult."""
 
 from __future__ import annotations
 

@@ -120,6 +120,8 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
                 authors=["Alice Smith"],
                 doi="10.1234/demo",
                 year="2026",
+                journal="Composite Structures",
+                publisher="Actual Publisher",
                 source="Crossref",
                 url="https://doi.org/10.1234/demo",
             )
@@ -134,6 +136,9 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     assert record.paper_id == safe_doi_filename("10.1234/demo")
     assert record.fetch_status == "metadata_only"
     assert record.has_fulltext is False
+    assert record.journal == "Composite Structures"
+    assert record.publisher == "Actual Publisher"
+    assert record.source == "Crossref"
 
     queried = query_remote_metadata(
         tmp_path / "chroma",
@@ -224,6 +229,7 @@ def test_remote_metadata_upsert_query_and_fetch_updates(tmp_path: Path, monkeypa
     assert refreshed.has_fulltext is True
     assert refreshed.source == "Elsevier TDM"
     assert refreshed.journal == "Composite Structures"
+    assert refreshed.publisher == "Elsevier"
     assert refreshed.fetch_manual is False
     assert refreshed.fetch_resume == ""
     assert '"state": "challenge"' in refreshed.fetch_trace

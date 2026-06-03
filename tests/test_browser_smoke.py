@@ -11,6 +11,7 @@ from grados.browser.fetch_runtime import (
     BrowserFetchState,
     BrowserListenerRegistry,
     is_pdf_like_browser_response,
+    run_browser_polling_loop,
     try_backfill_from_url,
 )
 from grados.browser.generic import build_browser_page_strategies
@@ -575,10 +576,243 @@ def test_direct_pdf_backfill_records_attempt_and_success() -> None:
     assert [event["name"] for event in events] == ["backfill_attempt", "backfill_success"]
 
 
+def test_direct_pdf_backfill_records_html_challenge_rejection() -> None:
+    class FakeResponse:
+        headers = {"content-type": "text/html"}
+
+        async def body(self) -> bytes:
+            return b"<html><body>captcha challenge</body></html>"
+
+    class FakeRequest:
+        async def get(self, url: str, timeout: int | None = None) -> FakeResponse:
+            _ = timeout
+            assert url == "https://example.com/article.pdf?token=expired"
+            return FakeResponse()
+
+    class FakeContext:
+        request = FakeRequest()
+
+    class FakePage:
+        url = "https://example.com/article.pdf?token=expired"
+
+        def is_closed(self) -> bool:
+            return False
+
+    events: list[dict[str, object]] = []
+
+    def record_event(name: str, **kwargs) -> None:  # noqa: ANN001
+        events.append({"name": name, **kwargs})
+
+    state = BrowserFetchState()
+    asyncio.run(
+        try_backfill_from_url(
+            FakePage(),
+            FakeContext(),
+            set(),
+            state.try_capture,
+            state.pdf_captured,
+            state.report_warning,
+            record_event=record_event,
+        )
+    )
+
+    assert not state.pdf_captured()
+    assert events[-1] == {
+        "name": "backfill_rejected",
+        "url": "https://example.com/article.pdf?token=expired",
+        "details": {
+            "content_type": "text/html",
+            "bytes": len(b"<html><body>captcha challenge</body></html>"),
+        },
+    }
+    assert any(
+        event["name"] == "pdf_capture_rejected"
+        and event["details"]["reason"] == "html_or_challenge_page"
+        for event in state.events
+    )
+
+
 def test_browser_page_strategy_registry_preserves_order_and_filters_unknown_names() -> None:
     strategies = build_browser_page_strategies(["GenericPdfClick", "Missing", "ScienceDirect"])
 
     assert [strategy.name for strategy in strategies] == ["GenericPdfClick", "ScienceDirect"]
+
+
+def test_generic_pdf_click_tracks_popup_pdf_page() -> None:
+    from grados.browser.strategies.generic_pdf_click import try_generic_pdf_click
+
+    class FakePopup:
+        url = "https://example.com/paper.pdf"
+
+        async def wait_for_load_state(self, state: str) -> None:
+            assert state == "domcontentloaded"
+
+    class FakeLink:
+        def __init__(self) -> None:
+            self.clicked = False
+
+        async def get_attribute(self, name: str) -> str:
+            assert name == "href"
+            return "/paper.pdf"
+
+        async def click(self) -> None:
+            self.clicked = True
+
+    class FakePage:
+        url = "https://example.com/article"
+
+        def __init__(self) -> None:
+            self.link = FakeLink()
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def query_selector(self, selector: str) -> FakeLink:
+            assert "pdf" in selector.lower()
+            return self.link
+
+        async def wait_for_load_state(self, state: str) -> None:
+            assert state == "domcontentloaded"
+
+    class FakeExpectPage:
+        def __init__(self, popup: FakePopup) -> None:
+            async def popup_value() -> FakePopup:
+                return popup
+
+            self.value = popup_value()
+
+        async def __aenter__(self) -> FakeExpectPage:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+            _ = (exc_type, exc, tb)
+
+    class FakeContext:
+        def __init__(self, popup: FakePopup) -> None:
+            self.popup = popup
+
+        def expect_page(self, timeout: int) -> FakeExpectPage:
+            assert timeout == 3000
+            return FakeExpectPage(self.popup)
+
+    page = FakePage()
+    popup = FakePopup()
+    tracked: list[FakePopup] = []
+    events: list[str] = []
+
+    asyncio.run(
+        try_generic_pdf_click(
+            page,
+            FakeContext(popup),
+            {},
+            tracked.append,
+            lambda: False,
+            lambda warning: (_ for _ in ()).throw(AssertionError(warning)),
+            record_event=lambda name, **kwargs: events.append(name),
+        )
+    )
+
+    assert page.link.clicked is True
+    assert tracked == [popup]
+    assert events == ["strategy_action", "strategy_action_confirmed"]
+
+
+def test_sciencedirect_landing_click_tracks_manual_pdf_tab() -> None:
+    from grados.browser.sciencedirect import try_view_pdf_click
+
+    class FakeLocator:
+        def __init__(self, href: str, count: int = 1) -> None:
+            self.first = self
+            self.href = href
+            self._count = count
+            self.clicked = False
+
+        async def count(self) -> int:
+            return self._count
+
+        async def get_attribute(self, name: str) -> str:
+            assert name == "href"
+            return self.href
+
+        async def click(self, timeout: int) -> None:
+            _ = timeout
+            self.clicked = True
+
+    class FakePage:
+        url = "https://www.sciencedirect.com/science/article/pii/S1234567890"
+
+        def __init__(self) -> None:
+            self.locator_obj = FakeLocator("/science/article/pii/S1234567890/pdfft")
+
+        def is_closed(self) -> bool:
+            return False
+
+        def get_by_role(self, role: str, name=None) -> FakeLocator:  # noqa: ANN001
+            _ = (role, name)
+            return FakeLocator("", count=0)
+
+        def locator(self, selector: str) -> FakeLocator:
+            assert "pdfft" in selector
+            return self.locator_obj
+
+        async def query_selector(self, selector: str):  # noqa: ANN202
+            _ = selector
+            return None
+
+    class FakePdfPage:
+        def __init__(self) -> None:
+            self.url = "about:blank"
+
+        async def goto(self, url: str, **kwargs) -> None:  # noqa: ANN003
+            _ = kwargs
+            self.url = url
+
+    class FakeExpectPage:
+        async def __aenter__(self) -> FakeExpectPage:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+            _ = (exc_type, exc, tb)
+            raise TimeoutError("no popup")
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.created_page = FakePdfPage()
+
+        def expect_page(self, timeout: int) -> FakeExpectPage:
+            assert timeout == 4000
+            return FakeExpectPage()
+
+        async def new_page(self) -> FakePdfPage:
+            return self.created_page
+
+    page = FakePage()
+    context = FakeContext()
+    attempted_urls: set[str] = set()
+    tracked: list[FakePdfPage] = []
+    events: list[tuple[str, dict[str, object]]] = []
+
+    asyncio.run(
+        try_view_pdf_click(
+            page,
+            context,
+            {},
+            attempted_urls,
+            tracked.append,
+            lambda warning: (_ for _ in ()).throw(AssertionError(warning)),
+            lambda name, **kwargs: events.append((name, kwargs)),
+        )
+    )
+
+    expected_url = "https://www.sciencedirect.com/science/article/pii/S1234567890/pdfft"
+    assert attempted_urls == {expected_url}
+    assert tracked == [context.created_page]
+    assert context.created_page.url == expected_url
+    assert events[-1][0] == "strategy_action_confirmed"
+    assert events[-1][1]["details"] == {
+        "strategy": "ScienceDirect",
+        "confirmation": "manual_tab_navigation",
+    }
 
 
 def test_fetch_with_browser_surfaces_sciencedirect_manual_fallback_warning(
@@ -761,12 +995,16 @@ def test_fetch_with_browser_cleans_up_listeners_after_reused_session_error(
         def __init__(self, url: str) -> None:
             self.url = url
             self.listeners: dict[str, list[object]] = {}
+            self.fronted = False
+            self.title_value = "Just a moment..."
+            self.fronted = False
+            self.title_value = "Just a moment..."
 
         def is_closed(self) -> bool:
             return False
 
         async def bring_to_front(self) -> None:
-            return None
+            self.fronted = True
 
         async def goto(self, url: str, **kwargs) -> None:  # noqa: ANN003
             _ = kwargs
@@ -878,12 +1116,14 @@ def test_fetch_with_browser_returns_publisher_challenge_when_detected(
         def __init__(self, url: str) -> None:
             self.url = url
             self.listeners: dict[str, list[object]] = {}
+            self.fronted = False
+            self.title_value = "Just a moment..."
 
         def is_closed(self) -> bool:
             return False
 
         async def bring_to_front(self) -> None:
-            return None
+            self.fronted = True
 
         async def goto(self, url: str, **kwargs) -> None:  # noqa: ANN003
             _ = kwargs
@@ -893,10 +1133,16 @@ def test_fetch_with_browser_returns_publisher_challenge_when_detected(
             _ = (state, timeout)
 
         async def title(self) -> str:
-            return "Just a moment..."
+            return self.title_value
 
         async def content(self) -> str:
             return "<html><body>captcha challenge</body></html>"
+
+        async def evaluate(self, script: str, prefix: str) -> str:
+            _ = script
+            if not self.title_value.startswith(prefix):
+                self.title_value = f"{prefix}{self.title_value}"
+            return self.title_value
 
         def on(self, event: str, callback: object) -> None:
             self.listeners.setdefault(event, []).append(callback)
@@ -984,10 +1230,126 @@ def test_fetch_with_browser_returns_publisher_challenge_when_detected(
     assert result.resume["kind"] == "browser_profile"
     assert result.resume["profile_dir"].endswith("browser/profile")
     assert result.warnings[-1] == "Browser automation: publisher_challenge"
+    payload = json.loads(Path(result.session_record_path).read_text(encoding="utf-8"))
+    event_names = [event["name"] for event in payload["events"]]
+    challenge_event = next(event for event in payload["events"] if event["name"] == "publisher_challenge")
+    assert "manual_interactive_wait_started" in event_names
+    assert "manual_interactive_wait_timeout" in event_names
+    assert challenge_event["details"]["attention_marker"]["bring_to_front"] == "ok"
+    assert challenge_event["details"]["attention_marker"]["title_prefix"] == "ok"
+    assert root_page.fronted is True
+    assert root_page.title_value.startswith("GRaDOS ACTION REQUIRED - ")
     assert root_page.listeners.get("response", []) == []
     assert root_page.listeners.get("download", []) == []
     assert session.context.listeners.get("page", []) == []
     assert session.cleaned is True
+
+
+def test_browser_polling_captures_pdf_tab_opened_after_manual_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        headers = {"content-type": "application/pdf"}
+
+        async def body(self) -> bytes:
+            return b"%PDF-1.4\n%manual-tab\n"
+
+    class FakeRequest:
+        async def get(self, url: str, timeout: int | None = None) -> FakeResponse:
+            _ = (url, timeout)
+            return FakeResponse()
+
+    class FakePage:
+        def __init__(self, url: str, title: str, html: str) -> None:
+            self.url = url
+            self.title_value = title
+            self.html = html
+            self.listeners: dict[str, list[object]] = {}
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def bring_to_front(self) -> None:
+            return None
+
+        async def title(self) -> str:
+            return self.title_value
+
+        async def content(self) -> str:
+            return self.html
+
+        async def evaluate(self, script: str, prefix: str) -> str:
+            _ = script
+            if not self.title_value.startswith(prefix):
+                self.title_value = f"{prefix}{self.title_value}"
+            return self.title_value
+
+        def on(self, event: str, callback: object) -> None:
+            self.listeners.setdefault(event, []).append(callback)
+
+        def remove_listener(self, event: str, callback: object) -> None:
+            listeners = self.listeners.get(event, [])
+            if callback in listeners:
+                listeners.remove(callback)
+
+    class FakeContext:
+        def __init__(self, root_page: FakePage, pdf_page: FakePage) -> None:
+            self.pages = [root_page]
+            self.pdf_page = pdf_page
+            self.request = FakeRequest()
+            self.listeners: dict[str, list[object]] = {}
+
+        def on(self, event: str, callback: object) -> None:
+            self.listeners.setdefault(event, []).append(callback)
+
+        def remove_listener(self, event: str, callback: object) -> None:
+            listeners = self.listeners.get(event, [])
+            if callback in listeners:
+                listeners.remove(callback)
+
+    root_page = FakePage(
+        "https://publisher.example/article",
+        "Just a moment...",
+        "<html><body>captcha challenge</body></html>",
+    )
+    pdf_page = FakePage(
+        "https://watermark02.silverchair.com/article.pdf?token=abc",
+        "article.pdf",
+        "<html><body>PDF viewer</body></html>",
+    )
+    context = FakeContext(root_page, pdf_page)
+    state = BrowserFetchState()
+    listeners = BrowserListenerRegistry(context, state)
+    listeners.register(root_page, track_context_pages=True)
+
+    async def fake_sleep(seconds: float) -> None:
+        _ = seconds
+        if pdf_page not in context.pages:
+            context.pages.append(pdf_page)
+
+    monkeypatch.setattr("grados.browser.fetch_runtime.asyncio.sleep", fake_sleep)
+
+    asyncio.run(
+        run_browser_polling_loop(
+            context=context,
+            state=state,
+            listeners=listeners,
+            page_strategies=[],
+            deadline_seconds=1.0,
+            poll_min=0.01,
+            poll_max=0.01,
+            strategy_context_factory=lambda **kwargs: kwargs,
+            backfill_from_url=try_backfill_from_url,
+        )
+    )
+
+    event_names = [event["name"] for event in state.events]
+    assert state.pdf_captured() is True
+    assert state.capture_source == "pdf_url_backfill_after_manual"
+    assert "publisher_challenge" in event_names
+    assert "manual_interactive_wait_started" in event_names
+    assert "manual_user_opened_pdf_page" in event_names
+    assert "manual_interactive_wait_timeout" not in event_names
 
 
 def test_fetch_with_browser_records_session_and_never_writes_papers(

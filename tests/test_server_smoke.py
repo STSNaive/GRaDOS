@@ -61,12 +61,12 @@ def test_server_registers_research_default_tools() -> None:
         "audit_draft_support",
         "build_evidence_grid",
         "compare_papers",
+        "consult_chatgpt_pro",
         "extract_paper_full_text",
         "get_operation_status",
         "get_saved_paper_structure",
         "prepare_evidence_pack",
         "read_saved_paper",
-        "run_external_synthesis",
         "save_research_artifact",
         "search_academic_papers",
         "search_saved_papers",
@@ -81,9 +81,10 @@ def test_server_registers_all_tools_with_all_or_full_profile() -> None:
     expected_tool_names = [
         "audit_answer_against_pack",
         "audit_draft_support",
-        "audit_external_synthesis_result",
+        "audit_external_consult_result",
         "build_evidence_grid",
         "compare_papers",
+        "consult_chatgpt_pro",
         "extract_paper_full_text",
         "get_citation_graph",
         "get_operation_status",
@@ -95,15 +96,15 @@ def test_server_registers_all_tools_with_all_or_full_profile() -> None:
         "parse_pdf_file",
         "plan_library_pdf_cleanup",
         "prepare_evidence_pack",
-        "prepare_external_synthesis_from_topic",
-        "prepare_external_synthesis_packet",
-        "preview_external_synthesis_packet",
+        "prepare_external_consult_from_topic",
+        "prepare_external_consult_packet",
+        "preview_external_consult_packet",
         "query_research_artifacts",
         "read_evidence_pack",
         "read_paper_asset",
         "read_saved_paper",
-        "run_external_synthesis",
-        "save_external_synthesis_result",
+        "run_external_consult",
+        "save_external_consult_result",
         "save_paper_to_zotero",
         "save_research_artifact",
         "search_academic_papers",
@@ -124,6 +125,7 @@ def test_server_combines_research_default_with_local_pdf_toolset() -> None:
         "audit_draft_support",
         "build_evidence_grid",
         "compare_papers",
+        "consult_chatgpt_pro",
         "extract_paper_full_text",
         "get_operation_status",
         "get_saved_paper_structure",
@@ -133,7 +135,6 @@ def test_server_combines_research_default_with_local_pdf_toolset() -> None:
         "prepare_evidence_pack",
         "read_paper_asset",
         "read_saved_paper",
-        "run_external_synthesis",
         "save_research_artifact",
         "search_academic_papers",
         "search_saved_papers",
@@ -223,7 +224,7 @@ def test_tool_metadata_exposes_clearer_llm_contracts() -> None:
     pack_audit = tools["audit_answer_against_pack"]
     assert "include_suggestions" in pack_audit.parameters["properties"]
 
-    save_external = tools["save_external_synthesis_result"]
+    save_external = tools["save_external_consult_result"]
     assert save_external.parameters["properties"]["audit"]["default"] is True
 
 
@@ -1359,6 +1360,9 @@ def test_extract_paper_full_text_records_challenge_state(tmp_path: Path, monkeyp
     assert "Failed to fetch paper: 10.1234/demo" in result
     assert "Manual Browser Resume" in result
     assert "www.sciencedirect.com" in result
+    assert "GRaDOS ACTION REQUIRED" in result
+    assert "ingest_codex_downloaded_pdf(doi=..., downloaded_file_path=...)" in result
+    assert "parse_pdf_file(file_path=..., doi=..., copy_to_library=true)" in result
     assert len(calls) == 1
     assert calls[0]["metadata_dir"] == tmp_path / "grados-home" / "database" / "remote_metadata"
     assert calls[0]["fetch_status"] == "challenge"
@@ -2189,15 +2193,15 @@ def test_stage_b_state_tools_round_trip(tmp_path: Path, monkeypatch) -> None:
     assert any("browser-assisted extraction" in item for item in suggestion["suggestions"])
 
 
-def test_external_synthesis_tools_respect_config_gate(tmp_path: Path, monkeypatch) -> None:
+def test_external_consult_tools_respect_config_gate(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
 
-    from grados.server_tools.research_tools_api import preview_external_synthesis_packet
+    from grados.server_tools.research_tools_api import preview_external_consult_packet
 
-    result = asyncio.run(preview_external_synthesis_packet(pack_id="pack_missing"))
+    result = asyncio.run(preview_external_consult_packet(pack_id="pack_missing"))
 
     assert result["ok"] is False
-    assert result["error"] == "external_synthesis_disabled"
+    assert result["error"] == "external_consult_disabled"
     assert result["sendable"] is False
 
 

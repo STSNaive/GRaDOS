@@ -184,7 +184,7 @@ async def fetch_with_browser(
             },
         )
         listeners = BrowserListenerRegistry(runtime.context, state)
-        listeners.register(runtime.root_page)
+        listeners.register(runtime.root_page, track_context_pages=True)
 
         await navigate_to_doi_target(
             runtime.root_page,

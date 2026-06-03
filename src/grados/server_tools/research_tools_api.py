@@ -16,37 +16,38 @@ __all__ = [
     "audit_draft_support",
     "build_evidence_grid",
     "compare_papers",
+    "consult_chatgpt_pro",
     "get_citation_graph",
     "get_operation_status",
     "get_papers_full_context",
     "manage_failure_cases",
     "prepare_evidence_pack",
-    "prepare_external_synthesis_from_topic",
-    "prepare_external_synthesis_packet",
-    "preview_external_synthesis_packet",
+    "prepare_external_consult_from_topic",
+    "prepare_external_consult_packet",
+    "preview_external_consult_packet",
     "query_research_artifacts",
     "read_evidence_pack",
     "register_research_tools_api",
-    "run_external_synthesis",
-    "save_external_synthesis_result",
+    "run_external_consult",
+    "save_external_consult_result",
     "save_research_artifact",
     "suggest_missing_evidence",
-    "audit_external_synthesis_result",
+    "audit_external_consult_result",
     "verify_evidence_pack",
 ]
 
 
-def _external_synthesis_disabled_response() -> dict[str, object]:
+def _external_consult_disabled_response() -> dict[str, object]:
     return {
         "ok": False,
         "sendable": False,
         "saved": False,
         "enabled": False,
-        "error": "external_synthesis_disabled",
+        "error": "external_consult_disabled",
         "next_action": (
-            "Set research.external_synthesis.enabled=true and verify with "
-            "`grados external-synthesis is-enabled --quiet` before using the "
-            "GRaDOS-native ChatGPT browser synthesis route."
+            "Set research.external_consult.enabled=true and verify with "
+            "`grados external-consult is-enabled --quiet` before using the "
+            "GRaDOS-native ChatGPT Pro consult route."
         ),
     }
 
@@ -150,7 +151,7 @@ async def get_operation_status(
         bool,
         Field(
             description=(
-                "When true, attempt safe recovery/capture for recoverable external synthesis sessions. "
+                "When true, attempt safe recovery/capture for recoverable external consult sessions. "
                 "This never resends the original ChatGPT prompt."
             )
         ),
@@ -159,7 +160,7 @@ async def get_operation_status(
     """Inspect or recover a durable long-running GRaDOS operation."""
     from grados.browser.chatgpt.session_store import is_valid_chatgpt_session_id
     from grados.research_state import read_research_run_manifest
-    from grados.research_tools import get_external_synthesis_operation_status as external_status
+    from grados.research_tools import get_external_consult_operation_status as external_status
     from grados.storage.operations import (
         build_operation_debug_bundle,
         complete_operation,
@@ -363,7 +364,7 @@ async def get_operation_status(
             )
 
     if registry_record is not None:
-        if registry_record.kind == "external_synthesis" and detail and is_valid_chatgpt_session_id(operation_id):
+        if registry_record.kind == "external_consult" and detail and is_valid_chatgpt_session_id(operation_id):
             external_payload = await external_status(
                 paths.database_state,
                 paths.papers,
@@ -371,9 +372,10 @@ async def get_operation_status(
                 operation_id=operation_id,
                 detail=True,
                 browser_config=config.extract.headless_browser,
+                external_consult_config=config.research.external_consult,
             )
             if external_payload.get("status") == "completed":
-                completed_stage = str(external_payload.get("stage") or "external_synthesis_saved")
+                completed_stage = str(external_payload.get("stage") or "external_consult_saved")
                 completed_progress = dict(external_payload.get("progress") or {})
                 completed_result = {
                     "result_artifact_id": str(external_payload.get("result_artifact_id") or ""),
@@ -428,6 +430,7 @@ async def get_operation_status(
             operation_id=operation_id,
             detail=detail,
             browser_config=config.extract.headless_browser,
+            external_consult_config=config.research.external_consult,
         )
 
     parse_attempt = get_parse_attempt(paths.database_state, operation_id)
@@ -582,14 +585,106 @@ async def verify_evidence_pack(
     return run_verify(paths.database_state, paths.papers, pack_id=pack_id)
 
 
-async def run_external_synthesis(
-    topic: Annotated[
-        str | None,
-        Field(description="Research topic to prepare into a fresh evidence pack and browser synthesis packet."),
+async def consult_chatgpt_pro(
+    prompt: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Required prompt to send to ChatGPT Pro as an advisory consult.",
+        ),
+    ],
+    context_artifact_ids: Annotated[
+        list[str] | None,
+        Field(description="Optional GRaDOS research artifact ids to include as bounded context."),
+    ] = None,
+    context_paths: Annotated[
+        list[str] | None,
+        Field(description="Optional local text/markdown paths to include as bounded context."),
     ] = None,
     pack_id: Annotated[
         str | None,
-        Field(description="Existing current-valid evidence pack id to send through browser synthesis."),
+        Field(description="Optional evidence pack id to include as context; not required for prompt-only consults."),
+    ] = None,
+    packet_id: Annotated[
+        str | None,
+        Field(description="Optional external_consult_packet artifact id to include as context."),
+    ] = None,
+    mode: Annotated[
+        Literal["ask", "review", "synthesize", "critique"],
+        Field(description="Consult intent; output remains advisory in every mode."),
+    ] = "ask",
+    model_strategy: Annotated[
+        Literal["select", "current", "ignore"],
+        Field(
+            description="Model handling: select visible Pro target, record current label only, or skip with warning.",
+        ),
+    ] = "select",
+    thinking_strategy: Annotated[
+        Literal["highest", "current", "ignore"],
+        Field(
+            description=(
+                "Thinking handling: select highest visible effort, record current label only, "
+                "or skip with warning."
+            ),
+        ),
+    ] = "highest",
+    wait_policy: Annotated[
+        Literal["auto", "return_pending"],
+        Field(description="Use bounded auto-reattach/capture or return after the configured response wait budget."),
+    ] = "auto",
+    manual_response: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Pasted assistant response for manual copy fallback. Pair with recover_session_id; "
+                "GRaDOS saves it with manual_copy capture metadata without reopening the browser."
+            ),
+        ),
+    ] = None,
+    metadata: Annotated[
+        dict[str, object] | None,
+        Field(description="Optional metadata such as research_run_id for manifest linking."),
+    ] = None,
+    recover_session_id: Annotated[
+        str | None,
+        Field(description="Optional saved ChatGPT browser session id to recover without resending."),
+    ] = None,
+) -> dict[str, object]:
+    """Consult ChatGPT Pro through the GRaDOS-managed private browser profile."""
+    from grados.research_tools import consult_chatgpt_pro as run_consult
+
+    paths, config = get_paths_and_config()
+    if not config.research.external_consult.enabled:
+        return _external_consult_disabled_response()
+    return await run_consult(
+        paths.database_state,
+        paths.papers,
+        paths,
+        prompt=prompt,
+        context_artifact_ids=context_artifact_ids,
+        context_paths=context_paths,
+        pack_id=pack_id or "",
+        packet_id=packet_id or "",
+        mode=mode,
+        model_strategy=model_strategy,
+        thinking_strategy=thinking_strategy,
+        wait_policy=wait_policy,
+        manual_response=manual_response or "",
+        metadata=metadata,
+        recover_session_id=recover_session_id or "",
+        browser_config=config.extract.headless_browser,
+        external_consult_config=config.research.external_consult,
+    )
+
+
+async def run_external_consult(
+    topic: Annotated[
+        str | None,
+        Field(description="Research topic to prepare into a fresh evidence pack and browser consult packet."),
+    ] = None,
+    pack_id: Annotated[
+        str | None,
+        Field(description="Existing current-valid evidence pack id to send through browser consult."),
     ] = None,
     subquestions: Annotated[
         list[str] | None,
@@ -605,7 +700,7 @@ async def run_external_synthesis(
     ] = 8,
     mode: Annotated[
         Literal["review", "synthesize"],
-        Field(description="External synthesis mode."),
+        Field(description="External consult mode."),
     ] = "review",
     max_items: Annotated[
         int,
@@ -624,13 +719,13 @@ async def run_external_synthesis(
         Field(description="Optional saved ChatGPT browser session id to recover without resending."),
     ] = None,
 ) -> dict[str, object]:
-    """Run the default GRaDOS-native ChatGPT Pro browser synthesis route."""
-    from grados.research_tools import run_external_synthesis as run_browser_synthesis
+    """Prepare topic/pack context and send it through `consult_chatgpt_pro` without auto-audit."""
+    from grados.research_tools import run_external_consult as run_browser_consult
 
     paths, config = get_paths_and_config()
-    if not config.research.external_synthesis.enabled:
-        return _external_synthesis_disabled_response()
-    return await run_browser_synthesis(
+    if not config.research.external_consult.enabled:
+        return _external_consult_disabled_response()
+    return await run_browser_consult(
         paths.database_chroma,
         paths.database_state,
         paths.papers,
@@ -646,10 +741,11 @@ async def run_external_synthesis(
         metadata=metadata,
         recover_session_id=recover_session_id or "",
         browser_config=config.extract.headless_browser,
+        external_consult_config=config.research.external_consult,
     )
 
 
-async def preview_external_synthesis_packet(
+async def preview_external_consult_packet(
     pack_id: Annotated[
         str,
         Field(min_length=1, description="Evidence pack id returned by `prepare_evidence_pack`."),
@@ -668,11 +764,11 @@ async def preview_external_synthesis_packet(
     ] = 700,
 ) -> dict[str, object]:
     """Preview a ChatGPT Pro packet without saving or contacting external services."""
-    from grados.research_tools import preview_external_synthesis_packet as run_preview
+    from grados.research_tools import preview_external_consult_packet as run_preview
 
     paths, config = get_paths_and_config()
-    if not config.research.external_synthesis.enabled:
-        return _external_synthesis_disabled_response()
+    if not config.research.external_consult.enabled:
+        return _external_consult_disabled_response()
     return run_preview(
         paths.database_state,
         paths.papers,
@@ -683,7 +779,7 @@ async def preview_external_synthesis_packet(
     )
 
 
-async def prepare_external_synthesis_packet(
+async def prepare_external_consult_packet(
     pack_id: Annotated[
         str,
         Field(min_length=1, description="Evidence pack id returned by `prepare_evidence_pack`."),
@@ -706,11 +802,11 @@ async def prepare_external_synthesis_packet(
     ] = None,
 ) -> dict[str, object]:
     """Persist a current-valid packet for host-side ChatGPT Pro review or synthesis."""
-    from grados.research_tools import prepare_external_synthesis_packet as run_prepare
+    from grados.research_tools import prepare_external_consult_packet as run_prepare
 
     paths, config = get_paths_and_config()
-    if not config.research.external_synthesis.enabled:
-        return _external_synthesis_disabled_response()
+    if not config.research.external_consult.enabled:
+        return _external_consult_disabled_response()
     return run_prepare(
         paths.database_state,
         paths.papers,
@@ -722,10 +818,10 @@ async def prepare_external_synthesis_packet(
     )
 
 
-async def prepare_external_synthesis_from_topic(
+async def prepare_external_consult_from_topic(
     topic: Annotated[
         str,
-        Field(min_length=1, description="Research topic or question to turn into an external synthesis packet."),
+        Field(min_length=1, description="Research topic or question to turn into an external consult packet."),
     ],
     subquestions: Annotated[
         list[str] | None,
@@ -756,12 +852,12 @@ async def prepare_external_synthesis_from_topic(
         Field(description="Optional metadata such as research_run_id for manifest linking."),
     ] = None,
 ) -> dict[str, object]:
-    """Prepare a fresh evidence pack and persist a current-valid external synthesis packet."""
-    from grados.research_tools import prepare_external_synthesis_from_topic as run_prepare_from_topic
+    """Prepare a fresh evidence pack and persist a current-valid external consult packet."""
+    from grados.research_tools import prepare_external_consult_from_topic as run_prepare_from_topic
 
     paths, config = get_paths_and_config()
-    if not config.research.external_synthesis.enabled:
-        return _external_synthesis_disabled_response()
+    if not config.research.external_consult.enabled:
+        return _external_consult_disabled_response()
     return run_prepare_from_topic(
         paths.database_chroma,
         paths.database_state,
@@ -777,10 +873,10 @@ async def prepare_external_synthesis_from_topic(
     )
 
 
-async def save_external_synthesis_result(
+async def save_external_consult_result(
     pack_id: Annotated[
         str,
-        Field(min_length=1, description="Evidence pack id used for the external synthesis packet."),
+        Field(min_length=1, description="Evidence pack id used for the external consult packet."),
     ],
     response: Annotated[
         dict[str, object] | str,
@@ -788,7 +884,7 @@ async def save_external_synthesis_result(
     ],
     packet_artifact_id: Annotated[
         str | None,
-        Field(description="Optional external_synthesis_packet artifact id returned by prepare."),
+        Field(description="Optional external_consult_packet artifact id returned by prepare."),
     ] = None,
     prompt_hash: Annotated[
         str | None,
@@ -828,11 +924,11 @@ async def save_external_synthesis_result(
     ] = True,
 ) -> dict[str, object]:
     """Save a host-provided ChatGPT Pro response as advisory research state."""
-    from grados.research_tools import save_external_synthesis_result as run_save
+    from grados.research_tools import save_external_consult_result as run_save
 
     paths, config = get_paths_and_config()
-    if not config.research.external_synthesis.enabled:
-        return _external_synthesis_disabled_response()
+    if not config.research.external_consult.enabled:
+        return _external_consult_disabled_response()
     return run_save(
         paths.database_state,
         paths.papers,
@@ -851,10 +947,10 @@ async def save_external_synthesis_result(
     )
 
 
-async def audit_external_synthesis_result(
+async def audit_external_consult_result(
     result_id: Annotated[
         str,
-        Field(min_length=1, description="external_synthesis_result artifact id to audit."),
+        Field(min_length=1, description="external_consult_result artifact id to audit."),
     ],
     strict: Annotated[
         bool,
@@ -866,11 +962,11 @@ async def audit_external_synthesis_result(
     ] = "author_year",
 ) -> dict[str, object]:
     """Audit a saved ChatGPT Pro response against its linked packet or source pack."""
-    from grados.research_tools import audit_external_synthesis_result as run_audit
+    from grados.research_tools import audit_external_consult_result as run_audit
 
     paths, config = get_paths_and_config()
-    if not config.research.external_synthesis.enabled:
-        return _external_synthesis_disabled_response()
+    if not config.research.external_consult.enabled:
+        return _external_consult_disabled_response()
     return run_audit(
         paths.database_state,
         paths.papers,
@@ -1257,7 +1353,7 @@ def register_research_tools_api(mcp: FastMCP, policy: ToolsetPolicy | None = Non
         get_operation_status,
         description=(
             "Inspect a durable long-running operation returned by GRaDOS tools. "
-            "Use this for pending external synthesis sessions, DOI-bound PDF parse attempts, "
+            "Use this for pending external consult sessions, DOI-bound PDF parse attempts, "
             "indepth search runs, local PDF import runs, and Codex download handoffs; "
             "`detail=true` may recover a ChatGPT browser response without resending the prompt "
             "and returns registry events/debug pointers."
@@ -1295,21 +1391,28 @@ def register_research_tools_api(mcp: FastMCP, policy: ToolsetPolicy | None = Non
 
     active_policy.register_tool(
         mcp,
-        run_external_synthesis,
+        consult_chatgpt_pro,
         description=(
-            "Run the default GRaDOS-native ChatGPT Pro browser synthesis route. "
-            "When external synthesis is enabled, this prepares or verifies a current-valid "
-            "evidence pack, creates a packet, uses the private GRaDOS ChatGPT Chrome profile, "
-            "verifies GRaDOS-validated Pro model and Pro Extended thinking route before sending, "
-            "captures the response, saves it as advisory output, and audits it before "
-            "returning the canonical reread next action. Long generations return pending operation receipts; "
-            "poll get_operation_status(detail=true) instead of resending the packet."
+            "Consult ChatGPT Pro through the default-off GRaDOS-managed private browser profile. "
+            "`prompt` is required; evidence packs, packet artifacts, saved artifacts, and local paths "
+            "are optional bounded context. It records model/thinking strategies, sends the prompt once, "
+            "uses bounded auto-reattach/capture by default, saves advisory output, and never treats "
+            "ChatGPT prose as canonical citation evidence or auto-audits by default."
         ),
     )
 
     active_policy.register_tool(
         mcp,
-        preview_external_synthesis_packet,
+        run_external_consult,
+        description=(
+            "Prepare a topic or current-valid pack into external consult packet context, then send "
+            "that packet through consult_chatgpt_pro. This route no longer auto-audits by default."
+        ),
+    )
+
+    active_policy.register_tool(
+        mcp,
+        preview_external_consult_packet,
         description=(
             "Preview the compact host-side ChatGPT Pro packet for a current-valid evidence pack. "
             "This never opens Chrome, calls ChatGPT, or saves an artifact."
@@ -1318,30 +1421,29 @@ def register_research_tools_api(mcp: FastMCP, policy: ToolsetPolicy | None = Non
 
     active_policy.register_tool(
         mcp,
-        prepare_external_synthesis_packet,
+        prepare_external_consult_packet,
         description=(
-            "Persist a compact external_synthesis_packet built only from current-valid evidence pack "
-            "anchors. This is a lower-level recovery route; the default enabled route is "
-            "run_external_synthesis, which sends the packet through GRaDOS's private ChatGPT "
-            "browser mode."
+            "Persist a compact external_consult_packet built only from current-valid evidence pack "
+            "anchors. This is a lower-level recovery route; the default enabled browser route is "
+            "consult_chatgpt_pro, which can use the packet as optional bounded context."
         ),
     )
 
     active_policy.register_tool(
         mcp,
-        prepare_external_synthesis_from_topic,
+        prepare_external_consult_from_topic,
         description=(
-            "Prepare a fresh evidence pack from a topic and persist a verified external_synthesis_packet "
-            "in one deterministic lower-level route. Use run_external_synthesis for the default "
-            "browser send/save/audit workflow when no pack id already exists."
+            "Prepare a fresh evidence pack from a topic and persist a verified external_consult_packet "
+            "in one deterministic lower-level route. Use consult_chatgpt_pro for the default "
+            "browser consult/save workflow when a prompt should be sent."
         ),
     )
 
     active_policy.register_tool(
         mcp,
-        save_external_synthesis_result,
+        save_external_consult_result,
         description=(
-            "Save a host-provided ChatGPT Pro response as an advisory external_synthesis_result "
+            "Save a host-provided ChatGPT Pro response as an advisory external_consult_result "
             "artifact linked to the source evidence pack and optional packet/session metadata. "
             "By default, immediately audits the saved result before returning."
         ),
@@ -1349,9 +1451,9 @@ def register_research_tools_api(mcp: FastMCP, policy: ToolsetPolicy | None = Non
 
     active_policy.register_tool(
         mcp,
-        audit_external_synthesis_result,
+        audit_external_consult_result,
         description=(
-            "Audit a saved external_synthesis_result against its linked packet when present, "
+            "Audit a saved external_consult_result against its linked packet when present, "
             "otherwise its source evidence pack, using structured claim anchor ids while "
             "flagging unknown anchors, locators, outside DOIs, stale packs, and non-verified "
             "claims."

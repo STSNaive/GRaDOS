@@ -35,24 +35,24 @@ GRaDOS 设计给 agent 科研工作流直接调用：
 
 需要跨对话或交接保持引用依据时，用 `prepare_evidence_pack` 从 `papers/*.md` materialize canonical blocks，并在计算 DOI 覆盖前过滤 References/backmatter、title-only 和 citation-only 片段。只有 `verify_evidence_pack` 返回 `current_valid=true` 的 pack 才能作为当前引用证据；strict pack audit 会忽略 pack 内非证据项，也不会临时全库搜索来悄悄补证。
 
-启用 external synthesis 时，GRaDOS 可以把 current-valid evidence pack 转成紧凑的 host-side ChatGPT Pro packet，保存返回的 advisory response；如果结果关联了 packet，就按该 packet 审计，否则才退回 source pack。存在 scoped DOI 缺口或非证据 anchor 的 packet 不会被标记为 sendable。Pro 输出仍只是恢复/评审材料；可接受的 claim 也必须回到 GRaDOS canonical 段落窗口后才能最终引用。
+启用 external consult 时，GRaDOS 可以把 current-valid evidence pack 转成紧凑的 host-side ChatGPT Pro packet，保存返回的 advisory response；如果结果关联了 packet，就按该 packet 审计，否则才退回 source pack。存在 scoped DOI 缺口或非证据 anchor 的 packet 不会被标记为 sendable。Pro 输出仍只是恢复/评审材料；可接受的 claim 也必须回到 GRaDOS canonical 段落窗口后才能最终引用。
 
 需要恢复整次研究过程时，`research_run_manifest` 是一次 research run 的轻量目录页，而不是证据来源。它可以串联 search query、候选、extraction/parser receipt、`paper_summary`、`research_checkpoint`、`evidence_checkpoint`、`evidence_pack`、audit result id、canonical anchor 和失败记录；也可以保存 append-only event ledger 与 redacted config/provenance snapshot。修正流程用追加 correction event 的方式表达，不改写旧事件；任何 secret 都不得写入 manifest。最终引用仍必须回读 canonical `papers/*.md` 或 current-valid evidence pack。
 
-需要恢复长操作时，Operation Registry 是 GRaDOS 状态数据库里的轻量 SQLite 控制面。它把 external synthesis session、DOI-bound parse attempt、indepth run、本地 import run 和 Codex download handoff 统一成 `operation_id`、`kind`、`status`、`stage`、`progress`、`next_action` 与 recovery metadata，同时保留各自领域 store 的可恢复性。`get_operation_status(detail=true)` 可以返回 lifecycle events 和 debug bundle，指向相关 session/run/parse/artifact；这些记录只是运行元数据，不是引用证据。
+需要恢复长操作时，Operation Registry 是 GRaDOS 状态数据库里的轻量 SQLite 控制面。它把 external consult session、DOI-bound parse attempt、indepth run、本地 import run 和 Codex download handoff 统一成 `operation_id`、`kind`、`status`、`stage`、`progress`、`next_action` 与 recovery metadata，同时保留各自领域 store 的可恢复性。`get_operation_status(detail=true)` 可以返回 lifecycle events 和 debug bundle，指向相关 session/run/parse/artifact；这些记录只是运行元数据，不是引用证据。
 
 面向论文、综述、实验流程和实验报告写作时，内置 skill 会用 `references/paper_writing.md` 作为 workflow router。它会把 agent 引到实验/仿真 protocol、literature review、experiment report、manuscript 等细分 profile，并在力学、弹性/声学/机械超材料、phononic crystal、band gap 等主题上加载对应 domain profile。这些 profile 只负责规划、claim matrix、section gate 和交付检查，不会成为第二套证据源，也不会把写作阶段拆成一组新的 MCP tools。
 
 ### MCP Toolsets 🧰
 
-默认情况下，MCP `tools/list` 暴露 `research_default` profile，而不是所有 GRaDOS public tools。这样普通研究 agent 会优先看到端到端研究闭环所需的工具：本地/远程检索、全文获取、结构卡、canonical 回读、operation polling、evidence pack、审计、evidence grid、对比、默认 external synthesis，以及 run-linked artifact 保存。
+默认情况下，MCP `tools/list` 暴露 `research_default` profile，而不是所有 GRaDOS public tools。这样普通研究 agent 会优先看到端到端研究闭环所需的工具：本地/远程检索、全文获取、结构卡、canonical 回读、operation polling、evidence pack、审计、evidence grid、对比、默认 external consult，以及 run-linked artifact 保存。
 
 Toolsets 只控制 MCP 工具可见性；不会删除 Python 函数、CLI 命令、resources、内部 workflow 或既有存储路径。`grados://papers/index` 和 `grados://papers/{safe_doi}` 两个论文资源默认仍会注册，也不计入工具数量。
 
 | 设置 | 暴露工具 |
 | --- | --- |
 | 未设置 / `GRADOS_MCP_TOOLSETS=research_default` | 默认研究 workflow 工具。 |
-| `GRADOS_MCP_TOOLSETS=all` 或 `GRADOS_MCP_TOOLSETS=full` | 完整 public MCP surface，目前为 31 个工具。 |
+| `GRADOS_MCP_TOOLSETS=all` 或 `GRADOS_MCP_TOOLSETS=full` | 完整 public MCP surface，目前为 32 个工具。 |
 | `GRADOS_MCP_TOOLSETS=research_default,local_pdf` | 默认研究工具，加上本地 PDF import/parse/handoff/asset 工具。 |
 | `GRADOS_MCP_TOOLS=read_saved_paper,prepare_evidence_pack` | 未同时设置 toolset 时，作为精确工具 allow-list。 |
 | `GRADOS_MCP_TOOLSETS=research_default` 加 `GRADOS_MCP_TOOLS=read_paper_asset` | 默认 profile 加显式指定工具。 |
@@ -71,7 +71,7 @@ Toolsets 只控制 MCP 工具可见性；不会删除 Python 函数、CLI 命令
 | GRaDOS | `read_paper_asset` | 列出或读取已保存论文的 parser assets，包括图片、表格、公式、页面图和 debug/source 文件。图片只在显式请求且低于尺寸上限时内联返回。 |
 | GRaDOS | `import_local_pdf_library` | 扫描本地 PDF 文件或目录，然后把逐 PDF 解析/导入作为后台 import run 推进。返回 `operation_id`、进度和 `get_operation_status` 下一步。 |
 | GRaDOS | `parse_pdf_file` | 把本地 PDF 解析为 markdown。未提供 DOI 时返回截断预览；提供 DOI 时会保存进 canonical 论文库，并在 `copy_to_library=true` 时 materialize 受管 PDF；长解析可先返回 `parse_in_progress`，GRaDOS 后台继续同一个 durable parse attempt。 |
-| GRaDOS | `get_operation_status` | 查询 pending external synthesis、DOI-bound PDF parse、indepth search、本地 PDF import 或 Codex download handoff operation。`detail=true` 可在不重复发送 prompt 的情况下恢复 ChatGPT browser 响应，并返回 registry events/debug 指针。 |
+| GRaDOS | `get_operation_status` | 查询 pending external consult、DOI-bound PDF parse、indepth search、本地 PDF import 或 Codex download handoff operation。`detail=true` 可在不重复发送 prompt 的情况下恢复 ChatGPT browser 响应，并返回 registry events/debug 指针。 |
 | GRaDOS | `ingest_codex_downloaded_pdf` | 完成 `codex` Chrome extension handoff：校验 `downloaded_file_path` 或 watch dir 中唯一候选 PDF，然后复用同一条 canonical parse/save 路径；歧义、缺失或失败会记录为可恢复的 `codex_download_handoff` operation，长解析中的候选会返回 in-progress 而不是 parse failure。 |
 | GRaDOS | `plan_library_pdf_cleanup` | dry-run 扫描 `downloads/` 中与 DOI 受管 `downloads/{safe_doi}.pdf` hash 相同的非 canonical publisher-name PDF，只生成报告，不删除文件。 |
 | GRaDOS | `save_paper_to_zotero` | 通过 Zotero Web API 把单篇论文保存到当前配置的 Zotero 库，通常用于最终答案里实际引用到的论文。 |
@@ -80,18 +80,19 @@ Toolsets 只控制 MCP 工具可见性；不会删除 Python 函数、CLI 命令
 | GRaDOS | `prepare_evidence_pack` | 召回候选 anchor，回读 `papers/*.md` 中的 canonical blocks，过滤非证据片段，并持久化最小 `evidence_pack` artifact，包含 pack hash、block hash、answerability 和 scoped DOI 覆盖状态。 |
 | GRaDOS | `read_evidence_pack` | 通过 pack id 或 artifact id 恢复已保存的 evidence pack。 |
 | GRaDOS | `verify_evidence_pack` | 从当前 `papers/*.md` 重建 canonical block manifest，并报告 snapshot/current validity、missing paper、document change、relocation 和 hash mismatch。 |
-| GRaDOS | `preview_external_synthesis_packet` | 从 current-valid evidence pack dry-run 紧凑 external-synthesis packet，不保存 artifact，也不调用外部服务。 |
-| GRaDOS | `prepare_external_synthesis_packet` | 持久化 `external_synthesis_packet` artifact，包含 verified anchor id、canonical 段落坐标、excerpt、candidate claim、limitations 和 prompt hash，并把 host prompt 作为可再生成视图返回。 |
-| GRaDOS | `prepare_external_synthesis_from_topic` | 从 topic 准备 fresh evidence pack，并在同一路线中持久化 verified external-synthesis packet，返回 pack/packet id 和 host prompt。 |
-| GRaDOS | `run_external_synthesis` | 运行默认的 GRaDOS-native ChatGPT Pro browser 路线：准备或验证 packet，使用私有 ChatGPT profile，确认 GRaDOS-validated Pro model 路线和 Pro Extended thinking 路线，捕获 advisory response，保存并审计后再进入 canonical reread；长生成会返回 pending operation receipt，应使用 `get_operation_status(detail=true)` 而不是重发。 |
-| GRaDOS | `save_external_synthesis_result` | 把 host 提供的 ChatGPT Pro 回复保存为 advisory `external_synthesis_result` 状态，并关联 source pack、可选 packet、prompt hash 和 session metadata；默认 `audit=true`。 |
-| GRaDOS | `audit_external_synthesis_result` | 优先按已关联 packet 审计 external synthesis 结果，没有 packet 时才退回 source pack；结构化 `claims[].anchor_ids` 是主要交接合同，正文 audit 作为风险扫描保留。 |
+| GRaDOS | `preview_external_consult_packet` | 从 current-valid evidence pack dry-run 紧凑 external-consult packet，不保存 artifact，也不调用外部服务。 |
+| GRaDOS | `prepare_external_consult_packet` | 持久化 `external_consult_packet` artifact，包含 verified anchor id、canonical 段落坐标、excerpt、candidate claim、limitations 和 prompt hash，并把 host prompt 作为可再生成视图返回。 |
+| GRaDOS | `prepare_external_consult_from_topic` | 从 topic 准备 fresh evidence pack，并在同一路线中持久化 verified external-consult packet，返回 pack/packet id 和 host prompt。 |
+| GRaDOS | `consult_chatgpt_pro` | 通过私有 GRaDOS browser profile 咨询 ChatGPT Pro。必须提供 prompt；pack、packet、artifact 和文件只是可选上下文。它会记录 model/thinking strategy，单次发送 prompt，默认 bounded auto-reattach，保存 advisory output，支持用 `manual_response` 保存手动粘贴 fallback，且不默认 audit。 |
+| GRaDOS | `run_external_consult` | 把 topic 或 current-valid pack 准备成 external consult packet context，再通过 `consult_chatgpt_pro` 发送；这个 route 不再默认 audit。 |
+| GRaDOS | `save_external_consult_result` | 把 host 提供的 ChatGPT Pro 回复保存为 advisory `external_consult_result` 状态，并关联 source pack、可选 packet、prompt hash 和 session metadata；默认 `audit=true`。 |
+| GRaDOS | `audit_external_consult_result` | 优先按已关联 packet 审计 external consult 结果，没有 packet 时才退回 source pack；结构化 `claims[].anchor_ids` 是主要交接合同，正文 audit 作为风险扫描保留。 |
 | GRaDOS | `audit_answer_against_pack` | 只使用单个 pack 内的 evidence items 审计草稿 claims，返回 `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，不会全库搜索来填补缺口；可用 `include_suggestions=true` 附带后续补证建议。 |
 | GRaDOS | `suggest_missing_evidence` | 针对 pack audit 中非 `verified` 的 claim 给出后续补证或修改建议，不改变 strict audit 结论。 |
 | GRaDOS | `manage_failure_cases` | 记录、查询并总结 fetch、parse、search 或 citation 失败案例，也能给出保守的重试建议。 |
 | GRaDOS | `get_citation_graph` | 返回本地论文库中的轻量引用关系，包括引用邻居、共同参考文献和反向 citing-paper 查询。 |
 | GRaDOS | `get_papers_full_context` | 为按上下文预算分批的已保存论文返回结构化全文上下文，可先拿 token 估计，也可直接进入 CAG 风格的深读模式。 |
-| GRaDOS | `build_evidence_grid` | 围绕主题或子问题，从本地论文库构建写作前的证据网格；行内带可回读 anchor，供 agent-side reranking 后再核验引用，scoped DOI 调用会报告 requested/covered/missing 覆盖状态。 |
+| GRaDOS | `build_evidence_grid` | 围绕主题或子问题，从本地论文库构建写作前的证据网格；行内带可回读 anchor，供 agent-side reranking 后再核验引用，scoped DOI 调用会报告 requested/covered/missing 覆盖状态，弱证据行会暴露 `eligibility`、`rejection_reason` 和 `evidence_warning`，不再伪装成 citation-ready。 |
 | GRaDOS | `compare_papers` | 跨多篇已保存论文抽取并行对比材料，聚焦 methods、results 或 full text；返回 excerpt 会带每个对比轴的回读 anchor，默认避开后置噪声 section，并在没有合格 excerpt 时留空该轴。 |
 | GRaDOS | `audit_draft_support` | 审计草稿中的 claim 是否被本地论文库支持，返回 first-pass `verified`、`minor_distortion`、`major_distortion`、`unverifiable` 或 `unverifiable_access` verdict，以及合格候选 evidence snippet、issue type、revision action 和 anchor；`author_year` citation 包括括号/方括号 marker，以及 `Dou et al. (2026)`、`Dou et al., 2026`、`张三等，2025` 这类 narrative marker，检索 query 会剥离 author/year，但 attribution check 仍保持严格；`candidate_limit` 控制每条 claim 的候选数。 |
 
@@ -296,13 +297,14 @@ cp -R skills/grados "<skills-root>/"
 ### 研究工作流开关
 
 - `research.indepth`：默认关闭；控制远程检索是否立即 materialize 返回候选，用于 checkpoint 化的全文评审。
-- `research.external_synthesis`：默认关闭；只包含 `enabled`，表示 GRaDOS-native ChatGPT Pro browser reviewer/synthesizer。自动化 gate 用 `grados external-synthesis is-enabled --quiet`；诊断细节用 `grados external-synthesis status --json`；首次登录私有 profile 用 `grados external-synthesis setup-browser`。启用时 GRaDOS 可以准备 verified external-synthesis packet、使用私有 ChatGPT browser profile、保存返回的 advisory response，并按关联 packet 或 source pack 审计；关闭时 GRaDOS 不调用 ChatGPT、不打开 Chrome，也不改变证据读取流程。
+- `research.external_consult`：默认关闭；包含 `enabled` 与 `response_wait_total_seconds`，表示 GRaDOS-native ChatGPT Pro consult transport 及总响应等待预算。自动化 gate 用 `grados external-consult is-enabled --quiet`；诊断细节用 `grados external-consult status --json`；首次登录私有 profile 用 `grados external-consult setup-browser`。启用时 GRaDOS 可以通过私有 ChatGPT browser profile 执行 prompt-only 或 bounded-context consult、保存 advisory response，并在需要时用显式后续工具审计 pack-linked result；关闭时 GRaDOS 不调用 ChatGPT、不打开 Chrome，也不改变证据读取流程。
 
 ### 超时与重试
 
 - `search`: `connect_timeout`, `read_timeout`
 - `extract`: `fetch_connect_timeout`, `fetch_read_timeout`, `pdf_read_timeout`
 - `extract.headless_browser`: `browser` 策略的 legacy 命名配置段（`deadline_seconds`, `networkidle_timeout`, `pdf_backfill_timeout`, `poll_min_seconds`, `poll_max_seconds`）
+- `research.external_consult`: `response_wait_total_seconds`
 - `extract.codex_handoff`: 只服务 `codex` Chrome extension handoff 之后的 watch-dir ingest（`download_watch_dir`, `download_max_age_seconds`, `download_settle_seconds`, `download_settle_max_wait_seconds`, `download_scan_recursive`）
 - `retry_policy`: `max_attempts`, `max_wait`, `respect_retry_after`
 
@@ -326,10 +328,10 @@ cp -R skills/grados "<skills-root>/"
 | `grados auth set/status/migrate/clear` | 在系统 keychain 中管理各 provider 的 API Key |
 | `grados browser status --json` | 检查 publisher PDF browser runtime、托管可执行文件、profile 状态、lock 和 session 目录 |
 | `grados browser doctor [--live --doi DOI]` | 检查 publisher browser 前置条件；`--live` 会跑一次 PDF acquisition probe，但不会保存 `papers/*.md` |
-| `grados external-synthesis is-enabled --quiet` | 可选外部综合协议的 predicate gate；exit 0 表示启用，exit 1 表示关闭 |
-| `grados external-synthesis status --json` | 以结构化诊断形式显示同一个外部综合 gate 和 config 路径细节；profile initialized 只表示 Chrome profile marker 存在，不表示 ChatGPT 已登录 |
-| `grados external-synthesis setup-browser [--keep-open]` | 打开 GRaDOS 私有 ChatGPT profile，用于首次登录 ChatGPT；默认稳定检测到登录后关闭，`--keep-open` 会让命令和 profile lock 保持到 setup browser 关闭 |
-| `grados external-synthesis doctor [--live]` | 检查 external synthesis 浏览器前置条件；`--live` 会额外探测 ChatGPT 登录状态 |
+| `grados external-consult is-enabled --quiet` | 可选 ChatGPT Pro external consult transport 的 predicate gate；exit 0 表示启用，exit 1 表示关闭 |
+| `grados external-consult status --json` | 以结构化诊断形式显示同一个 external consult gate 和 config 路径细节；profile initialized 只表示 Chrome profile marker 存在，不表示 ChatGPT 已登录 |
+| `grados external-consult setup-browser [--keep-open]` | 打开 GRaDOS 私有 ChatGPT profile，用于首次登录 ChatGPT；默认稳定检测到登录后关闭，`--keep-open` 会让命令和 profile lock 保持到 setup browser 关闭 |
+| `grados external-consult doctor [--live]` | 检查 external consult 浏览器前置条件；`--live` 会额外探测 ChatGPT 登录状态 |
 | `grados import-pdfs --from /path/to/papers --recursive` | 把已有 PDF 文件夹导入 canonical 论文库 |
 | `grados eval-retrieval --fixture cases.jsonl` | 用本地 golden cases 评测 saved-paper retrieval；默认跑 dense、FTS/BM25、exact lookup 和 RRF，可用 `--dense-only` 调试旧模式 |
 | `grados status` | 查看配置、依赖、运行时资产和 API Key 状态 |
@@ -381,7 +383,7 @@ GRaDOS 不假设本地 macOS / CPU 环境一定有 FlashAttention。即使运行
 1. `GRADOS_HOME`
 2. `~/GRaDOS`
 
-`parse_pdf_file`、`ingest_codex_downloaded_pdf(downloaded_file_path=...)` 和 `import_local_pdf_library` 这类本地 PDF 工具会从可信本地 MCP/CLI 会话读取主机文件路径，并在加载前和加载过程中执行 `extract.security.max_local_pdf_bytes` 限制。长 parser、indepth、import、external-synthesis 和 Codex handoff 工作会返回带 `operation_id` 的 durable pending 或 needs-input receipt；应轮询 `get_operation_status`，不要重复提交原始长任务。
+`parse_pdf_file`、`ingest_codex_downloaded_pdf(downloaded_file_path=...)` 和 `import_local_pdf_library` 这类本地 PDF 工具会从可信本地 MCP/CLI 会话读取主机文件路径，并在加载前和加载过程中执行 `extract.security.max_local_pdf_bytes` 限制。长 parser、indepth、import、external-consult 和 Codex handoff 工作会返回带 `operation_id` 的 durable pending 或 needs-input receipt；应轮询 `get_operation_status`，不要重复提交原始长任务。
 
 ### API Keys 🔑
 
@@ -436,13 +438,13 @@ Unpaywall 是可选的 DOI 到 OA location resolver，不是下载路径。`extr
 
 旧的抓取策略别名 `TDM`、`SciHub`、`Headless` 仍然兼容，便于现有配置逐步迁移。当前 `scihub` 运行时使用 `extract.sci_hub.endpoints` 作为有序访问列表：第一个 endpoint 优先尝试，后续 endpoint 作为 fallback。旧的 `extract.sci_hub.fallback_mirror` 在 `endpoints` 省略或为空时仍然兼容。
 
-`browser` 是机构权限访问 publisher 全文的一等路径。它使用 GRaDOS 托管的 publisher profile（`browser/profile`）、profile lock、`browser/pdf-sessions` 下的 operational PDF browser session records，以及 response/download/CDP/backfill PDF capture。browser acquisition 不会直接写 `papers/*.md`：它只返回 PDF bytes 或 challenge 以及 browser capture metadata，随后由 `extract_paper_full_text` materialize PDF，并把 DOI-bound parsing 交给 durable parse attempt。保留的浏览器窗口会保住 manual/challenge 页，每个 DOI 使用自己的 job-owned page。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，再次调用 `extract_paper_full_text` 并设置 `resume_browser=true`，即可从保存的浏览器 URL/profile 继续，而不是重新从 `api` 开始整条链路。
+`browser` 是机构权限访问 publisher 全文的一等路径。它使用 GRaDOS 托管的 publisher profile（`browser/profile`）、profile lock、`browser/pdf-sessions` 下的 operational PDF browser session records，以及 response/download/CDP/backfill PDF capture。browser acquisition 不会直接写 `papers/*.md`：它只返回 PDF bytes 或 challenge 以及 browser capture metadata，随后由 `extract_paper_full_text` materialize PDF，并把 DOI-bound parsing 交给 durable parse attempt。保留的浏览器窗口会保住 manual/challenge 页，每个 DOI 使用自己的 job-owned page。若 publisher 人机验证阻断 PDF 捕获，GRaDOS 会 best-effort 给页面标题加 `GRaDOS ACTION REQUIRED`，在 bounded browser deadline 内继续监听，并可通过 `pdf_url_backfill_after_manual` 捕获用户打开的 PDF tab。若 bounded wait 仍到期，GRaDOS 才会在 `remote_metadata` 中记录 `challenge` 与人工恢复信息；用户在托管浏览器 profile 中完成验证后，可再次调用 `extract_paper_full_text(resume_browser=true)` 继续，也可把已知下载 PDF 路径交给现有 local ingestion/parse 路径。
 
 `codex` 默认关闭。启用并放入 `extract.fetch_strategy.order` 后，它会在该顺序位置作为 Codex Chrome extension host-agent handoff：`extract_paper_full_text` 返回带 `codex_download_handoff` operation 的 Chrome 下载 receipt，外层 agent 使用 Codex `@chrome` 插件 / Chrome 中的 [Codex Chrome extension](https://developers.openai.com/codex/app/chrome-extension) 作为 acquisition route。若 host 已知道 PDF 绝对路径，调用 `ingest_codex_downloaded_pdf(doi=..., downloaded_file_path=...)` 或 `parse_pdf_file(file_path=..., doi=..., copy_to_library=true, acquisition_via="codex")`；否则 `ingest_codex_downloaded_pdf` 只扫描 `extract.codex_handoff.download_watch_dir`。这个 watch dir 只是 ingest 扫描目录，不会配置 Chrome；扫描为空时应传真实路径，而不是再次点击 publisher 下载按钮。若同时发现多个可信 PDF，GRaDOS 会返回 needs-input disambiguation，而不是猜测哪一个属于 DOI。若 DOI-bound 本地解析超过 `extract.parsing.foreground_wait_seconds`，GRaDOS 会返回 `parse_in_progress` receipt，继续在后台运行同一个 parse attempt，并在后续同 DOI + PDF hash 调用中恢复/对账；不要因为前台先返回就重新下载 PDF。若 Unpaywall 找到 OA URL，receipt 会优先从该 URL 开始，而不是 `https://doi.org/{doi}`。
 
 所有会拷入论文库的 PDF acquisition 路径共用同一个 materialization 边界。每个 DOI 的受管原始 PDF 是 `downloads/{safe_doi}.pdf`；publisher 文件名和外部本地 PDF 只是 acquisition input。同 DOI 同 hash 会复用、rename 或 copy 到受管路径；同 DOI 不同 hash 会返回 conflict receipt，保留已有 canonical PDF 和候选输入；如果冲突候选只来自已捕获的 PDF bytes，GRaDOS 会把它保存在 `downloads/_conflicts/{safe_doi}.{hash12}.pdf` 供人工 review。PDF fetch 会先解析并通过 QA 后才作为普通 `fulltext` 成功；parser QA 失败会继续尝试配置的 parser/fetch fallback，最终仍未通过时只保存为 `partial_success`。新写入的 `papers/*.md` frontmatter 只保留阅读元数据和 `parsed_manifest_path` / `assets_manifest_path` 这类指针；PDF 路径、hash、acquisition route、parser/materialization provenance 进入 receipt、`remote_metadata.fetch_via` 和 `papers/_parsed/{safe_doi}.json`。
 
-若 `research.external_synthesis.enabled=true`，GRaDOS 只能在自己准备并验证 evidence pack 后使用 ChatGPT Pro。默认工具是 `run_external_synthesis`：从 topic 开始时准备 evidence pack 和 packet；已有 pack id 时验证并 packet 化该 pack；随后打开专用 GRaDOS ChatGPT profile，在发送前确认 GRaDOS-validated Pro model 路线（`gpt-5.5-pro`）和 Pro Extended thinking 路线，捕获回复，用 `save_external_synthesis_result(audit=true)` 保存，并返回 audit 与 canonical reread next action。如果 ChatGPT 生成超过前台等待时间，工具会返回 `status=pending`、`operation_id`、`browser_session_id`、session record path、packet id、prompt hash 和恢复元数据；后续调用 `get_operation_status(operation_id=..., detail=true)` 重新 attach 并捕获结果，不重复发送 prompt。恢复字段只保存可恢复的 ChatGPT `/c/<id>` 对话 URL；首页或 project shell URL 只作为诊断性的 `last_observed_url` 保留，并返回 `conversation_url_missing_or_not_recoverable`，不会反复打开 ChatGPT 首页。旧的 `recover_session_id` 参数仍作为兼容恢复入口保留。`preview_external_synthesis_packet`、`prepare_external_synthesis_from_topic`、`prepare_external_synthesis_packet`、`save_external_synthesis_result` 和 `audit_external_synthesis_result` 仍保留给 dry run、恢复和显式重跑。结果关联 packet id 时，audit 只接受该 packet 中实际发送过的 anchor、DOI、block id 和 canonical URI；结构化 `claims[].anchor_ids` 是主要 claim 合同，正文 audit 作为风险扫描保留。模型和 thinking 选择是协议默认值，不通过 GRaDOS config 配置；本地化界面下 GRaDOS 会记录实际确认到的原始标签。这个改动不移除单独的 `extract.fetch_strategy.codex` PDF acquisition 路线。
+若 `research.external_consult.enabled=true`，默认工具是 `consult_chatgpt_pro`：必须提供 prompt，可选附带 pack、packet、已保存 artifact 或本地文件作为 bounded context，然后打开专用 GRaDOS ChatGPT profile。`model_strategy` 可选择可见 Pro 目标、只记录当前 label，或跳过并写 warning；`thinking_strategy` 可选择最高可见 thinking effort、只记录当前 label，或跳过并写 warning。GRaDOS 只发送一次 prompt，保存 session、transcript、snapshot、capture、strategy 和 advisory-result metadata，默认不 audit。`research.external_consult.response_wait_total_seconds` 是从首次提交 prompt 开始计算的总响应等待预算；默认 `wait_policy=auto` 会把它拆成初次等待和 bounded reattach/capture，仍未完成时返回 `status=pending`。后续调用 `get_operation_status(operation_id=..., detail=true)` 继续恢复，不重复发送 prompt。若自动捕获仍失败但页面可见最终答案，可手动复制答案，再用 `recover_session_id` 和 `manual_response` 调用 `consult_chatgpt_pro`；GRaDOS 会用 `manual_copy` capture metadata 保存，不重新打开浏览器。恢复字段只保存可恢复的 ChatGPT `/c/<id>` 对话 URL；首页或 project shell URL 只作为诊断性的 `last_observed_url` 保留，并返回 `conversation_url_missing_or_not_recoverable`。`run_external_consult` 保留为 topic/pack consult packet 准备路线。`preview_external_consult_packet`、`prepare_external_consult_from_topic`、`prepare_external_consult_packet`、`save_external_consult_result` 和 `audit_external_consult_result` 仍保留给 dry run、恢复、显式保存和显式审计。ChatGPT Pro 输出只是 advisory；最终引用仍必须回到 verified evidence pack 或 canonical paragraph reread。这个改动不移除单独的 `extract.fetch_strategy.codex` PDF acquisition 路线。
 
 PDF 解析优先级：
 

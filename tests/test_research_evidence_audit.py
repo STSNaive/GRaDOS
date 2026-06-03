@@ -252,6 +252,115 @@ def test_build_evidence_grid_drops_stale_missing_reasons_after_topic_fallback(
     assert grid.missing_reasons == {}
 
 
+def test_build_evidence_grid_marks_heading_only_rows_with_warning(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, limit, kwargs)
+        return [
+            PaperSearchResult(
+                doi="10.1234/weak",
+                safe_doi="10_1234_weak",
+                title="Weak Paper",
+                authors=[],
+                year="",
+                journal="",
+                section_name="Abstract",
+                paragraph_start=1,
+                paragraph_count=1,
+                snippet="## Abstract",
+                score=1.4,
+            )
+        ]
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    grid = build_evidence_grid(
+        tmp_path / "database" / "chroma",
+        topic="abstract marker",
+        subquestions=["abstract marker"],
+    )
+    row = grid.grids[0].rows[0]
+
+    assert row.eligibility == "not_citation_grade"
+    assert row.rejection_reason
+    assert row.evidence_warning == f"not citation-grade: {row.rejection_reason}"
+    assert row.support_strength == "low"
+
+
+def test_build_evidence_grid_keeps_substantive_body_rows_citation_grade(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, limit, kwargs)
+        return [
+            PaperSearchResult(
+                doi="10.1234/results",
+                safe_doi="10_1234_results",
+                title="Results Paper",
+                authors=[],
+                year="2026",
+                journal="Mechanics",
+                section_name="Results",
+                paragraph_start=5,
+                paragraph_count=1,
+                snippet="The experiment reduced vibration amplitude by 24% across three validation runs.",
+                score=1.4,
+            )
+        ]
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    grid = build_evidence_grid(
+        tmp_path / "database" / "chroma",
+        topic="vibration amplitude",
+        subquestions=["vibration amplitude"],
+    )
+    row = grid.grids[0].rows[0]
+
+    assert row.eligibility == "citation_grade"
+    assert row.rejection_reason == ""
+    assert row.evidence_warning == ""
+    assert row.support_strength == "high"
+
+
+def test_build_evidence_grid_scoped_weak_fallback_still_counts_coverage(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    chroma_dir = tmp_path / "database" / "chroma"
+    papers_dir = tmp_path / "papers"
+    save_paper_markdown(
+        doi="10.1234/weak-fallback",
+        markdown="# Weak Fallback\n\n## Abstract\n\nAbstract",
+        papers_dir=papers_dir,
+        title="Weak Fallback",
+        source="fixture",
+    )
+
+    def fake_search_papers(chroma_dir_arg, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir_arg, query, limit, kwargs)
+        return []
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    grid = build_evidence_grid(
+        chroma_dir,
+        topic="weak fallback",
+        subquestions=["weak fallback"],
+        dois=["10.1234/weak-fallback"],
+    )
+    row = grid.grids[0].rows[0]
+
+    assert row.doi == "10.1234/weak-fallback"
+    assert row.eligibility == "not_citation_grade"
+    assert row.evidence_warning.startswith("not citation-grade:")
+    assert grid.covered_dois == ["10.1234/weak-fallback"]
+    assert grid.missing_scoped_dois == []
+
+
 def test_audit_draft_support_requires_canonical_paragraph_window(monkeypatch, tmp_path: Path) -> None:
     def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
         _ = (chroma_dir, query, limit, kwargs)

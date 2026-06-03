@@ -59,52 +59,64 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
     assert isinstance(browser_payload["browser_executable"]["found"], bool)
     assert browser_payload["browser_executable"]["profile_directory"] == str(home / "browser" / "profile")
 
-    external_result = runner.invoke(main, ["external-synthesis", "status", "--json"], env=env)
+    external_result = runner.invoke(main, ["external-consult", "status", "--json"], env=env)
     assert external_result.exit_code == 0
     external_payload = json.loads(external_result.output)
     assert external_payload["enabled"] is False
     assert external_payload["status"] == "disabled"
     assert external_payload["config_file"] == str(home / "config.json")
     assert external_payload["config_exists"] is True
-    assert external_payload["protocol"] == "external_synthesis_browser_v1"
+    assert external_payload["protocol"] == "external_consult_browser_v1"
     assert external_payload["browser_profile"] == str(home / "browser" / "chatgpt-profile")
     assert external_payload["browser_sessions"] == str(home / "browser" / "chatgpt-sessions")
     assert external_payload["browser_profile_initialized"] is False
     assert external_payload["browser_profile_initialized_meaning"] == "chrome_profile_markers_only_not_login_readiness"
-    assert external_payload["setup_command"] == "grados external-synthesis setup-browser"
+    assert external_payload["setup_command"] == "grados external-consult setup-browser"
 
-    external_predicate_result = runner.invoke(main, ["external-synthesis", "is-enabled"], env=env)
+    legacy_external_result = runner.invoke(main, ["external-consult", "status", "--json"], env=env)
+    assert legacy_external_result.exit_code == 0
+    legacy_external_payload = json.loads(legacy_external_result.output)
+    assert legacy_external_payload["protocol"] == "external_consult_browser_v1"
+    assert legacy_external_payload["enabled"] is False
+
+    external_predicate_result = runner.invoke(main, ["external-consult", "is-enabled"], env=env)
     assert external_predicate_result.exit_code == 1
     assert external_predicate_result.output == "false\n"
 
     external_predicate_quiet_result = runner.invoke(
-        main, ["external-synthesis", "is-enabled", "--quiet"], env=env
+        main, ["external-consult", "is-enabled", "--quiet"], env=env
     )
     assert external_predicate_quiet_result.exit_code == 1
     assert external_predicate_quiet_result.output == ""
 
     config_data = json.loads((home / "config.json").read_text(encoding="utf-8"))
-    config_data["research"]["external_synthesis"]["enabled"] = True
+    config_data["research"]["external_consult"]["enabled"] = True
     (home / "config.json").write_text(json.dumps(config_data), encoding="utf-8")
 
-    external_enabled_result = runner.invoke(main, ["external-synthesis", "status", "--json"], env=env)
+    external_enabled_result = runner.invoke(main, ["external-consult", "status", "--json"], env=env)
     assert external_enabled_result.exit_code == 0
     external_enabled_payload = json.loads(external_enabled_result.output)
     assert external_enabled_payload["enabled"] is True
     assert external_enabled_payload["status"] == "enabled"
 
-    external_enabled_predicate_result = runner.invoke(main, ["external-synthesis", "is-enabled"], env=env)
+    legacy_external_enabled_result = runner.invoke(
+        main, ["external-consult", "status", "--json"], env=env
+    )
+    assert legacy_external_enabled_result.exit_code == 0
+    assert json.loads(legacy_external_enabled_result.output)["enabled"] is True
+
+    external_enabled_predicate_result = runner.invoke(main, ["external-consult", "is-enabled"], env=env)
     assert external_enabled_predicate_result.exit_code == 0
     assert external_enabled_predicate_result.output == "true\n"
 
     external_enabled_predicate_quiet_result = runner.invoke(
-        main, ["external-synthesis", "is-enabled", "--quiet"], env=env
+        main, ["external-consult", "is-enabled", "--quiet"], env=env
     )
     assert external_enabled_predicate_quiet_result.exit_code == 0
     assert external_enabled_predicate_quiet_result.output == ""
 
 
-def test_external_synthesis_doctor_live_formats_logged_out_probe(
+def test_external_consult_doctor_live_formats_logged_out_probe(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -125,7 +137,7 @@ def test_external_synthesis_doctor_live_formats_logged_out_probe(
 
     monkeypatch.setattr(runtime, "check_chatgpt_login", fake_check_chatgpt_login)
 
-    result = runner.invoke(main, ["external-synthesis", "doctor", "--live"], env=env, terminal_width=200)
+    result = runner.invoke(main, ["external-consult", "doctor", "--live"], env=env, terminal_width=200)
 
     assert result.exit_code == 0
     assert "Live ChatGPT login: not signed in" in result.output

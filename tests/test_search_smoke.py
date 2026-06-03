@@ -16,7 +16,10 @@ from grados.search.academic import (
     PaperMetadata,
     PubMedState,
     SearchPageResult,
+    SpringerState,
     build_search_adapters,
+    search_crossref,
+    search_springer,
 )
 from grados.search.resumable import ContinuationData, decode_token, encode_token, run_resumable_search
 from grados.storage.chroma_client import collection_get, delete_paper_chunks, query_collection
@@ -32,6 +35,28 @@ from grados.storage.vector import (
     index_paper,
     search_papers,
 )
+
+
+class _FakeSearchResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return self.payload
+
+
+class _FakeSearchClient:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+        self.params: dict[str, object] = {}
+
+    async def get(self, url: str, **kwargs) -> _FakeSearchResponse:  # noqa: ANN003
+        _ = url
+        self.params = dict(kwargs.get("params") or {})
+        return _FakeSearchResponse(self.payload)
 
 
 def test_continuation_token_round_trip() -> None:
@@ -60,6 +85,128 @@ def test_search_config_defaults_match_supported_sources() -> None:
         "Crossref": True,
         "PubMed": True,
     }
+
+
+def test_crossref_search_maps_container_title_to_journal() -> None:
+    payload = {
+        "message": {
+            "items": [
+                {
+                    "DOI": "10.1234/crossref",
+                    "title": ["Crossref Journal Mapping"],
+                    "container-title": ["Journal of Metadata"],
+                    "publisher": "Crossref Publisher",
+                    "published-online": {"date-parts": [[2026, 1, 2]]},
+                    "URL": "https://doi.org/10.1234/crossref",
+                }
+            ],
+            "next-cursor": "",
+        }
+    }
+    client = _FakeSearchClient(payload)
+
+    result, _ = asyncio.run(
+        search_crossref(
+            "10.1234/crossref",
+            1,
+            CrossrefState(rows=1),
+            "dev@example.com",
+            client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result.papers[0].journal == "Journal of Metadata"
+    assert result.papers[0].year == "2026"
+    assert "container-title" in str(client.params["select"])
+
+
+def test_springer_search_maps_journal_title_to_paper_metadata() -> None:
+    payload = {
+        "records": [
+            {
+                "title": "Springer Metadata Mapping",
+                "doi": "10.1234/springer",
+                "journalTitle": "Meccanica",
+                "publicationDate": "2026-05-01",
+                "publisher": "Springer Nature",
+                "url": [{"value": "https://link.springer.com/article/10.1234/springer"}],
+            }
+        ]
+    }
+    client = _FakeSearchClient(payload)
+
+    result, _ = asyncio.run(
+        search_springer(
+            "10.1234/springer",
+            1,
+            SpringerState(page_size=1),
+            "springer-key",
+            client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result.papers[0].journal == "Meccanica"
+    assert result.papers[0].year == "2026"
+    assert client.params["q"] == "doi:10.1234/springer"
+
+
+def test_crossref_raw_metadata_api_field_absent_keeps_blank_fields() -> None:
+    payload = {
+        "message": {
+            "items": [
+                {
+                    "DOI": "10.1234/crossref-missing",
+                    "title": ["Crossref Missing Journal"],
+                    "publisher": "Crossref Publisher",
+                    "URL": "https://doi.org/10.1234/crossref-missing",
+                }
+            ],
+            "next-cursor": "",
+        }
+    }
+    client = _FakeSearchClient(payload)
+
+    result, _ = asyncio.run(
+        search_crossref(
+            "10.1234/crossref-missing",
+            1,
+            CrossrefState(rows=1),
+            "dev@example.com",
+            client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result.papers[0].journal == ""
+    assert result.papers[0].year == ""
+
+
+def test_springer_raw_metadata_grados_field_dropped_regression_preserves_fields() -> None:
+    payload = {
+        "records": [
+            {
+                "title": "Springer Raw Metadata",
+                "doi": "10.1234/springer-raw",
+                "publicationName": "Meccanica",
+                "publicationDate": "2026-05-01",
+                "publisher": "Springer Nature",
+                "url": [{"value": "https://link.springer.com/article/10.1234/springer-raw"}],
+            }
+        ]
+    }
+    client = _FakeSearchClient(payload)
+
+    result, _ = asyncio.run(
+        search_springer(
+            "10.1234/springer-raw",
+            1,
+            SpringerState(page_size=1),
+            "springer-key",
+            client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result.papers[0].journal == "Meccanica"
+    assert result.papers[0].year == "2026"
 
 
 def test_run_resumable_search_handles_dedup_and_continuation(monkeypatch) -> None:

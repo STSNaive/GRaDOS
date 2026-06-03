@@ -6,6 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 from grados.research.common import _excerpt_for_axis, _normalize_text, _query_terms, _section_matches
+from grados.research.evidence_eligibility import classify_evidence_rejection
 from grados.research.models import EvidenceGridBlock, EvidenceGridResult, EvidenceGridRow
 from grados.storage.chunking import extract_sections
 from grados.storage.papers import PaperRecord, load_paper_record
@@ -24,6 +25,12 @@ def _row_from_match(
     query_text: str,
     match: PaperSearchResult,
 ) -> EvidenceGridRow:
+    rejection_reason = classify_evidence_rejection(
+        match.section_name,
+        match.snippet,
+        known_title=match.title,
+    )
+    support_strength = _support_strength(match.score)
     return EvidenceGridRow(
         subquestion=subquestion,
         query_used=query_text,
@@ -38,9 +45,12 @@ def _row_from_match(
         paragraph_count=match.paragraph_count if match.paragraph_count > 0 else None,
         snippet=match.snippet,
         score=match.score,
-        support_strength=_support_strength(match.score),
+        support_strength="low" if rejection_reason else support_strength,
         dense_score=match.dense_score,
         lexical_score=match.lexical_score,
+        eligibility="not_citation_grade" if rejection_reason else "citation_grade",
+        rejection_reason=rejection_reason or "",
+        evidence_warning=f"not citation-grade: {rejection_reason}" if rejection_reason else "",
     )
 
 
@@ -65,6 +75,14 @@ def _row_from_section(
     score = max(0.1, lexical_score)
     paragraph_count = _section_int(section.get("paragraph_count"))
     paragraph_start = _section_int(section.get("paragraph_start"))
+    section_name = str(section.get("name") or "")
+    snippet = _excerpt_for_axis(text, query_text)
+    rejection_reason = classify_evidence_rejection(
+        section_name,
+        snippet,
+        known_title=record.title,
+    )
+    support_strength = _support_strength(score)
     return EvidenceGridRow(
         subquestion=subquestion,
         query_used=query_text,
@@ -74,14 +92,17 @@ def _row_from_section(
         title=record.title,
         year=record.year,
         journal=record.journal,
-        section_name=str(section.get("name") or ""),
+        section_name=section_name,
         paragraph_start=paragraph_start if paragraph_count > 0 else None,
         paragraph_count=paragraph_count if paragraph_count > 0 else None,
-        snippet=_excerpt_for_axis(text, query_text),
+        snippet=snippet,
         score=score,
-        support_strength=_support_strength(score),
+        support_strength="low" if rejection_reason else support_strength,
         dense_score=0.0,
         lexical_score=lexical_score,
+        eligibility="not_citation_grade" if rejection_reason else "citation_grade",
+        rejection_reason=rejection_reason or "",
+        evidence_warning=f"not citation-grade: {rejection_reason}" if rejection_reason else "",
     )
 
 
