@@ -468,6 +468,33 @@ def test_browser_pdf_like_response_detection_covers_publisher_patterns() -> None
     assert not is_pdf_like_browser_response("https://example.com/article", "text/html")
 
 
+def test_sciencedirect_pdf_candidates_include_metadata_script_and_canonical_urls() -> None:
+    from grados.publisher.elsevier import extract_sciencedirect_pdf_candidates
+
+    html = """
+    <html>
+      <head>
+        <meta name="citation_pdf_url" content="/science/article/pii/S123/pdfft?download=false">
+        <link rel="canonical" href="https://www.sciencedirect.com/science/article/pii/S123">
+        <script>
+          window.__SDM = {"pdfUrl":"https://www.sciencedirect.com/science/article/pii/S123/pdfft?md5=abc"};
+        </script>
+      </head>
+      <body><a id="pdfLink" href="/science/article/pii/S123/pdfft">View PDF</a></body>
+    </html>
+    """
+
+    candidates = extract_sciencedirect_pdf_candidates(
+        html,
+        "https://www.sciencedirect.com/science/article/pii/S123",
+    )
+
+    urls_by_source = {candidate["source"]: candidate["url"] for candidate in candidates}
+    assert urls_by_source["citation_pdf_url"].startswith("https://www.sciencedirect.com/science/article/pii/S123")
+    assert urls_by_source["script_pdf_url"].endswith("pdfft?md5=abc")
+    assert urls_by_source["canonical_pdfft"].endswith("/pdfft?download=true")
+
+
 def test_cdp_response_body_capture_records_source_metadata() -> None:
     class FakeContext:
         pass
@@ -550,6 +577,64 @@ def test_browser_fetch_state_marks_unattributed_download_capture() -> None:
     assert captured is True
     assert state.capture_payload()["assisted_download_possible"] is True
     assert state.events[-1]["details"]["assisted_download_possible"] is True
+
+
+def test_browser_fetch_state_tracks_manual_attention_marker() -> None:
+    class FakePage:
+        url = "https://publisher.example/article"
+
+        def __init__(self) -> None:
+            self.fronted = False
+            self.title_value = "Article"
+
+        async def bring_to_front(self) -> None:
+            self.fronted = True
+
+        async def evaluate(self, script: str, prefix: str) -> str:
+            _ = script
+            if not self.title_value.startswith(prefix):
+                self.title_value = f"{prefix}{self.title_value}"
+            return self.title_value
+
+    state = BrowserFetchState(max_capture_bytes=1024)
+    page = FakePage()
+
+    marker = asyncio.run(state.mark_manual_attention(page, "pdf_auto_action_failed"))
+
+    assert marker == {"bring_to_front": "ok", "title_prefix": "ok"}
+    assert page.fronted is True
+    assert page.title_value == "GRaDOS ACTION REQUIRED - Article"
+    assert state.events[-1]["name"] == "manual_attention_requested"
+    assert state.events[-1]["details"]["reason"] == "pdf_auto_action_failed"
+
+
+def test_browser_fetch_state_uses_explicit_automated_download_confirmation() -> None:
+    state = BrowserFetchState(max_capture_bytes=1024)
+
+    state.record_event(
+        "strategy_action_confirmed",
+        url="https://publisher.example/paper.pdf",
+        details={"confirmation": "direct_pdf_navigation", "automated": True},
+    )
+
+    assert state.recently_confirmed_automated_download_action() is True
+
+
+def test_browser_fetch_state_manual_attention_breaks_download_attribution() -> None:
+    state = BrowserFetchState(max_capture_bytes=1024)
+
+    state.record_event(
+        "strategy_action_confirmed",
+        url="https://publisher.example/paper.pdf",
+        details={"confirmation": "direct_pdf_navigation", "automated": True},
+    )
+    state.record_event(
+        "manual_attention_requested",
+        url="https://publisher.example/article",
+        details={"reason": "pdf_auto_action_failed"},
+    )
+
+    assert state.recently_confirmed_automated_download_action() is False
 
 
 def test_direct_pdf_backfill_rejects_oversized_content_length() -> None:
@@ -820,6 +905,7 @@ def test_generic_pdf_click_tracks_popup_pdf_page() -> None:
             page,
             FakeContext(popup),
             {},
+            set(),
             tracked.append,
             lambda: False,
             lambda warning: (_ for _ in ()).throw(AssertionError(warning)),
@@ -830,6 +916,76 @@ def test_generic_pdf_click_tracks_popup_pdf_page() -> None:
     assert page.link.clicked is True
     assert tracked == [popup]
     assert events == ["strategy_action", "strategy_action_confirmed"]
+
+
+def test_generic_pdf_click_navigates_hidden_pdf_href_directly() -> None:
+    from grados.browser.strategies.generic_pdf_click import try_generic_pdf_click
+
+    class FakeLink:
+        async def get_attribute(self, name: str) -> str:
+            assert name == "href"
+            return "/content/pdf/article.pdf"
+
+        async def click(self) -> None:
+            raise AssertionError("hidden PDF href should be opened directly")
+
+    class FakePage:
+        url = "https://publisher.example/article"
+
+        def __init__(self) -> None:
+            self.link = FakeLink()
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def query_selector(self, selector: str) -> FakeLink:
+            assert "pdf" in selector.lower()
+            return self.link
+
+    class FakePdfPage:
+        def __init__(self) -> None:
+            self.url = "about:blank"
+
+        async def goto(self, url: str, **kwargs) -> None:  # noqa: ANN003
+            _ = kwargs
+            self.url = url
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.created_page = FakePdfPage()
+
+        async def new_page(self) -> FakePdfPage:
+            return self.created_page
+
+    page = FakePage()
+    context = FakeContext()
+    tracked: list[FakePdfPage] = []
+    events: list[tuple[str, dict[str, object]]] = []
+    attempted_urls: set[str] = set()
+
+    asyncio.run(
+        try_generic_pdf_click(
+            page,
+            context,
+            {},
+            attempted_urls,
+            tracked.append,
+            lambda: False,
+            lambda warning: (_ for _ in ()).throw(AssertionError(warning)),
+            record_event=lambda name, **kwargs: events.append((name, kwargs)),
+        )
+    )
+
+    expected_url = "https://publisher.example/content/pdf/article.pdf"
+    assert attempted_urls == set()
+    assert tracked == [context.created_page]
+    assert context.created_page.url == expected_url
+    assert events[-1][0] == "strategy_action_confirmed"
+    assert events[-1][1]["details"] == {
+        "strategy": "GenericPdfClick",
+        "confirmation": "direct_pdf_navigation",
+        "automated": True,
+    }
 
 
 def test_sciencedirect_landing_click_tracks_manual_pdf_tab() -> None:
@@ -927,6 +1083,103 @@ def test_sciencedirect_landing_click_tracks_manual_pdf_tab() -> None:
     assert events[-1][1]["details"] == {
         "strategy": "ScienceDirect",
         "confirmation": "manual_tab_navigation",
+        "automated": True,
+    }
+
+
+def test_sciencedirect_landing_click_awaits_popup_page() -> None:
+    from grados.browser.sciencedirect import try_view_pdf_click
+
+    class FakeLocator:
+        first = None
+
+        def __init__(self, href: str, count: int = 1) -> None:
+            self.first = self
+            self.href = href
+            self._count = count
+            self.clicked = False
+
+        async def count(self) -> int:
+            return self._count
+
+        async def get_attribute(self, name: str) -> str:
+            assert name == "href"
+            return self.href
+
+        async def click(self, timeout: int) -> None:
+            _ = timeout
+            self.clicked = True
+
+    class FakePage:
+        url = "https://www.sciencedirect.com/science/article/pii/S1234567890"
+
+        def __init__(self) -> None:
+            self.locator_obj = FakeLocator("/science/article/pii/S1234567890/pdfft")
+
+        def is_closed(self) -> bool:
+            return False
+
+        def get_by_role(self, role: str, name=None) -> FakeLocator:  # noqa: ANN001
+            _ = (role, name)
+            return FakeLocator("", count=0)
+
+        def locator(self, selector: str) -> FakeLocator:
+            assert "pdfft" in selector
+            return self.locator_obj
+
+    class FakePopup:
+        url = "https://www.sciencedirect.com/science/article/pii/S1234567890/pdfft"
+
+        async def wait_for_load_state(self, state: str) -> None:
+            assert state == "domcontentloaded"
+
+    class FakeExpectPage:
+        def __init__(self, popup: FakePopup) -> None:
+            async def popup_value() -> FakePopup:
+                return popup
+
+            self.value = popup_value()
+
+        async def __aenter__(self) -> FakeExpectPage:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+            _ = (exc_type, exc, tb)
+
+    class FakeContext:
+        def __init__(self, popup: FakePopup) -> None:
+            self.popup = popup
+
+        def expect_page(self, timeout: int) -> FakeExpectPage:
+            assert timeout == 4000
+            return FakeExpectPage(self.popup)
+
+    page = FakePage()
+    popup = FakePopup()
+    attempted_urls: set[str] = set()
+    tracked: list[FakePopup] = []
+    events: list[tuple[str, dict[str, object]]] = []
+
+    asyncio.run(
+        try_view_pdf_click(
+            page,
+            FakeContext(popup),
+            {},
+            attempted_urls,
+            tracked.append,
+            lambda warning: (_ for _ in ()).throw(AssertionError(warning)),
+            lambda name, **kwargs: events.append((name, kwargs)),
+        )
+    )
+
+    assert tracked == [popup]
+    assert all(not asyncio.iscoroutine(item) for item in tracked)
+    assert attempted_urls == {"https://www.sciencedirect.com/science/article/pii/S1234567890/pdfft"}
+    assert events[-1][0] == "strategy_action_confirmed"
+    assert events[-1][1]["details"] == {
+        "strategy": "ScienceDirect",
+        "confirmation": "popup_opened",
+        "automated": True,
     }
 
 

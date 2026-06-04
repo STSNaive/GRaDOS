@@ -59,6 +59,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed `extract_paper_full_text` to register DOI-bound extraction operations before browser acquisition, allowing `get_operation_status(operation_id="doi:<DOI>")` or a bare DOI to recover state after host-side MCP timeouts.
 - Changed ChatGPT Pro consult waiting to use the configurable `research.external_consult.response_wait_total_seconds` budget, deriving initial wait and reattach attempts instead of exposing browser launch counts as user-facing settings.
 - Changed publisher browser challenge handling to keep a bounded interactive wait active after `publisher_challenge`, mark challenge pages with `GRaDOS ACTION REQUIRED` best-effort, capture user-opened PDF tabs through `pdf_url_backfill_after_manual`, and keep the existing `resume_browser` / `downloaded_file_path` recovery routes.
+- Changed generic publisher PDF browser acquisition to collect PDF-like links, prefer explicit href direct navigation in the current browser context, and request a `GRaDOS ACTION REQUIRED` manual-attention marker only after automated PDF actions fail.
 - Changed `build_evidence_grid` rows to expose `eligibility`, `rejection_reason`, and `evidence_warning` so heading-only, metadata-only, and other weak snippets remain visible for scoped DOI coverage without appearing citation-grade.
 - Changed DOI-bound metadata materialization to preserve journal fields from Crossref/Springer/PubMed/Web of Science/Elsevier metadata, coerce `PaperMetadata.journal` into the remote metadata store, and fill only blank canonical year/journal/publisher frontmatter from exact-DOI remote metadata with `metadata_completion_sources` provenance.
 - Changed the default MCP `tools/list` exposure from the full public surface to `research_default`; set `GRADOS_MCP_TOOLSETS=all` or `GRADOS_MCP_TOOLSETS=full` to keep the previous all-tools surface.
@@ -140,6 +141,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 - Fixed publisher browser PDF session persistence so newer capture diagnostics such as `assisted_download_possible` and unknown diagnostic fields can round-trip through `session.json`, while browser acquisition failures preserve structured `error_detail` instead of leaving stale running sessions.
+- Fixed ScienceDirect browser PDF handoff so `View PDF` popup pages are awaited before listener registration, and expanded ScienceDirect PDF candidate extraction to include absolute metadata, script, canonical `pdfft`, and intermediate redirect URLs.
 - Fixed ChatGPT Pro external-consult live doctor reporting so login readiness is separate from no-submit consult-route readiness, including requested/resolved/verified model and thinking route details; pre-submit model picker failures now surface as model-route failures rather than conversation recovery failures.
 - Fixed author-year draft audit reranking so narrative markers such as `Dou et al. (2026)` can widen the internal candidate pool, rerank by matching author/year, and still return only the requested candidate count with attribution diagnostics.
 - Fixed pack-scoped audit scoring to use pack-only locator and metadata signals such as DOI, canonical URI, block id, text hash, author/year, section, and numeric overlap, reducing low-confidence noise for current-valid locator-backed claims while keeping stale packs and broad overclaims protective.
@@ -176,6 +178,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Removed unused `extract.sci_hub.auto_update_mirror` and `mirror_url_file` config fields; the current `scihub` runtime uses ordered `endpoints` with `fallback_mirror` retained for legacy configs.
 
 ### Tests
+- Added browser-acquisition regression coverage for ScienceDirect popup awaiting, ScienceDirect PDF candidate discovery, hidden generic PDF href direct navigation, manual-attention markers, and automated download attribution.
 - Added regression coverage for shared evidence eligibility checks, evidence-pack DOI coverage filtering, external-consult packet QA, draft-audit citation-marker handling, and comparison title-placeholder rejection.
 - Added regression coverage for metadata-filtered Chroma chunk deletion, bounded local PDF reads, and `setup-browser --keep-open` lock lifetime.
 - Added plugin-manifest drift coverage for the evidence-grounded writing workflow reference, writing profiles, domain profile, and Codex plugin writing prompts.

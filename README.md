@@ -271,6 +271,8 @@ grados client list
 grados client doctor
 ```
 
+After installing or updating the Codex MCP registration, restart Codex or start a new thread so any already-running MCP process picks up the new GRaDOS runtime.
+
 ### Manual MCP wiring (fallback)
 
 Claude Code / Claude Desktop:

@@ -116,7 +116,7 @@ async def try_view_pdf_click(
     try:
         async with context.expect_page(timeout=4000) as page_info:
             await locator.click(timeout=5000)
-        popup = page_info.value
+        popup = await page_info.value
     except Exception:
         pass
 
@@ -129,7 +129,7 @@ async def try_view_pdf_click(
             record_event_fn(
                 "strategy_action_confirmed",
                 url=getattr(popup, "url", ""),
-                details={"strategy": "ScienceDirect", "confirmation": "popup_opened"},
+                details={"strategy": "ScienceDirect", "confirmation": "popup_opened", "automated": True},
             )
         try:
             await popup.wait_for_load_state("domcontentloaded")
@@ -149,7 +149,7 @@ async def try_view_pdf_click(
                 record_event_fn(
                     "strategy_action_confirmed",
                     url=absolute_href,
-                    details={"strategy": "ScienceDirect", "confirmation": "manual_tab_navigation"},
+                    details={"strategy": "ScienceDirect", "confirmation": "manual_tab_navigation", "automated": True},
                 )
         except Exception as exc:
             report_warning_fn(
@@ -226,6 +226,12 @@ async def follow_candidates(
             )
         try:
             await new_page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            if record_event_fn is not None:
+                record_event_fn(
+                    "strategy_action_confirmed",
+                    url=url,
+                    details={"strategy": "ScienceDirect", "confirmation": "follow_candidate", "automated": True},
+                )
         except Exception as exc:
             report_warning_fn(
                 f"ScienceDirect candidate navigation failed for {url}: "
@@ -260,6 +266,8 @@ async def follow_candidates(
             continue
 
         redirect_url = parse_sciencedirect_intermediate_redirect(latest_html, latest.url)
+        if redirect_url:
+            redirect_url = urljoin(latest.url, redirect_url)
         if redirect_url and redirect_url not in attempted_urls:
             attempted_urls.add(redirect_url)
             redirect_page = await context.new_page()
@@ -272,6 +280,16 @@ async def follow_candidates(
                 )
             try:
                 await redirect_page.goto(redirect_url, wait_until="domcontentloaded", timeout=20000)
+                if record_event_fn is not None:
+                    record_event_fn(
+                        "strategy_action_confirmed",
+                        url=redirect_url,
+                        details={
+                            "strategy": "ScienceDirect",
+                            "confirmation": "follow_intermediate_redirect",
+                            "automated": True,
+                        },
+                    )
             except Exception as exc:
                 report_warning_fn(
                     f"ScienceDirect redirect navigation failed for {redirect_url}: "

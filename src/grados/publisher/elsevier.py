@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Any, cast
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -440,38 +441,58 @@ def extract_sciencedirect_pdf_candidates(html: str, page_url: str) -> list[dict[
     candidates: list[dict[str, str]] = []
     soup = BeautifulSoup(html, "lxml")
 
+    def add_candidate(url: str, source: str) -> None:
+        normalized = urljoin(page_url, url.strip())
+        if normalized:
+            candidates.append({"url": normalized, "source": source})
+
     # citation_pdf_url meta tag
     meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
     if meta and meta.get("content"):
-        candidates.append({"url": str(meta["content"]), "source": "citation_pdf_url"})
+        add_candidate(str(meta["content"]), "citation_pdf_url")
 
     # #pdfLink href
     pdf_link = soup.find(id="pdfLink")
     if pdf_link and pdf_link.get("href"):
-        candidates.append({"url": str(pdf_link["href"]), "source": "pdfLink_href"})
+        add_candidate(str(pdf_link["href"]), "pdfLink_href")
 
     # Embedded object
     embed = soup.select_one(".PdfEmbed > object")
     if embed and embed.get("data"):
-        candidates.append({"url": str(embed["data"]), "source": "embedded_object"})
+        add_candidate(str(embed["data"]), "embedded_object")
 
     # Dropdown menu
     dropdown = soup.select_one(".PdfDropDownMenu a[href]")
     if dropdown:
-        candidates.append({"url": str(dropdown["href"]), "source": "dropdown_menu"})
+        add_candidate(str(dropdown["href"]), "dropdown_menu")
 
     # Fallback download button
     dl_btn = soup.select_one(".pdf-download-btn-link")
     if dl_btn and dl_btn.get("href"):
-        candidates.append({"url": str(dl_btn["href"]), "source": "fallback_download_button"})
+        add_candidate(str(dl_btn["href"]), "fallback_download_button")
+
+    for script in soup.find_all("script"):
+        script_text = script.string or script.get_text(" ", strip=True)
+        for match in re.finditer(r'https?://[^"\'<>\s]+(?:pdfft|\.pdf|pdfdirect)[^"\'<>\s]*', script_text):
+            add_candidate(match.group(0), "script_pdf_url")
+        for match in re.finditer(r'["\']([^"\']*(?:/pdfft|\.pdf|pdfdirect)[^"\']*)["\']', script_text):
+            add_candidate(match.group(1), "script_pdf_path")
 
     # Canonical URL → /pdfft
     canonical = soup.find("link", rel="canonical")
     if canonical and canonical.get("href"):
         pdfft_url = re.sub(r"/?$", "/pdfft?download=true", str(canonical["href"]))
-        candidates.append({"url": pdfft_url, "source": "canonical_pdfft"})
+        add_candidate(pdfft_url, "canonical_pdfft")
 
-    return candidates
+    deduped: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        url = candidate["url"]
+        if url in seen:
+            continue
+        seen.add(url)
+        deduped.append(candidate)
+    return deduped
 
 
 def parse_sciencedirect_intermediate_redirect(html: str, url: str) -> str | None:

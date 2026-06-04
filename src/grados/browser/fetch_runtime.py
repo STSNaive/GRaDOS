@@ -88,6 +88,7 @@ class BrowserFetchState:
     capture_assisted_download_possible: bool = False
     manual_interactive_wait_started: bool = False
     manual_pdf_page_urls: set[str] = field(default_factory=set)
+    manual_attention_keys: set[str] = field(default_factory=set)
 
     def pdf_captured(self) -> bool:
         return self.pdf_buffer is not None
@@ -171,7 +172,11 @@ class BrowserFetchState:
             self.challenge_seen = True
             self.final_url = url
             self.challenge_reason = "bot_or_verification_challenge"
-            attention_marker = await self._mark_challenge_attention(page)
+            attention_marker = await self.mark_manual_attention(
+                page,
+                self.challenge_reason,
+                title=title,
+            )
             self.record_event(
                 "publisher_challenge",
                 url=url,
@@ -184,11 +189,19 @@ class BrowserFetchState:
             return True
         return False
 
-    async def _mark_challenge_attention(self, page: Any) -> dict[str, str]:
+    async def mark_manual_attention(
+        self,
+        page: Any,
+        reason: str,
+        *,
+        title: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
         marker = {
             "bring_to_front": "unavailable",
             "title_prefix": "unavailable",
         }
+        url = str(getattr(page, "url", "") or "")
         if hasattr(page, "bring_to_front"):
             try:
                 await page.bring_to_front()
@@ -208,7 +221,25 @@ class BrowserFetchState:
                 marker["title_prefix"] = "ok"
             except Exception as exc:
                 marker["title_prefix"] = f"error:{exc.__class__.__name__}"
+        key = f"{id(page)}:{reason}"
+        if key not in self.manual_attention_keys:
+            self.manual_attention_keys.add(key)
+            event_details: dict[str, Any] = {
+                "reason": reason,
+                "attention_marker": marker,
+            }
+            if title:
+                event_details["title"] = title[:200]
+            event_details.update(details or {})
+            self.record_event(
+                "manual_attention_requested",
+                url=url,
+                details=event_details,
+            )
         return marker
+
+    async def _mark_challenge_attention(self, page: Any) -> dict[str, str]:
+        return await self.mark_manual_attention(page, "publisher_challenge")
 
     def get_action_state(self, page: Any) -> dict[str, Any]:
         pid = id(page)
@@ -228,11 +259,15 @@ class BrowserFetchState:
         return payload
 
     def recently_confirmed_automated_download_action(self) -> bool:
-        for event in reversed(self.events[-5:]):
+        for event in reversed(self.events[-15:]):
+            if event.get("name") == "manual_attention_requested":
+                return False
             if event.get("name") != "strategy_action_confirmed":
                 continue
             details = event.get("details")
             details = details if isinstance(details, dict) else {}
+            if details.get("automated") is True:
+                return True
             if details.get("confirmation") == "click_dispatched":
                 return True
         return False
@@ -560,6 +595,7 @@ async def run_browser_polling_loop(
                 track_page=listeners.track_page,
                 pdf_captured=state.pdf_captured,
                 inspect_challenge=state.inspect_challenge,
+                mark_manual_attention=state.mark_manual_attention,
                 report_warning=state.report_warning,
                 record_event=state.record_event,
             )
@@ -580,6 +616,12 @@ async def run_browser_polling_loop(
                 state.max_capture_bytes,
                 record_event=state.record_event,
             )
+            if not state.pdf_captured() and is_pdf_like_browser_response(page_url):
+                await state.mark_manual_attention(
+                    page,
+                    "pdf_viewer_opened_capture_pending",
+                    details={"page_url": page_url},
+                )
 
         if state.pdf_captured():
             break

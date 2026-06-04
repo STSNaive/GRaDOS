@@ -271,6 +271,8 @@ grados client list
 grados client doctor
 ```
 
+安装或更新 Codex MCP 注册后，请重启 Codex 或新开线程，确保已启动的 MCP 进程切换到新的 GRaDOS 运行时。
+
 ### 手工配置 MCP（fallback）
 
 Claude Code / Claude Desktop：

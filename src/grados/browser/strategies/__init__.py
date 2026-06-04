@@ -20,6 +20,7 @@ class BrowserPageStrategyContext:
     track_page: Callable[[Any], None]
     pdf_captured: Callable[[], bool]
     inspect_challenge: Callable[[Any], Awaitable[bool]]
+    mark_manual_attention: Callable[..., Awaitable[dict[str, str]]]
     report_warning: Callable[[str], None]
     record_event: Callable[..., None] | None = None
 
@@ -70,10 +71,12 @@ async def _run_generic_page_strategy(context: BrowserPageStrategyContext) -> Non
         context.page,
         context.context,
         context.action_state,
+        context.attempted_urls,
         context.track_page,
         context.pdf_captured,
         context.report_warning,
         context.record_event,
+        context.mark_manual_attention,
     )
 
 
