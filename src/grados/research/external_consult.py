@@ -1384,9 +1384,45 @@ def _browser_result_has_recovery_handle(result: Any) -> bool:
 def _browser_failure_next_action(result: Any) -> str:
     if _recoverable_browser_result(result):
         return "call get_operation_status with detail=true after ChatGPT finishes"
-    if str(getattr(result, "error_code", "") or "") == "chatgpt_login_required":
+    error_code = str(getattr(result, "error_code", "") or "")
+    if error_code == "chatgpt_login_required":
         return "rerun external-consult doctor --live or setup-browser, then retry consult_chatgpt_pro"
+    if _chatgpt_model_route_error(error_code):
+        return "rerun external-consult doctor --live, inspect model route diagnostics, then retry consult_chatgpt_pro"
     return "inspect browser error and retry when fixed"
+
+
+def _chatgpt_model_route_error(error_code: str) -> bool:
+    return error_code in {"model_picker_unavailable", "model_unavailable", "model_unconfirmed"}
+
+
+def _chatgpt_session_error(record: dict[str, Any]) -> dict[str, Any]:
+    error = record.get("error")
+    return error if isinstance(error, dict) else {}
+
+
+def _chatgpt_session_error_code(record: dict[str, Any]) -> str:
+    error = _chatgpt_session_error(record)
+    return str(error.get("error") or error.get("code") or "")
+
+
+def _chatgpt_session_error_stage(record: dict[str, Any]) -> str:
+    error = _chatgpt_session_error(record)
+    return str(error.get("stage") or "")
+
+
+def _chatgpt_nonrecoverable_status_error(record: dict[str, Any]) -> tuple[str, str]:
+    error_code = _chatgpt_session_error_code(record)
+    stage = _chatgpt_session_error_stage(record)
+    if _chatgpt_model_route_error(error_code) or stage == "model-selection":
+        return (
+            "model_route_unavailable",
+            "The requested ChatGPT model route was unavailable before prompt submission.",
+        )
+    return (
+        "conversation_url_missing_or_not_recoverable",
+        "Saved ChatGPT browser session has no recoverable ChatGPT conversation URL.",
+    )
 
 
 async def _auto_reattach_chatgpt_session(
@@ -1588,6 +1624,7 @@ async def get_external_consult_operation_status(
     if detail:
         from grados.storage.operations import update_operation
 
+        error_code, error_message = _chatgpt_nonrecoverable_status_error(record)
         recovery_metadata = _external_recovery_metadata(
             recover_session_id=operation_id,
             packet_artifact_id=packet_artifact_id,
@@ -1595,6 +1632,11 @@ async def get_external_consult_operation_status(
             browser_session_record=session_record_path,
             conversation_url="",
             last_observed_url=_last_observed_conversation_url(record),
+            next_action=(
+                "rerun_external_consult_doctor_live_after_model_route_fix"
+                if error_code == "model_route_unavailable"
+                else "inspect_browser_session_record_and_retry_after_fixing_error"
+            ),
         )
         session_status = str(record.get("status") or "unknown")
         update_operation(
@@ -1604,8 +1646,8 @@ async def get_external_consult_operation_status(
             stage=session_status,
             recovery=recovery_metadata,
             error={
-                "error": "conversation_url_missing_or_not_recoverable",
-                "message": "Saved ChatGPT browser session has no recoverable ChatGPT conversation URL.",
+                "error": error_code,
+                "message": error_message,
             },
             event_type="external_consult_recovery_unavailable",
             event_payload=recovery_metadata,
@@ -1613,7 +1655,7 @@ async def get_external_consult_operation_status(
         return _external_operation_status_payload(
             operation_id=operation_id,
             record=record,
-            error="conversation_url_missing_or_not_recoverable",
+            error=error_code,
         )
 
     return _external_operation_status_payload(operation_id=operation_id, record=record)
@@ -1805,6 +1847,14 @@ async def consult_chatgpt_pro(
     if not browser_result.ok:
         recoverable = _recoverable_browser_result(browser_result)
         operation_status = "pending" if recoverable else "failed"
+        failure_kind = (
+            "model_route_unavailable"
+            if _chatgpt_model_route_error(browser_result.error_code)
+            else "pre_submit_failure"
+            if browser_result.status == "failed" and not _browser_result_has_recovery_handle(browser_result)
+            else "browser_failure"
+        )
+        manual_copy_available = recoverable and _browser_result_has_recovery_handle(browser_result)
         _ensure_external_operation(
             db_path,
             operation_id=browser_result.session_id,
@@ -1828,6 +1878,8 @@ async def consult_chatgpt_pro(
             "operation_id": browser_result.session_id,
             "status": operation_status,
             "stage": browser_result.status,
+            "failure_kind": failure_kind,
+            "pre_submit_failure": failure_kind in {"model_route_unavailable", "pre_submit_failure"},
             "recoverable": recoverable,
             "browser_session_id": browser_result.session_id,
             "browser_session_record": browser_result.session_record_path,
@@ -1843,7 +1895,7 @@ async def consult_chatgpt_pro(
             "next_action": failure_next_action,
             "recovery_metadata": recovery_metadata,
             "manual_copy_fallback": {
-                "available": bool(browser_result.conversation_url or last_observed_url),
+                "available": manual_copy_available,
                 "recover_session_id": browser_result.session_id,
                 "browser_session_record": browser_result.session_record_path,
                 "conversation_url": browser_result.conversation_url,

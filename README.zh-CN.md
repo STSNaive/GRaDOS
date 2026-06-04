@@ -22,28 +22,84 @@ GRaDOS 为 Claude、Codex、Cursor 等 AI agent 提供单一 stdio MCP 服务，
 
 ## 架构概览 🧭
 
-GRaDOS 设计给 agent 科研工作流直接调用：
+GRaDOS 保持一个清晰边界：host agent 负责规划和写作；GRaDOS 负责检索、物化、核验和保存证据。
 
-1. 先用 `search_saved_papers`、`get_saved_paper_structure` 或 `grados://papers/{safe_doi}` 检查本地论文库
-2. 按配置好的优先级检索远程学术数据库
-3. 可选用 Unpaywall 解析 OA 位置，再按配置好的 `api`、`browser`、可选 `codex` 与 `scihub` 路径抓取全文
-4. 默认按 `Docling -> MinerU -> PyMuPDF` 瀑布解析 PDF
-5. 把原始 PDF 保存到 `downloads/`，把 canonical Markdown 保存到 `papers/`，把 parser provenance sidecar 保存到 `papers/_parsed/`，把 parser assets 保存到 `papers/_assets/`，把语义索引写入 `database/chroma/`，把词法 FTS fallback 写入 `database/fts.sqlite3`，把远程元数据写入 `database/remote_metadata/`
-6. 在正式引用前，先看低 token 结构卡片，再按需深读已保存论文
+```mermaid
+flowchart TD
+  Agent["宿主 Agent<br/>Claude / Codex / Cursor"]
 
-外层 agent 可以用自己的 host model 规划查询、筛选候选、重排 anchor、判断支持关系并综合写作。GRaDOS 工具不会直接调用该模型：snippet、score、evidence grid、comparison 和 audit 结果都只是导航材料，只有用 `read_saved_paper` 回读 canonical 段落窗口后，才能作为引用证据。
+  subgraph GRADOS["GRaDOS MCP"]
+    direction TB
+    Server["stdio MCP 服务"]
+    Tools["研究工具"]
+    Recovery["恢复层<br/>运行清单 / 操作注册表"]
+    Server --> Tools
+    Tools --> Recovery
+  end
 
-需要跨对话或交接保持引用依据时，用 `prepare_evidence_pack` 从 `papers/*.md` materialize canonical blocks，并在计算 DOI 覆盖前过滤 References/backmatter、title-only 和 citation-only 片段。只有 `verify_evidence_pack` 返回 `current_valid=true` 的 pack 才能作为当前引用证据；strict pack audit 会忽略 pack 内非证据项，也不会临时全库搜索来悄悄补证。
+  subgraph RESEARCH["研究流程"]
+    direction TB
+    Local["本地优先检索<br/>papers/*.md / 结构卡"]
+    Remote["远程学术检索<br/>Crossref / PubMed / ..."]
+    Fetch["全文获取<br/>api / browser / codex / scihub"]
+    Parse["PDF 解析<br/>Docling / MinerU / PyMuPDF"]
+    Local --> Remote --> Fetch --> Parse
+  end
 
-启用 external consult 时，GRaDOS 可以把 current-valid evidence pack 转成紧凑的 host-side ChatGPT Pro packet，保存返回的 advisory response；如果结果关联了 packet，就按该 packet 审计，否则才退回 source pack。存在 scoped DOI 缺口或非证据 anchor 的 packet 不会被标记为 sendable。Pro 输出仍只是恢复/评审材料；可接受的 claim 也必须回到 GRaDOS canonical 段落窗口后才能最终引用。
+  subgraph STORAGE["Canonical 存储"]
+    direction TB
+    Pdfs["原始 PDF<br/>downloads/*.pdf"]
+    Markdown["Canonical Markdown<br/>papers/*.md"]
+    Indexes["检索索引<br/>Chroma / FTS / Metadata"]
+    Pdfs --> Markdown --> Indexes
+  end
 
-需要恢复整次研究过程时，`research_run_manifest` 是一次 research run 的轻量目录页，而不是证据来源。它可以串联 search query、候选、extraction/parser receipt、`paper_summary`、`research_checkpoint`、`evidence_checkpoint`、`evidence_pack`、audit result id、canonical anchor 和失败记录；也可以保存 append-only event ledger 与 redacted config/provenance snapshot。修正流程用追加 correction event 的方式表达，不改写旧事件；任何 secret 都不得写入 manifest。最终引用仍必须回读 canonical `papers/*.md` 或 current-valid evidence pack。
+  subgraph EVIDENCE["证据层"]
+    direction TB
+    Candidate["候选证据"]
+    Packs["当前有效证据包"]
+    Audits["证据网格 / 对比 / 审计"]
+    Candidate --> Packs --> Audits
+  end
 
-需要恢复长操作时，Operation Registry 是 GRaDOS 状态数据库里的轻量 SQLite 控制面。它把 external consult session、DOI-bound extraction/fetch operation、DOI-bound parse attempt、indepth run、本地 import run 和 Codex download handoff 统一成 `operation_id`、`kind`、`status`、`stage`、`progress`、`next_action` 与 recovery metadata，同时保留各自领域 store 的可恢复性。`get_operation_status(detail=true)` 可以返回 lifecycle events 和 debug bundle，指向相关 session/run/parse/artifact；这些记录只是运行元数据，不是引用证据。
+  subgraph OUTPUT["输出"]
+    direction TB
+    Reread["Canonical 回读"]
+    Consult["ChatGPT Pro Packet<br/>可选咨询"]
+    Writing["基于引用证据的写作"]
+    Reread --> Writing
+    Consult --> Writing
+  end
 
-面向论文、综述、实验流程和实验报告写作时，内置 skill 会用 `references/paper_writing.md` 作为 workflow router。它会把 agent 引到实验/仿真 protocol、literature review、experiment report、manuscript 等细分 profile，并在力学、弹性/声学/机械超材料、phononic crystal、band gap 等主题上加载对应 domain profile。这些 profile 只负责规划、claim matrix、section gate 和交付检查，不会成为第二套证据源，也不会把写作阶段拆成一组新的 MCP tools。
+  Agent --> Server
+  Tools --> Local
+  Parse --> Pdfs
+  Indexes --> Candidate
+  Audits --> Reread
+  Audits --> Consult
 
-### MCP Toolsets 🧰
+  classDef agent fill:#F8FAFC,stroke:#475569,stroke-width:1px,color:#0F172A
+  classDef process fill:#EEF6FF,stroke:#2563EB,stroke-width:1px,color:#172554
+  classDef storage fill:#F0FDF4,stroke:#16A34A,stroke-width:1px,color:#14532D
+  classDef evidence fill:#FAF5FF,stroke:#9333EA,stroke-width:1px,color:#3B0764
+  classDef output fill:#FFF7ED,stroke:#EA580C,stroke-width:1px,color:#7C2D12
+
+  class Agent agent
+  class Server,Tools,Recovery,Local,Remote,Fetch,Parse process
+  class Pdfs,Markdown,Indexes storage
+  class Candidate,Packs,Audits evidence
+  class Reread,Consult,Writing output
+```
+
+核心约束：
+
+- 先查本地论文库，再按配置检索远程来源，并通过配置好的全文路径抓取论文。
+- PDF 会被解析为 canonical Markdown；原始 PDF、parser provenance、assets、语义索引、词法索引和远程 metadata 都保留在可见目录中。
+- Search snippet、score、evidence grid、comparison 和 audit 都只是导航材料。最终引用依据必须来自 `read_saved_paper` 回读的 canonical 段落，或 `verify_evidence_pack` 返回 `current_valid=true` 的 pack。
+- ChatGPT Pro packet、`research_run_manifest` 和 Operation Registry record 只是 advisory 或恢复元数据，不能替代 canonical 论文正文作为证据。
+- Evidence-grounded writing 位于内置 skill 的 `references/paper_writing.md` 及其 profiles；MCP runtime 仍然只承担证据和恢复层。
+
+## MCP Toolsets 🧰
 
 默认情况下，MCP `tools/list` 暴露 `research_default` profile，而不是所有 GRaDOS public tools。这样普通研究 agent 会优先看到端到端研究闭环所需的工具：本地/远程检索、全文获取、结构卡、canonical 回读、operation polling、evidence pack、审计、evidence grid、对比、默认 external consult，以及 run-linked artifact 保存。
 
@@ -59,7 +115,7 @@ Toolsets 只控制 MCP 工具可见性；不会删除 Python 函数、CLI 命令
 
 可用 toolsets：`research_default`、`local_pdf`、`analysis_extra`、`evidence_extra`、`evidence_recovery`、`external_recovery`、`maintenance`、`zotero`、`all` 和 `full`。未知 toolset 或工具名会在 server 启动时 fail-fast，避免 MCP client 静默运行在错误暴露面上。
 
-### MCP 工具 🔧
+## MCP 工具 🔧
 
 | 服务 | 工具 | 说明 |
 | --- | --- | --- |
@@ -105,7 +161,7 @@ Toolsets 只控制 MCP 工具可见性；不会删除 Python 函数、CLI 命令
 
 `safe_doi` 是 GRaDOS 在保存回执、搜索结果或 resource URI 中返回的 opaque paper ID。新保存的论文会在可读 slug 后追加一段 normalized DOI hash，避免文件名碰撞；旧的 `10_1234_demo` 形式仍可读取。优先传 DOI 本身或工具返回的 URI，不要自己把 DOI 标点替换成 paper ID。
 
-### 本地论文库 🗂️
+## 本地论文库 🗂️
 
 提取或导入之后，GRaDOS 会把论文保存在一套可见的目录结构里：
 
@@ -125,7 +181,7 @@ Toolsets 只控制 MCP 工具可见性；不会删除 Python 函数、CLI 命令
 | `browser/` | 托管 Chromium、publisher/ChatGPT profiles、session records | publisher PDF 访问和 gated ChatGPT 外部综合所需的浏览器资产 |
 | `models/` | embedding 与 OCR 模型缓存 | setup 预热的运行时资产 |
 
-### 仓库地图 🗺️
+## 仓库地图 🗺️
 
 - `README.md` / `README.zh-CN.md`：主要安装与使用说明
 - `.mcp.json`：仓库内 MCP 配置示例

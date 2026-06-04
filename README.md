@@ -22,28 +22,84 @@ GRaDOS gives AI agents (Claude, Codex, Cursor, and similar clients) a single std
 
 ## Architecture 🧭
 
-GRaDOS is designed to sit inside an agent research workflow:
+GRaDOS keeps one boundary clear: the host agent plans and writes; GRaDOS retrieves, materializes, verifies, and stores evidence.
 
-1. Check the local paper library first with `search_saved_papers`, `get_saved_paper_structure`, or `grados://papers/{safe_doi}`
-2. Search remote academic sources in configured priority order
-3. Resolve optional Unpaywall OA locations, then fetch full text through the configured `api`, `browser`, optional `codex`, and `scihub` routes
-4. Parse PDFs through `Docling -> MinerU -> PyMuPDF` by default
-5. Save raw PDFs to `downloads/`, canonical Markdown to `papers/`, parser provenance sidecars to `papers/_parsed/`, parser assets to `papers/_assets/`, semantic search to `database/chroma/`, lexical FTS fallback to `database/fts.sqlite3`, and remote metadata to `database/remote_metadata/`
-6. Re-open saved papers with low-token structure cards and deep-reading windows before citing them
+```mermaid
+flowchart TD
+  Agent["Host Agent<br/>Claude / Codex / Cursor"]
 
-Host agents may use their own reasoning model to plan queries, screen candidates, rerank anchors, judge support, and synthesize prose. GRaDOS does not call that model directly: snippets, scores, evidence grids, comparisons, and audits are navigation material until the agent rereads the canonical paragraph window with `read_saved_paper`.
+  subgraph GRADOS["GRaDOS MCP"]
+    direction TB
+    Server["stdio MCP Server"]
+    Tools["Research Tools"]
+    Recovery["Recovery Layer<br/>Run Manifest / Operation Registry"]
+    Server --> Tools
+    Tools --> Recovery
+  end
 
-For handoff-safe citation work, `prepare_evidence_pack` materializes canonical blocks from `papers/*.md` into a persisted pack, filtering References/backmatter, title-only, and citation-only fragments before counting DOI coverage. A pack becomes current citation evidence only when `verify_evidence_pack` reports `current_valid=true`; strict pack audits ignore non-evidence pack items and never search the whole library to silently patch missing evidence.
+  subgraph RESEARCH["Research Flow"]
+    direction TB
+    Local["Local-first Lookup<br/>papers/*.md / structure cards"]
+    Remote["Remote Search<br/>Crossref / PubMed / ..."]
+    Fetch["Full-text Fetch<br/>api / browser / codex / scihub"]
+    Parse["PDF Parse<br/>Docling / MinerU / PyMuPDF"]
+    Local --> Remote --> Fetch --> Parse
+  end
 
-When external consult is enabled, GRaDOS can turn a current-valid evidence pack into a compact host-side ChatGPT Pro packet, save the returned advisory response, and audit it back against the saved packet when linked, otherwise the source pack. Packets with missing scoped DOI coverage or non-evidence anchors are not sendable. The Pro response remains recovery/review material until accepted claims are reread through canonical GRaDOS paragraph windows.
+  subgraph STORAGE["Canonical Storage"]
+    direction TB
+    Pdfs["Raw PDFs<br/>downloads/*.pdf"]
+    Markdown["Canonical Markdown<br/>papers/*.md"]
+    Indexes["Search Indexes<br/>Chroma / FTS / Metadata"]
+    Pdfs --> Markdown --> Indexes
+  end
 
-For run-level recovery, a `research_run_manifest` is a lightweight directory page for one research run. It can link search queries, candidates, extraction/parser receipts, `paper_summary`, `research_checkpoint`, `evidence_checkpoint`, `evidence_pack`, audit result IDs, canonical anchors, and failure records. It may keep an append-only event ledger plus a redacted config/provenance snapshot; append correction events instead of rewriting past events, and never store secrets. The run manifest is navigation/provenance only and must never replace canonical rereading of `papers/*.md` or current-valid evidence packs for final citation support.
+  subgraph EVIDENCE["Evidence Layer"]
+    direction TB
+    Candidate["Candidate Evidence"]
+    Packs["Current-valid Evidence Packs"]
+    Audits["Grids / Comparisons / Audits"]
+    Candidate --> Packs --> Audits
+  end
 
-For long-operation recovery, the Operation Registry is a lightweight SQLite control plane in the GRaDOS state database. It normalizes external consult sessions, DOI-bound extraction/fetch operations, DOI-bound parse attempts, indepth runs, local import runs, and Codex download handoffs into `operation_id`, `kind`, `status`, `stage`, `progress`, `next_action`, and recovery metadata while keeping each domain store recoverable. `get_operation_status(detail=true)` can include lifecycle events and a debug bundle with linked session/run/parse/artifact pointers; these records are operational metadata, not citation evidence.
+  subgraph OUTPUT["Outputs"]
+    direction TB
+    Reread["Canonical Reread"]
+    Consult["ChatGPT Pro Packet<br/>Optional Advisory"]
+    Writing["Citation-grounded Writing"]
+    Reread --> Writing
+    Consult --> Writing
+  end
 
-For evidence-grounded writing, the bundled skill includes `references/paper_writing.md` as the workflow router. It points host agents to task-specific profiles for experiment/simulation protocols, literature reviews, experiment reports, and manuscripts, plus a mechanics/elastic-metamaterials domain profile. These profiles guide planning, claim matrices, section gates, and delivery checks; they do not create a second evidence source or a separate MCP runtime.
+  Agent --> Server
+  Tools --> Local
+  Parse --> Pdfs
+  Indexes --> Candidate
+  Audits --> Reread
+  Audits --> Consult
 
-### MCP Toolsets 🧰
+  classDef agent fill:#F8FAFC,stroke:#475569,stroke-width:1px,color:#0F172A
+  classDef process fill:#EEF6FF,stroke:#2563EB,stroke-width:1px,color:#172554
+  classDef storage fill:#F0FDF4,stroke:#16A34A,stroke-width:1px,color:#14532D
+  classDef evidence fill:#FAF5FF,stroke:#9333EA,stroke-width:1px,color:#3B0764
+  classDef output fill:#FFF7ED,stroke:#EA580C,stroke-width:1px,color:#7C2D12
+
+  class Agent agent
+  class Server,Tools,Recovery,Local,Remote,Fetch,Parse process
+  class Pdfs,Markdown,Indexes storage
+  class Candidate,Packs,Audits evidence
+  class Reread,Consult,Writing output
+```
+
+Core contracts:
+
+- Local papers are checked first, then remote sources are searched and fetched through configured full-text routes.
+- PDFs are parsed into canonical Markdown; raw PDFs, parser provenance, assets, semantic indexes, lexical indexes, and remote metadata remain visible on disk.
+- Search snippets, scores, evidence grids, comparisons, and audits are navigation material. Final citation support requires canonical rereading through `read_saved_paper` or a current-valid pack from `verify_evidence_pack`.
+- ChatGPT Pro packets, `research_run_manifest`, and Operation Registry records are advisory or recovery metadata. They do not replace canonical paper text as evidence.
+- Evidence-grounded writing lives in the bundled skill profiles under `references/paper_writing.md`; the MCP runtime remains the evidence and recovery layer.
+
+## MCP Toolsets 🧰
 
 By default, MCP `tools/list` exposes the `research_default` profile rather than every public GRaDOS tool. This keeps ordinary research agents focused on the end-to-end loop: local/remote search, extraction, structure cards, canonical rereading, operation polling, evidence packs, audits, evidence grids, comparison, default external consult, and run-linked artifact saving.
 
@@ -59,7 +115,7 @@ Toolsets only control MCP tool visibility. They do not remove Python functions, 
 
 Named toolsets: `research_default`, `local_pdf`, `analysis_extra`, `evidence_extra`, `evidence_recovery`, `external_recovery`, `maintenance`, `zotero`, `all`, and `full`. Unknown toolset or tool names fail at server startup so misconfigured MCP clients do not silently run with the wrong surface.
 
-### MCP Tools 🔧
+## MCP Tools 🔧
 
 | Server | Tool | Description |
 | --- | --- | --- |
@@ -105,7 +161,7 @@ Named toolsets: `research_default`, `local_pdf`, `analysis_extra`, `evidence_ext
 
 `safe_doi` is an opaque GRaDOS paper ID returned by save receipts, search results, or resource URIs. New saves include a short normalized-DOI hash suffix to avoid filename collisions; older IDs such as `10_1234_demo` still resolve. Prefer passing the DOI itself or the returned URI instead of deriving a paper ID by replacing DOI punctuation.
 
-### Local Paper Library 🗂️
+## Local Paper Library 🗂️
 
 After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 
@@ -125,7 +181,7 @@ After extraction or import, GRaDOS keeps papers in a visible on-disk layout:
 | `browser/` | Managed Chromium, publisher/ChatGPT profiles, session records | Browser strategy assets for publisher PDF access and gated ChatGPT external consult |
 | `models/` | Embedding and OCR model caches | Runtime assets warmed by setup |
 
-### Repository Map 🗺️
+## Repository Map 🗺️
 
 - `README.md` / `README.zh-CN.md`: primary installation and usage guides
 - `.mcp.json`: repo-local MCP wiring example

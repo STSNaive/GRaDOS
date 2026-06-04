@@ -147,6 +147,54 @@ def test_external_consult_doctor_live_formats_logged_out_probe(
     assert "Live ChatGPT login: None" not in result.output
 
 
+def test_external_consult_doctor_live_reports_consult_route_details(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "grados-home"
+    runner = CliRunner()
+    env = {"GRADOS_HOME": str(home)}
+
+    import grados.browser.chatgpt.runtime as runtime
+
+    async def fake_check_chatgpt_login(*args, **kwargs) -> dict[str, object]:
+        _ = (args, kwargs)
+        return {
+            "ok": True,
+            "ready": True,
+            "readiness": "consult_route_ready",
+            "baseline_turns": 3,
+            "model_selection": {
+                "requested": "gpt-5.5-pro",
+                "resolved_label": "Extended Pro",
+                "strategy": "select",
+                "verified": True,
+            },
+            "thinking_selection": {
+                "requested": "pro_extended",
+                "resolved_label": "Extended",
+                "strategy": "highest",
+                "verified": True,
+            },
+        }
+
+    monkeypatch.setattr(runtime, "check_chatgpt_login", fake_check_chatgpt_login)
+
+    result = runner.invoke(main, ["external-consult", "doctor", "--live"], env=env, terminal_width=200)
+
+    assert result.exit_code == 0
+    assert "Live ChatGPT login: ok" in result.output
+    assert "Live ChatGPT consult route: ready" in result.output
+    assert "Model route: requested=gpt-5.5-pro" in result.output
+    assert "resolved=Extended Pro" in result.output
+    assert "strategy=select" in result.output
+    assert "Thinking route: requested=pro_extended" in result.output
+    assert "resolved=Extended" in result.output
+    assert "strategy=highest" in result.output
+    assert "verified=true" in result.output
+    assert "Baseline turns: 3" in result.output
+
+
 def test_update_db_command_reports_index_summary(tmp_path: Path, monkeypatch) -> None:
     home = tmp_path / "grados-home"
     paths = GRaDOSPaths(home)

@@ -235,6 +235,7 @@ class AuditedClaim:
     mismatch_detail: str = ""
     confidence: float = 0.0
     requires_canonical_reread: bool = True
+    audit_diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

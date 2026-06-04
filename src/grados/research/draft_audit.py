@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 from typing import TypedDict
 
@@ -228,6 +229,70 @@ def _rank_evidence_for_markers(
     )
 
 
+def _uses_author_year_rerank(markers: list[AuditCitationMarker], citation_style: str) -> bool:
+    return bool(markers) and _citation_style_supports_attribution(citation_style)
+
+
+def _audit_search_limit(
+    candidate_limit: int,
+    markers: list[AuditCitationMarker],
+    citation_style: str,
+) -> int:
+    if not _uses_author_year_rerank(markers, citation_style):
+        return candidate_limit
+    return max(candidate_limit, min(max(candidate_limit * 4, 8), 25))
+
+
+def _result_diagnostics(result: PaperSearchResult) -> dict[str, object]:
+    return {
+        "doi": result.doi,
+        "safe_doi": result.safe_doi,
+        "title": result.title,
+        "authors": list(result.authors),
+        "year": result.year,
+        "section_name": result.section_name,
+        "score": float(result.score),
+    }
+
+
+def _author_year_rerank_diagnostics(
+    *,
+    markers: list[AuditCitationMarker],
+    citation_style: str,
+    candidate_limit: int,
+    search_limit: int,
+    retrieved: list[PaperSearchResult],
+    eligible: list[PaperSearchResult],
+    ranked: list[PaperSearchResult],
+    returned: list[PaperSearchResult],
+) -> dict[str, object]:
+    matched = [
+        result
+        for result in ranked
+        if any(_citation_matches_result(marker, result) for marker in markers)
+    ]
+    mismatches = [
+        result
+        for result in ranked
+        if not any(_citation_matches_result(marker, result) for marker in markers)
+    ]
+    first_match = matched[0] if matched else None
+    return {
+        "markers": [asdict(marker) for marker in markers],
+        "matched_author_year": first_match is not None,
+        "matched_doi": first_match.doi if first_match else "",
+        "matched_safe_doi": first_match.safe_doi if first_match else "",
+        "mismatch_candidates": [_result_diagnostics(result) for result in mismatches[:3]],
+        "candidate_limit": candidate_limit,
+        "search_limit": search_limit,
+        "rerank_applied": _uses_author_year_rerank(markers, citation_style)
+        and search_limit > candidate_limit,
+        "retrieved_candidate_count": len(retrieved),
+        "eligible_candidate_count": len(eligible),
+        "returned_candidate_count": len(returned),
+    }
+
+
 def _has_canonical_anchor(result: PaperSearchResult) -> bool:
     safe_doi = str(getattr(result, "safe_doi", "") or "")
     paragraph_count = int(getattr(result, "paragraph_count", 0) or 0)
@@ -343,29 +408,32 @@ def audit_draft_support(
     candidate_limit = max(1, candidate_limit)
     audited_claims: list[AuditedClaim] = []
     verdict_counts: Counter[str] = Counter()
-    evidence_cache: dict[str, list[PaperSearchResult]] = {}
+    evidence_cache: dict[tuple[str, int], list[PaperSearchResult]] = {}
 
     for index, claim in enumerate(claims, 1):
         markers = _extract_citation_markers(claim, citation_style)
         search_query = _strip_citations(claim)
         evidence: list[PaperSearchResult] = []
+        retrieved: list[PaperSearchResult] = []
+        eligible: list[PaperSearchResult] = []
+        ranked: list[PaperSearchResult] = []
+        search_limit = _audit_search_limit(candidate_limit, markers, citation_style)
         if search_query:
             cache_key = _audit_query_cache_key(search_query)
-            cached = evidence_cache.get(cache_key)
+            cached = evidence_cache.get((cache_key, search_limit))
             if cached is None:
                 cached = search_papers(
                     chroma_dir,
                     search_query,
-                    limit=candidate_limit,
+                    limit=search_limit,
                     papers_dir=papers_dir,
                     use_reranking=True,
                 )
-                evidence_cache[cache_key] = cached
-            evidence = _rank_evidence_for_markers(
-                _eligible_evidence(cached),
-                markers,
-                citation_style,
-            )
+                evidence_cache[(cache_key, search_limit)] = cached
+            retrieved = cached
+            eligible = _eligible_evidence(cached)
+            ranked = _rank_evidence_for_markers(eligible, markers, citation_style)
+            evidence = ranked[:candidate_limit]
         verdict_payload = _draft_verdict(
             evidence=evidence,
             markers=markers,
@@ -403,6 +471,16 @@ def audit_draft_support(
             mismatch_detail=str(verdict_payload["mismatch_detail"]),
             confidence=float(verdict_payload["confidence"]),
             requires_canonical_reread=bool(verdict_payload["requires_canonical_reread"]),
+            audit_diagnostics=_author_year_rerank_diagnostics(
+                markers=markers,
+                citation_style=citation_style,
+                candidate_limit=candidate_limit,
+                search_limit=search_limit,
+                retrieved=retrieved,
+                eligible=eligible,
+                ranked=ranked,
+                returned=evidence,
+            ),
         )
         audited_claims.append(entry)
         verdict_counts[entry.verdict] += 1

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,8 @@ from grados.browser.pdf.types import (
     PdfBrowserEvent,
     PdfBrowserSessionRecord,
 )
+
+_CAPTURE_FIELD_NAMES = {field.name for field in fields(PdfBrowserCapture)}
 
 
 def now_iso() -> str:
@@ -70,6 +72,25 @@ def append_pdf_browser_event(
     return event
 
 
+def _coerce_pdf_browser_capture(capture: dict[str, Any] | PdfBrowserCapture) -> PdfBrowserCapture:
+    if isinstance(capture, PdfBrowserCapture):
+        return capture
+    payload = dict(capture)
+    diagnostics = payload.get("diagnostics")
+    diagnostics = dict(diagnostics) if isinstance(diagnostics, dict) else {}
+    known = {
+        key: value
+        for key, value in payload.items()
+        if key in _CAPTURE_FIELD_NAMES and key != "diagnostics"
+    }
+    for key, value in payload.items():
+        if key not in _CAPTURE_FIELD_NAMES:
+            diagnostics[key] = value
+    if diagnostics:
+        known["diagnostics"] = diagnostics
+    return PdfBrowserCapture(**known)
+
+
 def update_pdf_browser_session(
     record: PdfBrowserSessionRecord,
     *,
@@ -85,6 +106,7 @@ def update_pdf_browser_session(
     capture: dict[str, Any] | PdfBrowserCapture | None = None,
     warnings: list[str] | None = None,
     events: list[dict[str, Any] | PdfBrowserEvent] | None = None,
+    error_detail: dict[str, Any] | None = None,
 ) -> PdfBrowserSessionRecord:
     if status is not None:
         record.status = status
@@ -105,7 +127,7 @@ def update_pdf_browser_session(
     if manual is not None:
         record.manual = manual
     if capture is not None:
-        record.capture = capture if isinstance(capture, PdfBrowserCapture) else PdfBrowserCapture(**capture)
+        record.capture = _coerce_pdf_browser_capture(capture)
     if warnings is not None:
         record.warnings = list(warnings)
     if events is not None:
@@ -113,6 +135,8 @@ def update_pdf_browser_session(
             event if isinstance(event, PdfBrowserEvent) else PdfBrowserEvent(**event)
             for event in events
         ]
+    if error_detail is not None:
+        record.error_detail = dict(error_detail)
     record.updated_at = now_iso()
     write_pdf_browser_session(record)
     return record

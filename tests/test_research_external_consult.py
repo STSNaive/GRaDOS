@@ -960,6 +960,49 @@ def test_consult_chatgpt_pro_marks_pre_submit_login_failure_unrecoverable(
     assert operation.result["next_action"] == result["next_action"]
 
 
+def test_consult_chatgpt_pro_marks_model_picker_failure_as_model_route(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = GRaDOSPaths(tmp_path)
+
+    async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
+        _ = (paths_arg, browser_config, kwargs)
+        return ChatGPTBrowserResult(
+            ok=False,
+            status="failed",
+            session_id="chatgpt-20260604T010101-abcdef12",
+            error='Unable to select ChatGPT Pro target "gpt-5.5-pro".',
+            error_code="model_picker_unavailable",
+            session_record_path=str(tmp_path / "session.json"),
+            metadata={},
+        )
+
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fake_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        consult_chatgpt_pro(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            prompt="Please review this short question.",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["recoverable"] is False
+    assert result["failure_kind"] == "model_route_unavailable"
+    assert result["pre_submit_failure"] is True
+    assert result["manual_copy_fallback"]["available"] is False
+    assert result["next_action"] == (
+        "rerun external-consult doctor --live, inspect model route diagnostics, "
+        "then retry consult_chatgpt_pro"
+    )
+
+
 def test_external_consult_operation_status_saves_captured_session_once(
     monkeypatch,
     tmp_path: Path,
@@ -1090,6 +1133,57 @@ def test_external_consult_operation_status_does_not_complete_by_prompt_hash_only
     assert second["status"] == "pending"
     assert second["stage"] == "running"
     assert second["result_artifact_id"] == ""
+
+
+def test_external_consult_operation_status_reports_model_route_failure(tmp_path: Path) -> None:
+    paths = GRaDOSPaths(tmp_path)
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    session_id = new_session_id()
+    record = store.create(
+        session_id=session_id,
+        pack_id="",
+        packet_artifact_id="",
+        prompt_hash="hash",
+        prompt="prompt",
+        mode="review",
+        metadata={"model_strategy": "select"},
+    )
+    record["status"] = "failed"
+    record["error"] = {
+        "error": "model_picker_unavailable",
+        "stage": "model-selection",
+        "message": 'Unable to select ChatGPT Pro target "gpt-5.5-pro".',
+        "details": {"status": "button-missing"},
+    }
+    store.write(session_id, record)
+    create_operation(
+        _db_path(tmp_path),
+        operation_id=session_id,
+        kind="external_consult",
+        status="failed",
+        stage="failed",
+        idempotency_key="hash",
+    )
+
+    result = __import__("asyncio").run(
+        get_external_consult_operation_status(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            operation_id=session_id,
+            detail=True,
+        )
+    )
+    operation = get_operation(_db_path(tmp_path), session_id)
+
+    assert result["status"] == "failed"
+    assert result["error"] == "model_route_unavailable"
+    assert result["conversation_url"] == ""
+    assert result["next_action"] == "inspect_browser_session_record_and_retry_after_fixing_error"
+    assert operation is not None
+    assert operation.error is not None
+    assert operation.error["error"] == "model_route_unavailable"
+    assert operation.recovery["next_action"] == "rerun_external_consult_doctor_live_after_model_route_fix"
 
 
 def test_external_consult_operation_status_rejects_shell_conversation_url(

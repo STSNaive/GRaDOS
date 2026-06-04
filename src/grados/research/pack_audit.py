@@ -39,6 +39,7 @@ _GENERALIZER_PATTERN = re.compile(
     r"\b(all|always|never|every|entirely|fully|proves?|guarantees?)\b|"
     r"(所有|全部|总是|从不|完全|证明|保证)"
 )
+_NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 
 
 def _normalize_token(token: str) -> str:
@@ -94,10 +95,83 @@ def _eligible_pack_items(items: list[EvidencePackItem]) -> list[EvidencePackItem
     ]
 
 
+def _number_tokens(text: str) -> set[str]:
+    return {match.group(0) for match in _NUMBER_PATTERN.finditer(text)}
+
+
+def _contains_literal(text: str, value: str) -> bool:
+    value = value.strip().lower()
+    return bool(value) and value in text.lower()
+
+
+def _author_year_match_score(claim_text: str, item: EvidencePackItem) -> tuple[float, bool]:
+    if not item.year or item.year not in claim_text:
+        return 0.0, False
+    claim_lower = claim_text.lower()
+    for author in item.authors:
+        surname = str(author).strip().split()[-1].lower()
+        if surname and surname in claim_lower:
+            return 0.14, True
+    return 0.0, False
+
+
+def _metadata_support_components(
+    claim_text: str,
+    item: EvidencePackItem,
+    *,
+    token_overlap: float,
+) -> dict[str, Any]:
+    matched_locators: dict[str, str] = {}
+    locator_boost = 0.0
+    for key, value, boost in (
+        ("canonical_uri", item.canonical_uri, 0.22),
+        ("doi", item.doi, 0.16),
+        ("safe_doi", item.safe_doi, 0.12),
+        ("block_id", item.block_id, 0.10),
+    ):
+        if _contains_literal(claim_text, value):
+            matched_locators[key] = value
+            locator_boost += boost
+    if item.text_sha256:
+        hash_prefix = item.text_sha256[:12]
+        if _contains_literal(claim_text, item.text_sha256) or _contains_literal(claim_text, hash_prefix):
+            matched_locators["text_sha256"] = hash_prefix
+            locator_boost += 0.12
+
+    author_year_boost, author_year_matched = _author_year_match_score(claim_text, item)
+    claim_numbers = _number_tokens(claim_text)
+    evidence_numbers = _number_tokens(item.text)
+    number_overlap = sorted(claim_numbers & evidence_numbers)
+    number_boost = min(0.08, 0.04 * len(number_overlap))
+    section_name = _item_section_name(item)
+    section_matched = bool(matched_locators) and _contains_literal(claim_text, section_name)
+    section_boost = 0.04 if section_matched else 0.0
+    metadata_boost = min(
+        0.38,
+        locator_boost + author_year_boost + number_boost + section_boost,
+    )
+    score = token_overlap + metadata_boost
+    text_support_floor_applied = False
+    if token_overlap < 0.18 and metadata_boost > 0:
+        score = min(score, 0.31)
+        text_support_floor_applied = True
+    return {
+        "score": round(float(score), 6),
+        "token_overlap": round(float(token_overlap), 6),
+        "metadata_boost": round(float(metadata_boost), 6),
+        "matched_locator": bool(matched_locators),
+        "matched_locators": matched_locators,
+        "matched_author_year": author_year_matched,
+        "matched_numbers": number_overlap,
+        "matched_section": section_name if section_matched else "",
+        "text_support_floor_applied": text_support_floor_applied,
+    }
+
+
 def _claim_verdict(
     claim_text: str,
     markers: list[Any],
-    ranked: list[tuple[EvidencePackItem, float]],
+    ranked: list[tuple[EvidencePackItem, float, dict[str, Any]]],
     *,
     strict: bool,
 ) -> dict[str, Any]:
@@ -112,6 +186,7 @@ def _claim_verdict(
             "requires_canonical_reread": True,
         }
     top_score = ranked[0][1]
+    top_support = ranked[0][2]
     if top_score < 0.18:
         return {
             "verdict": VERDICT_UNVERIFIABLE,
@@ -123,12 +198,18 @@ def _claim_verdict(
             "requires_canonical_reread": True,
         }
     if top_score < 0.32:
+        mismatch_detail = "A related pack passage exists, but the overlap is too weak for verification."
+        if top_support.get("matched_locator"):
+            mismatch_detail = (
+                "The claim matches a pack locator, but the cited window text is too weak "
+                "for verification."
+            )
         return {
             "verdict": VERDICT_MINOR_DISTORTION,
             "severity": "minor",
             "issue_type": "low_confidence_support",
             "revision_action": "revise_wording_or_add_locator",
-            "mismatch_detail": "A related pack passage exists, but the overlap is too weak for verification.",
+            "mismatch_detail": mismatch_detail,
             "confidence": round(float(top_score), 6),
             "requires_canonical_reread": True,
         }
@@ -143,7 +224,11 @@ def _claim_verdict(
             "requires_canonical_reread": True,
         }
     if markers and any(getattr(marker, "style", "") == "author_year" for marker in markers):
-        if not any(_citation_matches_item(marker, item) for item, _ in ranked[:3] for marker in markers):
+        if not any(
+            _citation_matches_item(marker, item)
+            for item, _score, _support in ranked[:3]
+            for marker in markers
+        ):
             return {
                 "verdict": VERDICT_MAJOR_DISTORTION,
                 "severity": "major",
@@ -192,15 +277,23 @@ def _rank_evidence(
     item_tokens: list[set[str]] | None = None,
     *,
     limit: int = 5,
-) -> list[tuple[EvidencePackItem, float]]:
+    locator_text: str = "",
+) -> list[tuple[EvidencePackItem, float, dict[str, Any]]]:
     claim_tokens = _tokens(claim_text)
     tokens_by_item = item_tokens or [_tokens(item.text) for item in items]
-    scored = [
-        (_overlap_score_tokens(claim_tokens, tokens), -index, item)
-        for index, (item, tokens) in enumerate(zip(items, tokens_by_item, strict=False))
-    ]
-    top = nlargest(max(1, limit), scored, key=lambda entry: (entry[0], entry[1]))
-    return [(item, score) for score, _index, item in top if score > 0]
+    score_text = locator_text or claim_text
+    scored: list[tuple[float, float, int, EvidencePackItem, dict[str, Any]]] = []
+    for index, (item, tokens) in enumerate(zip(items, tokens_by_item, strict=False)):
+        token_overlap = _overlap_score_tokens(claim_tokens, tokens)
+        support = _metadata_support_components(
+            score_text,
+            item,
+            token_overlap=token_overlap,
+        )
+        score = float(support["score"])
+        scored.append((score, token_overlap, -index, item, support))
+    top = nlargest(max(1, limit), scored, key=lambda entry: (entry[0], entry[1], entry[2]))
+    return [(item, score, support) for score, _token, _index, item, support in top if score > 0]
 
 
 def _load_pack(db_path: Path, pack_id: str) -> tuple[EvidencePack | None, dict[str, Any]]:
@@ -250,7 +343,7 @@ def audit_answer_against_pack(
     for index, claim in enumerate(claims, 1):
         query_text = _strip_citations(claim)
         markers = _extract_citation_markers(claim, citation_style)
-        ranked = _rank_evidence(query_text, evidence_items, item_tokens)
+        ranked = _rank_evidence(query_text, evidence_items, item_tokens, locator_text=claim)
         if strict and not pack_is_current:
             verdict_payload = _access_verdict("stale_pack")
         else:
@@ -266,8 +359,10 @@ def audit_answer_against_pack(
                 "text_sha256": item.text_sha256,
                 "score": score,
                 "snippet": item.text[:320],
+                "matched_locator": support.get("matched_locator", False),
+                "support": support,
             }
-            for item, score in ranked[:5]
+            for item, score, support in ranked[:5]
         ]
         audited = {
             "claim_id": f"claim_{index}",

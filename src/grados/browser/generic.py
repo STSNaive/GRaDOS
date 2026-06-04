@@ -129,22 +129,54 @@ async def fetch_with_browser(
         host: str = "",
         manual: bool = False,
         warnings: list[str] | None = None,
+        error_detail: dict[str, object] | None = None,
     ) -> None:
-        update_pdf_browser_session(
-            session_record,
-            status=status,
-            outcome=outcome,
-            source=source,
-            browser_label=getattr(runtime, "browser_label", "") if runtime is not None else "",
-            browser_source=getattr(runtime, "browser_source", "") if runtime is not None else "",
-            profile_dir=getattr(runtime, "profile_dir", "") if runtime is not None else "",
-            final_url=final_url,
-            host=host,
-            manual=manual,
-            capture=state.capture_payload() if state is not None else {},
-            warnings=list(warnings or []),
-            events=list(state.events) if state is not None else [],
-        )
+        browser_label = getattr(runtime, "browser_label", "") if runtime is not None else ""
+        browser_source = getattr(runtime, "browser_source", "") if runtime is not None else ""
+        profile_dir = getattr(runtime, "profile_dir", "") if runtime is not None else ""
+        session_warnings = list(warnings or [])
+        try:
+            update_pdf_browser_session(
+                session_record,
+                status=status,
+                outcome=outcome,
+                source=source,
+                browser_label=browser_label,
+                browser_source=browser_source,
+                profile_dir=profile_dir,
+                final_url=final_url,
+                host=host,
+                manual=manual,
+                capture=state.capture_payload() if state is not None else {},
+                warnings=session_warnings,
+                events=list(state.events) if state is not None else [],
+                error_detail=error_detail,
+            )
+        except Exception as exc:
+            if status not in {"error", "failed"}:
+                raise
+            fallback_error_detail = dict(error_detail or {})
+            fallback_error_detail["session_update_error"] = {
+                "error_type": exc.__class__.__name__,
+                "message": str(exc),
+            }
+            logger.warning("Falling back to minimal PDF browser session error record.", exc_info=True)
+            update_pdf_browser_session(
+                session_record,
+                status=status,
+                outcome=outcome,
+                source=source,
+                browser_label=browser_label,
+                browser_source=browser_source,
+                profile_dir=profile_dir,
+                final_url=final_url,
+                host=host,
+                manual=manual,
+                capture={},
+                warnings=session_warnings,
+                events=[],
+                error_detail=fallback_error_detail,
+            )
 
     try:
         runtime = await acquire_browser_runtime(
@@ -293,6 +325,10 @@ async def fetch_with_browser(
             final_url=final_url,
             host=_host_from_url(final_url),
             warnings=warnings,
+            error_detail={
+                "error_type": exc.__class__.__name__,
+                "message": str(exc),
+            },
         )
         return BrowserFetchResult(
             pdf_buffer=None,

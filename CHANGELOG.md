@@ -139,6 +139,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Changed CI and PyPI publishing preflight to enforce `mypy` strict-mode checks alongside Ruff, pytest, native-TLS package builds, and local wheel smoke installs before release publication.
 
 ### Fixed
+- Fixed publisher browser PDF session persistence so newer capture diagnostics such as `assisted_download_possible` and unknown diagnostic fields can round-trip through `session.json`, while browser acquisition failures preserve structured `error_detail` instead of leaving stale running sessions.
+- Fixed ChatGPT Pro external-consult live doctor reporting so login readiness is separate from no-submit consult-route readiness, including requested/resolved/verified model and thinking route details; pre-submit model picker failures now surface as model-route failures rather than conversation recovery failures.
+- Fixed author-year draft audit reranking so narrative markers such as `Dou et al. (2026)` can widen the internal candidate pool, rerank by matching author/year, and still return only the requested candidate count with attribution diagnostics.
+- Fixed pack-scoped audit scoring to use pack-only locator and metadata signals such as DOI, canonical URI, block id, text hash, author/year, section, and numeric overlap, reducing low-confidence noise for current-valid locator-backed claims while keeping stale packs and broad overclaims protective.
 - Fixed evidence-pack preparation so References/backmatter, title-only, citation-only, and too-short fragments are filtered before DOI coverage is counted; scoped DOI lists are no longer truncated by `max_windows`, and missing reasons now report non-reference/non-eligible evidence gaps.
 - Fixed keyword metadata sections, including colon-suffixed `Keywords:`, `Key words:`, and `Index terms:` headings, so they cannot be counted as citation-grade evidence in evidence packs, comparison axes, or external-consult packets.
 - Fixed external-consult packet preparation so packets with missing scoped DOI coverage or non-evidence anchors are returned as `sendable=false` and are not saved as usable packets.

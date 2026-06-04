@@ -581,6 +581,71 @@ def test_strict_pack_audit_does_not_search_full_library(monkeypatch, tmp_path: P
     assert audit["claim_map"][0]["evidence_block_ids"]
 
 
+def test_pack_audit_uses_locator_metadata_to_confirm_pack_support(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _save_demo_paper(tmp_path)
+    _patch_search(monkeypatch)
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="composite damping",
+        scoped_dois=["10.1234/demo"],
+    )
+    loaded = read_evidence_pack(_db_path(tmp_path), pack_id=str(receipt["pack_id"]))
+    item = loaded["pack"]["evidence_items"][0]
+
+    audit = audit_answer_against_pack(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+        draft=(
+            f"The Results locator {item['canonical_uri']} shows composite damping "
+            "with an 18% vibration attenuation improvement (Smith, 2025)."
+        ),
+        strict=True,
+    )
+
+    claim = audit["claims"][0]
+    evidence = claim["evidence"][0]
+    assert audit["search_scope"] == "pack_only"
+    assert claim["verdict"] == "verified"
+    assert evidence["canonical_uri"] == item["canonical_uri"]
+    assert evidence["matched_locator"] is True
+    assert evidence["support"]["metadata_boost"] > 0
+    assert evidence["support"]["matched_author_year"] is True
+    assert evidence["support"]["matched_numbers"] == ["18"]
+    assert evidence["support"]["text_support_floor_applied"] is False
+
+
+def test_pack_audit_keeps_broad_generalizer_as_scope_overreach(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _save_demo_paper(tmp_path)
+    _patch_search(monkeypatch)
+    receipt = prepare_evidence_pack(
+        _chroma_dir(tmp_path),
+        _db_path(tmp_path),
+        topic="composite damping",
+        scoped_dois=["10.1234/demo"],
+    )
+
+    audit = audit_answer_against_pack(
+        _db_path(tmp_path),
+        _papers_dir(tmp_path),
+        pack_id=str(receipt["pack_id"]),
+        draft="The method always improves attenuation across every setup (Smith, 2025).",
+        strict=True,
+    )
+
+    claim = audit["claims"][0]
+    assert claim["verdict"] == "minor_distortion"
+    assert claim["issue_type"] == "scope_overreach"
+    assert claim["requires_canonical_reread"] is True
+
+
 def test_suggest_missing_evidence_is_separate_from_strict_audit(monkeypatch, tmp_path: Path) -> None:
     _save_demo_paper(tmp_path)
     _patch_search(monkeypatch)

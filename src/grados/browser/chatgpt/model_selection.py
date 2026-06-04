@@ -257,6 +257,7 @@ def _pro_model_selection_expression() -> str:
   const CURRENT_PRO_TEXT_TOKENS = __CURRENT_PRO_TEXT_TOKENS__;
   const CURRENT_PRO_TEST_ID_TOKENS = __CURRENT_PRO_TEST_ID_TOKENS__;
   const INITIAL_WAIT_MS = 150;
+  const BUTTON_WAIT_MS = 12000;
   const REOPEN_INTERVAL_MS = 400;
   const MAX_WAIT_MS = 20000;
   const SETTLE_WAIT_MS = 1500;
@@ -296,9 +297,69 @@ def _pro_model_selection_expression() -> str:
       })
   );
 
-  const button = document.querySelector(BUTTON_SELECTOR);
+  const detectTemporaryChat = () => {
+    try {
+      const url = new URL(window.location.href);
+      const flag = (url.searchParams.get("temporary-chat") ?? "").toLowerCase();
+      if (flag === "true" || flag === "1" || flag === "yes") return true;
+    } catch {}
+    const title = (document.title || "").toLowerCase();
+    if (title.includes("temporary chat")) return true;
+    const body = (document.body?.innerText || "").toLowerCase();
+    return body.includes("temporary chat");
+  };
+  const visibleText = (node) => (node?.textContent ?? "").replace(/\s+/g, " ").trim();
+  const sampleNodes = (selector, limit = 12) => Array.from(document.querySelectorAll(selector))
+    .filter((node) => node instanceof HTMLElement)
+    .map((node) => ({
+      text: visibleText(node),
+      ariaLabel: node.getAttribute?.("aria-label") ?? "",
+      dataTestid: node.getAttribute?.("data-testid") ?? "",
+      className: String(node.className || ""),
+      visible: Boolean(node.offsetWidth || node.offsetHeight || node.getClientRects?.().length),
+    }))
+    .filter((item) => item.text || item.ariaLabel || item.dataTestid || item.className)
+    .slice(0, limit);
+  const collectPickerDiagnostics = () => {
+    const composer = document.querySelector(COMPOSER_MODEL_SIGNAL_SELECTOR);
+    const legacyButtons = sampleNodes('[data-testid="model-switcher-dropdown-button"]');
+    const composerPills = sampleNodes("button.__composer-pill");
+    const menuNodes = sampleNodes(MENU_ITEM_SELECTOR);
+    const buttonSamples = sampleNodes('button[aria-haspopup="menu"], button[aria-label], button', 16);
+    const labels = [];
+    for (const item of [...composerPills, ...menuNodes, ...buttonSamples]) {
+      const label = (item.text || item.ariaLabel || "").trim();
+      if (label && !labels.includes(label)) labels.push(label);
+    }
+    return {
+      buttonWaitMs: BUTTON_WAIT_MS,
+      url: window.location.href,
+      title: document.title || "",
+      composerReady: Boolean(composer),
+      legacyModelButtonCount: legacyButtons.length,
+      composerPillMenuCount: document.querySelectorAll('button.__composer-pill[aria-haspopup="menu"]').length,
+      composerPillCount: composerPills.length,
+      menuContainerCount: document.querySelectorAll(MENU_CONTAINER_SELECTOR).length,
+      menuItemCount: document.querySelectorAll(MENU_ITEM_SELECTOR).length,
+      temporaryChat: detectTemporaryChat(),
+      composerPillLabels: composerPills.map((item) => item.text || item.ariaLabel).filter(Boolean),
+      buttonSamples,
+      availableOptions: labels.slice(0, 12),
+    };
+  };
+  const waitForModelButton = async () => {
+    const start = performance.now();
+    let candidate = document.querySelector(BUTTON_SELECTOR);
+    while (!candidate && performance.now() - start <= BUTTON_WAIT_MS) {
+      await sleep(150);
+      candidate = document.querySelector(BUTTON_SELECTOR);
+    }
+    return candidate;
+  };
+
+  let button = await waitForModelButton();
   if (!button) {
-    return { status: "button-missing" };
+    return { status: "button-missing", hint: collectPickerDiagnostics() };
   }
 
   const closeMenu = () => {
@@ -475,17 +536,6 @@ def _pro_model_selection_expression() -> str:
     };
     check();
   });
-  const detectTemporaryChat = () => {
-    try {
-      const url = new URL(window.location.href);
-      const flag = (url.searchParams.get("temporary-chat") ?? "").toLowerCase();
-      if (flag === "true" || flag === "1" || flag === "yes") return true;
-    } catch {}
-    const title = (document.title || "").toLowerCase();
-    if (title.includes("temporary chat")) return true;
-    const body = (document.body?.innerText || "").toLowerCase();
-    return body.includes("temporary chat");
-  };
   const ensureMenuOpen = () => {
     const menuOpen = document.querySelector(MENU_CONTAINER_SELECTOR);
     if (!menuOpen && performance.now() - lastPointerClick > REOPEN_INTERVAL_MS) {

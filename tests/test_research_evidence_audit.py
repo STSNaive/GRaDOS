@@ -568,6 +568,66 @@ def test_audit_draft_support_keeps_narrative_author_year_mismatch_strict(
     assert result.claims[0].issue_type == "citation_mismatch"
 
 
+def test_audit_draft_support_reranks_widened_author_year_candidates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured_limits: list[int] = []
+
+    def fake_search_papers(chroma_dir, query, limit=10, **kwargs):  # noqa: ANN001
+        _ = (chroma_dir, query, kwargs)
+        captured_limits.append(limit)
+        candidates = [
+            PaperSearchResult(
+                doi="10.5555/other",
+                safe_doi="10_5555_other",
+                title="Other Baseline Study",
+                authors=["Garcia"],
+                year="2024",
+                journal="Mechanical Systems",
+                section_name="Results",
+                paragraph_start=7,
+                paragraph_count=1,
+                snippet="Composite damping improved vibration attenuation by 18%.",
+                score=1.6,
+            ),
+            PaperSearchResult(
+                doi="10.1234/dou",
+                safe_doi="10_1234_dou",
+                title="Composite Damping Study",
+                authors=["Dou", "Lee"],
+                year="2026",
+                journal="Composite Structures",
+                section_name="Results",
+                paragraph_start=4,
+                paragraph_count=2,
+                snippet="Composite damping improved vibration attenuation by 18%.",
+                score=1.35,
+            ),
+        ]
+        return candidates[:limit]
+
+    _patch_search_papers(monkeypatch, fake_search_papers)
+
+    result = audit_draft_support(
+        tmp_path / "chroma",
+        draft_text="Dou et al. (2026) showed that composite damping improves vibration attenuation by 18%.",
+        candidate_limit=1,
+        strictness="strict",
+    )
+
+    claim = result.claims[0]
+    assert captured_limits == [8]
+    assert claim.verdict == "verified"
+    assert [item.doi for item in claim.evidence] == ["10.1234/dou"]
+    assert claim.audit_diagnostics["matched_author_year"] is True
+    assert claim.audit_diagnostics["matched_doi"] == "10.1234/dou"
+    assert claim.audit_diagnostics["candidate_limit"] == 1
+    assert claim.audit_diagnostics["search_limit"] == 8
+    assert claim.audit_diagnostics["rerank_applied"] is True
+    assert claim.audit_diagnostics["mismatch_candidates"]
+
+
 def test_audit_draft_support_attaches_standalone_citation_marker(
     monkeypatch,
     tmp_path: Path,

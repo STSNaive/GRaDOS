@@ -360,7 +360,13 @@ def test_pdf_browser_session_store_round_trip(tmp_path: Path) -> None:
         record,
         status="ok",
         outcome="pdf_obtained",
-        capture={"source": "response", "url": "https://example.com/paper.pdf", "bytes": 12},
+        capture={
+            "source": "response",
+            "url": "https://example.com/paper.pdf",
+            "bytes": 12,
+            "assisted_download_possible": True,
+            "future_diagnostic": "kept",
+        },
         warnings=["one warning"],
         events=[
             {"timestamp": record.created_at, "name": "pdf_capture_success", "url": "https://example.com/paper.pdf"}
@@ -372,7 +378,74 @@ def test_pdf_browser_session_store_round_trip(tmp_path: Path) -> None:
     assert payload["doi"] == "10.1234/demo"
     assert payload["status"] == "ok"
     assert payload["capture"]["source"] == "response"
+    assert payload["capture"]["assisted_download_possible"] is True
+    assert payload["capture"]["diagnostics"]["future_diagnostic"] == "kept"
     assert payload["events"][0]["name"] == "pdf_capture_success"
+
+
+def test_pdf_browser_session_store_records_error_detail(tmp_path: Path) -> None:
+    record = create_pdf_browser_session(
+        tmp_path / "sessions",
+        doi="10.1234/demo",
+        target_url="https://doi.org/10.1234/demo",
+    )
+
+    update_pdf_browser_session(
+        record,
+        status="error",
+        outcome="error",
+        capture={"source": "", "bytes": 0, "unexpected": {"selector": "future"}},
+        warnings=["boom"],
+        error_detail={"error_type": "RuntimeError", "message": "boom"},
+    )
+
+    payload = json.loads(Path(record.record_path).read_text(encoding="utf-8"))
+    assert payload["status"] == "error"
+    assert payload["error_detail"] == {"error_type": "RuntimeError", "message": "boom"}
+    assert payload["capture"]["diagnostics"]["unexpected"] == {"selector": "future"}
+
+
+def test_fetch_with_browser_falls_back_to_error_session_when_update_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import grados.browser.generic as browser_generic
+
+    paths = GRaDOSPaths(tmp_path / "grados-home")
+    original_update = browser_generic.update_pdf_browser_session
+    calls = 0
+
+    async def no_runtime(*args, **kwargs):  # noqa: ANN002, ANN003
+        _ = (args, kwargs)
+        return None
+
+    def flaky_update(record, **kwargs):  # noqa: ANN001, ANN003
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TypeError("capture schema boom")
+        return original_update(record, **kwargs)
+
+    monkeypatch.setattr(browser_generic, "acquire_browser_runtime", no_runtime)
+    monkeypatch.setattr(browser_generic, "update_pdf_browser_session", flaky_update)
+
+    result = asyncio.run(
+        browser_generic.fetch_with_browser(
+            "10.1234/demo",
+            HeadlessBrowserConfig(),
+            paths,
+        )
+    )
+
+    payload = json.loads(Path(result.session_record_path).read_text(encoding="utf-8"))
+    assert result.state == "nobrowser"
+    assert calls == 2
+    assert payload["status"] == "error"
+    assert payload["outcome"] == "no_browser"
+    assert payload["error_detail"]["session_update_error"] == {
+        "error_type": "TypeError",
+        "message": "capture schema boom",
+    }
 
 
 def test_pdf_classification_and_bot_detection() -> None:

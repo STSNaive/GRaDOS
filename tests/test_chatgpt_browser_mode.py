@@ -733,6 +733,32 @@ def test_model_strategy_current_reads_without_switching() -> None:
     assert len(page.expressions) == 1
 
 
+def test_model_strategy_select_reports_button_missing_diagnostics() -> None:
+    class FakePage:
+        async def evaluate(self, expression: str) -> dict[str, object]:
+            assert "waitForModelButton" in expression
+            return {
+                "status": "button-missing",
+                "hint": {
+                    "url": "https://chatgpt.com/",
+                    "title": "ChatGPT",
+                    "composerReady": True,
+                    "legacyModelButtonCount": 0,
+                    "composerPillMenuCount": 0,
+                    "composerPillLabels": [],
+                    "availableOptions": [],
+                },
+            }
+
+    with pytest.raises(ChatGPTBrowserError) as exc_info:
+        asyncio.run(select_chatgpt_model(FakePage(), strategy="select"))
+
+    assert exc_info.value.code == "model_picker_unavailable"
+    assert exc_info.value.details["status"] == "button-missing"
+    assert exc_info.value.details["hint"]["composerReady"] is True
+    assert exc_info.value.details["hint"]["legacyModelButtonCount"] == 0
+
+
 def test_model_strategy_ignore_does_not_touch_page() -> None:
     class FakePage:
         async def evaluate(self, expression: str) -> dict[str, object]:  # pragma: no cover
@@ -783,6 +809,9 @@ def test_model_expression_uses_pro_picker_controls() -> None:
     expression = _pro_model_selection_expression()
 
     assert "model-switcher-dropdown-button" in expression
+    assert "waitForModelButton" in expression
+    assert "collectPickerDiagnostics" in expression
+    assert "composerPillMenuCount" in expression
     assert "data-radix-collection-root" in expression
     assert "data-model-picker-thinking-effort-action" in expression
     assert "pro extended" in expression

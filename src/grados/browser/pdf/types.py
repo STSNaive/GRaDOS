@@ -22,6 +22,8 @@ class PdfBrowserCapture:
     url: str = ""
     content_type: str = ""
     bytes: int = 0
+    assisted_download_possible: bool = False
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -44,4 +46,5 @@ class PdfBrowserSessionRecord:
     capture: PdfBrowserCapture = field(default_factory=PdfBrowserCapture)
     warnings: list[str] = field(default_factory=list)
     events: list[PdfBrowserEvent] = field(default_factory=list)
+    error_detail: dict[str, Any] = field(default_factory=dict)
     record_path: str = ""

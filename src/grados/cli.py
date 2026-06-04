@@ -800,7 +800,7 @@ def external_consult_status(as_json: bool) -> None:
 
 def _format_chatgpt_live_login_result(result: dict[str, object]) -> str:
     if result.get("ready"):
-        return "ready"
+        return "ok"
     if result.get("ok"):
         return "ok"
 
@@ -818,6 +818,43 @@ def _format_chatgpt_live_login_result(result: dict[str, object]) -> str:
 
     error = result.get("error") or result.get("readiness") or "failed"
     return f"{error} ({', '.join(details)})"
+
+
+def _selection_summary(value: object) -> str:
+    if not isinstance(value, dict):
+        return "unavailable"
+    requested = str(value.get("requested") or "")
+    resolved = str(value.get("resolved_label") or "")
+    strategy = str(value.get("strategy") or "")
+    verified = str(bool(value.get("verified"))).lower()
+    pieces = []
+    if requested:
+        pieces.append(f"requested={requested}")
+    if resolved:
+        pieces.append(f"resolved={resolved}")
+    if strategy:
+        pieces.append(f"strategy={strategy}")
+    pieces.append(f"verified={verified}")
+    return ", ".join(pieces)
+
+
+def _format_chatgpt_consult_route_result(result: dict[str, object]) -> str:
+    readiness = str(result.get("readiness") or "")
+    if readiness == "consult_route_ready":
+        return "ready"
+    if readiness == "login_required":
+        return "skipped (login_required)"
+    if readiness == "consult_route_unavailable":
+        stage = result.get("stage") or "unknown"
+        error = result.get("error") or "failed"
+        details = result.get("details")
+        status = ""
+        if isinstance(details, dict) and details.get("status"):
+            status = f", status={details.get('status')}"
+        return f"failed (stage={stage}, error={error}{status})"
+    if result.get("ok"):
+        return "ok"
+    return readiness or str(result.get("error") or "failed")
 
 
 @external_consult_group.command("doctor")
@@ -846,6 +883,13 @@ def external_consult_doctor(live: bool) -> None:
 
             result = asyncio.run(check_chatgpt_login(paths, config.extract.headless_browser))
             console.print(f"  Live ChatGPT login: {_format_chatgpt_live_login_result(result)}")
+            console.print(f"  Live ChatGPT consult route: {_format_chatgpt_consult_route_result(result)}")
+            if result.get("readiness") == "consult_route_ready":
+                console.print(f"  Model route: {_selection_summary(result.get('model_selection'))}")
+                console.print(f"  Thinking route: {_selection_summary(result.get('thinking_selection'))}")
+                baseline_turns = result.get("baseline_turns")
+                if baseline_turns is not None:
+                    console.print(f"  Baseline turns: {baseline_turns}")
         except Exception as exc:
             console.print(f"  Live ChatGPT login: failed ({exc})")
     console.print()
