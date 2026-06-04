@@ -329,6 +329,8 @@ async def get_operation_status(
             kind = "indepth_search"
         elif str(metadata.get("mode") or "") == "local_pdf_import":
             kind = "local_pdf_import"
+        elif registry_record is not None and registry_record.kind in {"indepth_search", "local_pdf_import"}:
+            kind = registry_record.kind
         create_operation(
             paths.database_state,
             operation_id=operation_id,
@@ -363,6 +365,15 @@ async def get_operation_status(
                 "event_count": len(manifest_events),
                 "artifact_count": len(artifact_index),
             }
+            if kind == "local_pdf_import" and stage == "import_run_completed":
+                event_payload = last_event.get("payload")
+                event_payload = event_payload if isinstance(event_payload, dict) else {}
+                for key in ("scanned", "imported", "skipped", "failed"):
+                    value = event_payload.get(key)
+                    if isinstance(value, int):
+                        terminal_progress[key] = value
+                if isinstance(terminal_progress.get("scanned"), int):
+                    terminal_progress["processed"] = terminal_progress["scanned"]
             terminal_result = {"result_artifact_id": result_artifact_id, "result_path": result_path}
             if current_record is not None and current_record.status == "completed" and current_record.stage == stage:
                 update_operation(

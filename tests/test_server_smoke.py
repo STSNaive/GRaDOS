@@ -829,6 +829,51 @@ def test_import_local_pdf_library_tool_returns_summary(tmp_path: Path, monkeypat
     assert len(status_again["events"]) == len(status["events"])
 
 
+def test_local_pdf_import_status_mirror_preserves_summary_progress(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
+
+    from grados.research_state import append_research_run_event, create_research_run_manifest
+    from grados.server_tools.shared import get_paths_and_config
+    from grados.storage.operations import create_operation
+
+    paths, _ = get_paths_and_config()
+    paths.ensure_directories()
+    operation_id = "run_import_progress_mirror"
+
+    create_operation(
+        paths.database_state,
+        operation_id=operation_id,
+        kind="local_pdf_import",
+        status="completed",
+        stage="import_run_completed",
+        progress={"stage": "import_running", "candidate_count": 3, "processed": 1},
+        result={"result_artifact_id": "artifact_import_summary", "result_path": ""},
+    )
+    create_research_run_manifest(
+        paths.database_state,
+        research_run_id=operation_id,
+        title="Local PDF import",
+        user_question="Import local PDF library",
+        metadata={"mode": "local_pdf_import"},
+    )
+    append_research_run_event(
+        paths.database_state,
+        research_run_id=operation_id,
+        event_type="import_run_completed",
+        source="import_local_pdf_library",
+        payload={"scanned": 3, "imported": 2, "skipped": 1, "failed": 0},
+    )
+
+    status = asyncio.run(get_operation_status(operation_id=operation_id, detail=True))
+
+    assert status["status"] == "completed"
+    assert status["progress"]["processed"] == 3
+    assert status["progress"]["scanned"] == 3
+    assert status["progress"]["imported"] == 2
+    assert status["progress"]["skipped"] == 1
+    assert status["progress"]["failed"] == 0
+
+
 def test_search_saved_papers_reports_hybrid_results_with_filters(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GRADOS_HOME", str(tmp_path / "grados-home"))
 
