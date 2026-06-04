@@ -3,14 +3,17 @@
 
 Usage:
     python scripts/release.py 0.7.0          # bump + commit + tag
-    python scripts/release.py 0.7.0 --push   # ... push and create/update GitHub Release
+    python scripts/release.py 0.7.0 --push   # ... push; CI publishes and creates GitHub Release
+    python scripts/release.py 0.7.0 --print-release-notes
 """
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +57,27 @@ def _tag_exists(tag: str) -> bool:
         cwd=REPO,
     )
     return tag in result.stdout.splitlines()
+
+
+def _remote_tag_exists(tag: str) -> bool:
+    result = subprocess.run(  # noqa: S603
+        ["git", "ls-remote", "--tags", "origin", f"refs/tags/{tag}"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=REPO,
+    )
+    return bool(result.stdout.strip())
+
+
+def _pypi_version_exists(version: str, package: str = "grados") -> bool:
+    url = f"https://pypi.org/pypi/{package}/json"
+    with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310
+        payload = json.loads(response.read().decode("utf-8"))
+    releases = payload.get("releases", {})
+    if not isinstance(releases, dict):
+        raise ValueError("PyPI JSON does not contain a releases object")
+    return bool(releases.get(version))
 
 
 def _version_tag_key(tag: str) -> tuple[int, int, int]:
@@ -166,22 +190,6 @@ def _commit(message: str) -> None:
     )  # noqa: S603
 
 
-def _create_or_update_github_release(tag: str, notes: str) -> None:
-    exists = subprocess.run(  # noqa: S603
-        ["gh", "release", "view", tag],
-        cwd=REPO,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    ).returncode == 0
-    action = "edit" if exists else "create"
-    cmd = ["gh", "release", action, tag, "--title", tag, "--notes", notes]
-    if action == "create":
-        cmd.append("--verify-tag")
-    printable = [part if part != notes else "<generated>" for part in cmd]
-    print(f"  $ {' '.join(printable)}")
-    subprocess.run(cmd, check=True, cwd=REPO)  # noqa: S603
-
-
 def _check_release_publish_guard(tag: str) -> None:
     _run(
         [
@@ -199,6 +207,22 @@ def _check_release_publish_guard(tag: str) -> None:
     )
 
 
+def _trigger_publish_workflow(tag: str, *, recover_existing: bool = False) -> None:
+    cmd = [
+        "gh",
+        "workflow",
+        "run",
+        "publish.yml",
+        "--ref",
+        "main",
+        "-f",
+        f"publish_ref={tag}",
+    ]
+    if recover_existing:
+        cmd.extend(["-f", "recover_existing=true"])
+    _run(cmd, cwd=REPO)
+
+
 def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
@@ -206,6 +230,7 @@ def main() -> None:
 
     version = sys.argv[1].removeprefix("v")
     push = "--push" in sys.argv
+    print_release_notes = "--print-release-notes" in sys.argv
 
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         print(f"Error: '{version}' is not a valid X.Y.Z version")
@@ -214,20 +239,37 @@ def main() -> None:
     tag = f"v{version}"
     previous_tag = _previous_release_tag(version)
 
-    # Check for existing tag
-    if _tag_exists(tag):
-        if push:
-            print(f"Tag {tag} already exists; retrying push/release for the same version.")
-            commits = _collect_release_commits(tag, previous_tag)
-            notes = build_github_release_notes(
+    if print_release_notes:
+        commits = _collect_release_commits(tag, previous_tag)
+        print(
+            build_github_release_notes(
                 version,
                 commits,
                 previous_tag=previous_tag,
                 repo_url=_github_repo_url(),
-            )
-            _run(["git", "push", "origin", "main", tag], cwd=REPO)
-            _create_or_update_github_release(tag, notes)
-            print(f"GitHub Release {tag} synced.")
+            ),
+            end="",
+        )
+        return
+
+    # Check for existing tag
+    if _tag_exists(tag):
+        if push:
+            print(f"Tag {tag} already exists; retrying same-version publish flow.")
+            if _remote_tag_exists(tag):
+                _run(["git", "push", "origin", "main"], cwd=REPO)
+                if _pypi_version_exists(version):
+                    _trigger_publish_workflow(tag, recover_existing=True)
+                    print(f"Publish recovery workflow dispatched for existing {tag}.")
+                else:
+                    _trigger_publish_workflow(tag)
+                    print(f"Publish workflow dispatched for existing {tag}; PyPI package is not published yet.")
+            else:
+                _run(["git", "push", "origin", "main", tag], cwd=REPO)
+                print(
+                    f"Pushed main + {tag} to origin. GitHub Actions will publish PyPI "
+                    "and create/update the GitHub Release after verification."
+                )
             return
         print(f"Error: tag {tag} already exists")
         raise SystemExit(1)
@@ -251,23 +293,16 @@ def main() -> None:
         _run(["git", "add", *(str(p) for p in changed)], cwd=REPO)
         _commit(build_release_commit_message(version, changed))
 
-    commits = _collect_release_commits("HEAD", previous_tag)
-    notes = build_github_release_notes(
-        version,
-        commits,
-        previous_tag=previous_tag,
-        repo_url=_github_repo_url(),
-    )
-
     # Create an annotated tag so GitHub tag details stay version-only.
     _run(["git", "tag", "-a", tag, "-m", tag], cwd=REPO)
     print(f"\nTag {tag} created.")
 
     if push:
         _run(["git", "push", "origin", "main", tag], cwd=REPO)
-        print(f"Pushed main + {tag} to origin.")
-        _create_or_update_github_release(tag, notes)
-        print(f"GitHub Release {tag} synced.")
+        print(
+            f"Pushed main + {tag} to origin. GitHub Actions will publish PyPI "
+            "and create/update the GitHub Release after verification."
+        )
     else:
         print(f"Run to publish:  uv run python scripts/release.py {version} --push")
 

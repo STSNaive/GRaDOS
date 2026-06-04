@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from types import SimpleNamespace
 
 
 def _load_release_module():
@@ -86,30 +85,166 @@ def test_normalize_github_remote_url() -> None:
     )
 
 
-def test_create_github_release_requires_remote_tag(monkeypatch) -> None:
+def test_pypi_version_exists_requires_release_files(monkeypatch) -> None:
+    module = _load_release_module()
+
+    class FakeResponse:
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *args):  # noqa: ANN002, ANN204
+            return None
+
+        def read(self) -> bytes:
+            return b'{"releases": {"0.6.10": [{"filename": "grados-0.6.10.tar.gz"}], "0.6.11": []}}'
+
+    def fake_urlopen(url, timeout):  # noqa: ANN001, ANN202
+        assert url == "https://pypi.org/pypi/grados/json"
+        assert timeout == 30
+        return FakeResponse()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    assert module._pypi_version_exists("0.6.10") is True
+    assert module._pypi_version_exists("0.6.11") is False
+
+
+def test_existing_remote_tag_with_pypi_version_dispatches_recovery_workflow(monkeypatch) -> None:
     module = _load_release_module()
     calls = []
 
     def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN202
         calls.append(cmd)
-        if cmd == ["gh", "release", "view", "v0.6.10"]:
-            return SimpleNamespace(returncode=1)
-        return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module.sys, "argv", ["release.py", "0.6.10", "--push"])
+    monkeypatch.setattr(module, "_previous_release_tag", lambda version: "v0.6.9")
+    monkeypatch.setattr(module, "_tag_exists", lambda tag: True)
+    monkeypatch.setattr(module, "_remote_tag_exists", lambda tag: True)
+    monkeypatch.setattr(module, "_pypi_version_exists", lambda version: True)
+    monkeypatch.setattr(module, "_run", fake_run)
 
-    module._create_or_update_github_release("v0.6.10", "notes")
+    module.main()
 
-    assert calls[-1] == [
-        "gh",
-        "release",
-        "create",
-        "v0.6.10",
-        "--title",
-        "v0.6.10",
-        "--notes",
-        "notes",
-        "--verify-tag",
+    assert calls == [
+        ["git", "push", "origin", "main"],
+        [
+            "gh",
+            "workflow",
+            "run",
+            "publish.yml",
+            "--ref",
+            "main",
+            "-f",
+            "publish_ref=v0.6.10",
+            "-f",
+            "recover_existing=true",
+        ],
+    ]
+
+
+def test_existing_remote_tag_without_pypi_version_dispatches_publish_workflow(monkeypatch) -> None:
+    module = _load_release_module()
+    calls = []
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN202
+        calls.append(cmd)
+
+    monkeypatch.setattr(module.sys, "argv", ["release.py", "0.6.10", "--push"])
+    monkeypatch.setattr(module, "_previous_release_tag", lambda version: "v0.6.9")
+    monkeypatch.setattr(module, "_tag_exists", lambda tag: True)
+    monkeypatch.setattr(module, "_remote_tag_exists", lambda tag: True)
+    monkeypatch.setattr(module, "_pypi_version_exists", lambda version: False)
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    module.main()
+
+    assert calls == [
+        ["git", "push", "origin", "main"],
+        [
+            "gh",
+            "workflow",
+            "run",
+            "publish.yml",
+            "--ref",
+            "main",
+            "-f",
+            "publish_ref=v0.6.10",
+        ],
+    ]
+
+
+def test_new_release_push_only_pushes_tag_for_workflow_publish(monkeypatch) -> None:
+    module = _load_release_module()
+    calls = []
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN202
+        calls.append(cmd)
+
+    monkeypatch.setattr(module.sys, "argv", ["release.py", "0.6.10", "--push"])
+    monkeypatch.setattr(module, "PLUGIN_FILES", [])
+    monkeypatch.setattr(module, "_previous_release_tag", lambda version: "v0.6.9")
+    monkeypatch.setattr(module, "_tag_exists", lambda tag: False)
+    monkeypatch.setattr(module, "_check_release_publish_guard", lambda tag: None)
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    module.main()
+
+    assert calls == [
+        ["git", "tag", "-a", "v0.6.10", "-m", "v0.6.10"],
+        ["git", "push", "origin", "main", "v0.6.10"],
+    ]
+    assert all(cmd[:2] != ["gh", "release"] for cmd in calls)
+
+
+def test_print_release_notes_uses_existing_notes_format(monkeypatch, capsys) -> None:
+    module = _load_release_module()
+
+    monkeypatch.setattr(module.sys, "argv", ["release.py", "0.6.10", "--print-release-notes"])
+    monkeypatch.setattr(module, "_previous_release_tag", lambda version: "v0.6.9")
+    monkeypatch.setattr(
+        module,
+        "_collect_release_commits",
+        lambda target_ref, previous_tag: [("abc1234", "fix: stabilize PDF handoff")],
+    )
+    monkeypatch.setattr(module, "_github_repo_url", lambda: "https://github.com/STSNaive/GRaDOS")
+
+    module.main()
+
+    assert capsys.readouterr().out == (
+        "## Changes\n"
+        "\n"
+        "- `abc1234` fix: stabilize PDF handoff\n"
+        "\n"
+        "## Compare\n"
+        "\n"
+        "[v0.6.9...v0.6.10](https://github.com/STSNaive/GRaDOS/compare/v0.6.9...v0.6.10)\n"
+    )
+
+
+def test_trigger_publish_workflow_targets_existing_tag(monkeypatch) -> None:
+    module = _load_release_module()
+    calls = []
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN202
+        calls.append(cmd)
+
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    module._trigger_publish_workflow("v0.6.10", recover_existing=True)
+
+    assert calls == [
+        [
+            "gh",
+            "workflow",
+            "run",
+            "publish.yml",
+            "--ref",
+            "main",
+            "-f",
+            "publish_ref=v0.6.10",
+            "-f",
+            "recover_existing=true",
+        ]
     ]
 
 

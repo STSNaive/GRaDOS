@@ -171,16 +171,19 @@
 - `src/grados/__init__.py` 通过 `importlib.metadata.version("grados")` 在运行时获取版本。
 - 构建时 `hatch-vcs` 自动生成 `src/grados/_version.py` 写入版本。
 - Claude Code / Codex plugin JSON 中的 `version` 字段由 `scripts/release.py` 在打 tag 前统一更新。
-- 发布流程简化为：`uv run python scripts/release.py X.Y.Z --push`（更新 plugin → commit → annotated tag → push → GitHub Release）。
+- 发布流程简化为：`uv run python scripts/release.py X.Y.Z --push`（更新 plugin → commit → annotated tag → push）。
 - Release tag 与 GitHub Release 标题统一使用 `vX.Y.Z`；annotated tag message 也只写 `vX.Y.Z`，具体变更写入 GitHub Release notes，由该 tag 范围内的 commit subject 列表和 compare link 生成。
 - `scripts/release.py` 在创建新 release commit/tag 前检查 PyPI 状态，若目标版本已存在或上一个已存在 release tag 尚未出现在 PyPI，则先停止而不是继续 bump 新版本。
 - `publish.yml` 不再校验 tag 与文件版本一致性（因为版本本身来源于 tag）。
+- GitHub Release 由 `publish.yml` 在 PyPI 发布和真实安装验证通过后创建或更新；release guard 与 release notes 由当前 workflow 触发 ref 的 release tooling 执行，而不是目标历史 tag 内的脚本副本，保持 `## Changes`、commit 列表、`## Compare` 的公开格式。
+- `publish.yml` 不把 PyPI JSON 可见性作为通过门禁；JSON 只作为失败诊断，真正门禁是 bounded retry 的 `uv tool install` 与 `uvx` 精确版本安装 smoke。
+- 若 release tag 已在远端且 PyPI 已收包，`scripts/release.py X.Y.Z --push` 通过 `workflow_dispatch` 的 recovery 模式跳过源码重验和 PyPI 上传，只恢复 PyPI 安装验证和 GitHub Release 创建/更新。
 - 开发环境安装（`uv sync`）会显示带 dev 后缀的版本号（如 `0.6.9.dev3+g1a2b3c4`），发布包版本严格等于 tag。
 
 ### 结果与影响
 - Python 包版本唯一真源为 git tag，plugin 版本由 release 脚本同步，不可能产生不一致。
 - 发布操作步骤减少一半，消除了人为遗漏 bump 的风险。
-- GitHub Releases 成为公开发布说明入口；Tags 页面只承载稳定的版本号，不再混入随机 commit 标题作为发布说明。
+- GitHub Releases 成为 PyPI 验证后的公开发布说明入口；Tags 页面只承载稳定的版本号，不再混入随机 commit 标题作为发布说明。
 - `_version.py` 是构建产物，已加入 `.gitignore`。
 
 ---
