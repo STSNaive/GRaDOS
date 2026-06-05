@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from grados.browser.lock import BrowserProfileLockError, browser_profile_lock, r
 from grados.browser.manager import (
     VIEWPORTS,
     _get_managed_chromium_suffixes,
+    configure_chrome_profile_preferences,
     random_viewport,
     resolve_browser_executable,
 )
@@ -61,6 +63,41 @@ def test_browser_profile_status_uses_grados_browser_markers(tmp_path: Path) -> N
     assert status["exists"] is True
     assert status["initialized"] is True
     assert status["markers"]["default"] is True
+
+
+def test_configure_chrome_profile_preferences_disables_pdf_viewer_and_sets_inbox(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    inbox = tmp_path / "browser_inbox"
+
+    preferences_path = configure_chrome_profile_preferences(
+        profile,
+        download_dir=inbox,
+        disable_pdf_viewer=True,
+    )
+
+    prefs = json.loads(preferences_path.read_text(encoding="utf-8"))
+    assert prefs["plugins"]["always_open_pdf_externally"] is True
+    assert prefs["download"]["default_directory"] == str(inbox)
+    assert prefs["download"]["prompt_for_download"] is False
+    assert prefs["download"]["directory_upgrade"] is True
+
+
+def test_configure_chrome_profile_preferences_can_reenable_pdf_viewer(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    inbox = tmp_path / "browser_inbox"
+    preferences_path = configure_chrome_profile_preferences(
+        profile,
+        download_dir=inbox,
+        disable_pdf_viewer=True,
+    )
+
+    preferences_path = configure_chrome_profile_preferences(profile, disable_pdf_viewer=False)
+
+    prefs = json.loads(preferences_path.read_text(encoding="utf-8"))
+    assert prefs["plugins"]["always_open_pdf_externally"] is False
+    assert prefs["download"]["default_directory"] == str(inbox)
+    assert prefs["download"]["prompt_for_download"] is False
+    assert prefs["download"]["directory_upgrade"] is True
 
 
 def test_browser_profile_lock_writes_and_releases_own_lock(tmp_path: Path) -> None:
@@ -110,6 +147,74 @@ def test_browser_profile_lock_blocks_same_process_parallel_use(tmp_path: Path) -
             first.release()
 
     asyncio.run(run_lock_probe())
+
+
+def test_acquire_browser_runtime_passes_pdf_inbox_preferences(tmp_path: Path) -> None:
+    from grados.browser.session_runtime import acquire_browser_runtime
+
+    class FakePage:
+        focused = False
+
+        async def bring_to_front(self) -> None:
+            self.focused = True
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.pages: list[FakePage] = []
+
+        async def new_page(self) -> FakePage:
+            page = FakePage()
+            self.pages.append(page)
+            return page
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.root_page = FakePage()
+            self.context = FakeContext()
+            self.profile_lock = None
+
+    paths = GRaDOSPaths(tmp_path / "grados-home")
+    seen: dict[str, object] = {}
+
+    async def fake_get_or_create_reusable_session(**kwargs):  # noqa: ANN003
+        seen.update(kwargs)
+        return FakeSession()
+
+    async def fake_launch_browser_session(**kwargs):  # noqa: ANN003
+        _ = kwargs
+        raise AssertionError("retained runtime should reuse the interactive session")
+
+    runtime = asyncio.run(
+        acquire_browser_runtime(
+            HeadlessBrowserConfig(
+                reuse_interactive_window=True,
+                keep_interactive_window_open=True,
+                download_inbox="custom-inbox",
+                disable_pdf_viewer=True,
+            ),
+            paths,
+            resolve_browser_executable=lambda config, paths: type(
+                "Resolution",
+                (),
+                {
+                    "source": "managed",
+                    "browser": "Chrome",
+                    "executable_path": "/tmp/chrome",
+                    "profile_directory": None,
+                },
+            )(),
+            random_viewport=lambda: {"width": 1366, "height": 768},
+            get_or_create_reusable_session=fake_get_or_create_reusable_session,
+            launch_browser_session=fake_launch_browser_session,
+            close_secondary_pages=lambda context, page: None,
+            session_id="pdf-test",
+        )
+    )
+
+    assert runtime is not None
+    assert seen["download_dir"] == paths.root / "custom-inbox"
+    assert seen["disable_pdf_viewer"] is True
+    assert runtime.download_dir == str(paths.root / "custom-inbox")
 
 
 def test_reusable_session_carries_profile_lock_when_replacing_same_profile(monkeypatch) -> None:
@@ -522,6 +627,7 @@ def test_cdp_response_body_capture_records_source_metadata() -> None:
         "url": "https://example.com/content/pdf/10.1234/demo",
         "content_type": "application/pdf",
         "bytes": len(b"%PDF-1.4\n%cdp"),
+        "sha256": hashlib.sha256(b"%PDF-1.4\n%cdp").hexdigest(),
     }
 
 
@@ -559,6 +665,7 @@ def test_browser_fetch_state_records_success_capture_metadata() -> None:
         "url": "https://example.com/paper.pdf",
         "content_type": "application/pdf",
         "bytes": len(b"%PDF-1.4\n%stub"),
+        "sha256": hashlib.sha256(b"%PDF-1.4\n%stub").hexdigest(),
     }
     assert state.events[-1]["name"] == "pdf_capture_success"
 
@@ -635,6 +742,25 @@ def test_browser_fetch_state_manual_attention_breaks_download_attribution() -> N
     )
 
     assert state.recently_confirmed_automated_download_action() is False
+    assert state.download_attribution_ambiguous() is True
+
+
+def test_browser_fetch_state_any_prior_manual_attention_keeps_download_ambiguous() -> None:
+    state = BrowserFetchState(max_capture_bytes=1024)
+
+    state.record_event(
+        "manual_attention_requested",
+        url="https://publisher.example/article",
+        details={"reason": "publisher_challenge"},
+    )
+    state.record_event(
+        "strategy_action_confirmed",
+        url="https://publisher.example/paper.pdf",
+        details={"confirmation": "popup_opened", "automated": True},
+    )
+
+    assert state.recently_confirmed_automated_download_action() is True
+    assert state.download_attribution_ambiguous() is True
 
 
 def test_direct_pdf_backfill_rejects_oversized_content_length() -> None:
@@ -1601,6 +1727,10 @@ def test_fetch_with_browser_returns_publisher_challenge_when_detected(
     payload = json.loads(Path(result.session_record_path).read_text(encoding="utf-8"))
     event_names = [event["name"] for event in payload["events"]]
     challenge_event = next(event for event in payload["events"] if event["name"] == "publisher_challenge")
+    wait_event = next(
+        event for event in payload["events"] if event["name"] == "publisher_challenge_controlled_wait_started"
+    )
+    assert wait_event["details"]["controlled_wait"] is True
     assert "manual_interactive_wait_started" in event_names
     assert "manual_interactive_wait_timeout" in event_names
     assert challenge_event["details"]["attention_marker"]["bring_to_front"] == "ok"

@@ -133,7 +133,7 @@ def _fetch_operation_progress(doi: str, fetch_result: Any, *, stage: str) -> dic
         "fetch_state": str(getattr(fetch_result, "state", "") or ""),
         "fetch_via": str(getattr(fetch_result, "via", "") or ""),
         "fetch_source": str(getattr(fetch_result, "source", "") or ""),
-        "browser_session_id": str(getattr(fetch_result, "session_id", "") or ""),
+        "browser_session_id": _fetch_browser_session_id(fetch_result),
     }
 
 
@@ -534,6 +534,32 @@ def _fetch_browser_capture(fetch_result: object) -> dict[str, object]:
         if isinstance(capture, dict) and capture.get("source"):
             return capture
     return {}
+
+
+def _fetch_browser_session_id(
+    fetch_result: object,
+    *,
+    capture: Mapping[str, object] | None = None,
+) -> str:
+    direct_session = str(getattr(fetch_result, "session_id", "") or "")
+    if direct_session:
+        return direct_session
+    if capture:
+        capture_session = str(capture.get("session_id") or "")
+        if capture_session:
+            return capture_session
+    for trace in list(getattr(fetch_result, "trace", []) or []):
+        if not isinstance(trace, dict):
+            continue
+        trace_session = str(trace.get("browser_session_id") or trace.get("session_id") or "")
+        if trace_session:
+            return trace_session
+        trace_capture = trace.get("capture")
+        if isinstance(trace_capture, dict):
+            trace_capture_session = str(trace_capture.get("session_id") or "")
+            if trace_capture_session:
+                return trace_capture_session
+    return ""
 
 
 def _append_manual_resume_receipt(result: str, fetch_result: object) -> str:
@@ -955,7 +981,7 @@ async def extract_paper_full_text(
                 indexing_config=indexing_config,
             )
             return _append_remote_metadata_warning(
-                _pdf_materialization_conflict_receipt(doi, pdf_materialization),
+                _pdf_materialization_conflict_receipt(doi, pdf_materialization, fetch_source=fetch_candidate),
                 remote_warning,
             )
 
@@ -1362,7 +1388,7 @@ async def extract_paper_full_text(
                 indexing_config=indexing_config,
             )
             return _append_remote_metadata_warning(
-                _pdf_materialization_conflict_receipt(doi, pdf_materialization),
+                _pdf_materialization_conflict_receipt(doi, pdf_materialization, fetch_source=fetch_result),
                 remote_warning,
             )
         copied_pdf_path = pdf_materialization.copied_pdf_path
@@ -1854,19 +1880,68 @@ def _codex_ingest_failure(
     }
 
 
-def _pdf_materialization_conflict_receipt(doi: str, materialization: object) -> str:
+def _pdf_file_info(path_value: Any, fallback_hash: str = "") -> dict[str, str]:
+    path_text = str(path_value or "")
+    info = {
+        "path": path_text,
+        "size": "",
+        "sha256": fallback_hash,
+        "mtime": "",
+    }
+    if not path_text:
+        return info
+    path = Path(path_text)
+    if not path.is_file():
+        return info
+    stat_result = path.stat()
+    info["size"] = str(stat_result.st_size)
+    info["mtime"] = datetime.fromtimestamp(stat_result.st_mtime, UTC).isoformat()
+    if not info["sha256"]:
+        info["sha256"] = _hash_file(path)
+    return info
+
+
+def _pdf_materialization_conflict_receipt(
+    doi: str,
+    materialization: object,
+    *,
+    fetch_source: object | None = None,
+) -> str:
     next_action = "review_pdf_conflict_then_force_refresh_or_parse_as_new_version"
+    existing = _pdf_file_info(
+        getattr(materialization, "conflict_existing_path", ""),
+        str(getattr(materialization, "conflict_existing_hash", "") or ""),
+    )
+    candidate = _pdf_file_info(
+        getattr(materialization, "conflict_candidate_path", "") or getattr(materialization, "input_pdf_path", ""),
+        str(getattr(materialization, "conflict_candidate_hash", "") or getattr(materialization, "input_pdf_hash", "")),
+    )
+    capture = getattr(fetch_source, "capture", None) if fetch_source is not None else None
+    capture = capture if isinstance(capture, dict) else {}
+    if not capture.get("source"):
+        capture = _fetch_browser_capture(fetch_source or object()) or capture
+    source_session = _fetch_browser_session_id(fetch_source or object(), capture=capture) or "unknown"
+    capture_source = str(
+        capture.get("source")
+        or getattr(fetch_source, "via", "")
+        or getattr(fetch_source, "source", "")
+        or "unknown"
+    )
     lines = [
         "## PDF Materialization Conflict",
         "",
         f"- **DOI:** {doi}",
         "- **Status:** conflict",
-        f"- **Existing Canonical PDF:** {getattr(materialization, 'conflict_existing_path', '')}",
-        f"- **Existing Canonical PDF Hash:** {getattr(materialization, 'conflict_existing_hash', '')}",
-        "- **Candidate PDF:** "
-        f"{getattr(materialization, 'conflict_candidate_path', '') or getattr(materialization, 'input_pdf_path', '')}",
-        "- **Candidate PDF Hash:** "
-        f"{getattr(materialization, 'conflict_candidate_hash', '') or getattr(materialization, 'input_pdf_hash', '')}",
+        f"- **Existing Canonical PDF:** {existing['path']}",
+        f"- **Existing Canonical PDF Size:** {existing['size'] or 'unknown'}",
+        f"- **Existing Canonical PDF Hash:** {existing['sha256']}",
+        f"- **Existing Canonical PDF Mtime:** {existing['mtime'] or 'unknown'}",
+        f"- **Candidate PDF:** {candidate['path']}",
+        f"- **Candidate PDF Size:** {candidate['size'] or 'unknown'}",
+        f"- **Candidate PDF Hash:** {candidate['sha256']}",
+        f"- **Candidate PDF Mtime:** {candidate['mtime'] or 'unknown'}",
+        f"- **Source Session:** {source_session}",
+        f"- **Capture Source:** {capture_source}",
         f"- **Next Action:** {next_action}",
         "",
         "GRaDOS did not overwrite the existing canonical PDF. Review both files, then force-refresh intentionally "

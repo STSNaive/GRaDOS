@@ -62,19 +62,20 @@ Suggested checks:
 2. confirm browser path either captures a real PDF or surfaces `publisher_challenge`
 3. for a slow or pending DOI, poll `get_operation_status(operation_id="doi:<DOI>", detail=true)` and confirm it resolves the DOI-bound `extract_paper_full_text` operation
 4. inspect `grados browser status --json` and confirm the publisher profile is separate from the ChatGPT profile
-5. inspect the `browser/pdf-sessions/<session>/session.json` record and confirm capture source is `response`, `download`, or `backfill`, not a direct `papers/*.md` write
-6. confirm browser capture diagnostics round-trip through the session store, including `assisted_download_possible` when present and any nested `diagnostics` fields added by the runtime
-7. if a browser download capture follows an automated strategy action, confirm the preceding `strategy_action_confirmed` event includes `automated=true`; if no automated confirmation exists or manual attention was requested first, confirm capture metadata marks the download as possibly assisted
-8. for a hidden/non-clickable publisher PDF link, confirm the trace records generic direct PDF navigation instead of only a failed click, and confirm capture succeeds without user clicks when publisher access permits it
-9. if automated capture cannot proceed, confirm the session records `manual_attention_requested` with an `attention_marker`, and the retained page title starts with `GRaDOS ACTION REQUIRED`
-10. if a challenge is surfaced, confirm the receipt or session trace includes `publisher_challenge`, `manual_attention_requested`, `manual_interactive_wait_started`, and a retained page titled with `GRaDOS ACTION REQUIRED`
-11. during the bounded wait, complete publisher verification in the managed browser profile and open the publisher PDF tab
-12. confirm the same operation records `manual_user_opened_pdf_page` and either captures the PDF from response/download/CDP or records `capture_source="pdf_url_backfill_after_manual"`
-13. for ScienceDirect, confirm `View PDF` / `pdfft` popup or candidate-following paths continue after challenge completion and no longer fail with `'coroutine' object has no attribute 'on'`
-14. confirm a successful retained capture releases the profile lock, while an unresolved retained challenge keeps the manual page available for user action
-15. if a live doctor or browser fetch fails before capture, confirm the session record is finalized with `status="error"` or `status="failed"`, preserves `error_detail`, and does not remain `status="running"` with empty capture/events
-16. if the bounded wait expires before capture, confirm `Manual Browser Resume` includes host, URL/profile when available, `resume_browser=true` retry guidance, and exact-path recovery via `ingest_codex_downloaded_pdf(downloaded_file_path=...)` or `parse_pdf_file(file_path=..., doi=..., copy_to_library=true)`
-17. confirm no HTML challenge page is saved as a PDF and canonical `papers/*.md` is written only after PDF materialization plus parser/QA checks
+5. inspect the managed publisher profile and confirm PDF viewer prefs/download behavior route raw browser downloads to `GRADOS_HOME/browser_inbox/`, not canonical `downloads/`
+6. inspect the `browser/pdf-sessions/<session>/session.json` record and confirm capture source is `response`, `download`, `cdp_response_body`, or `backfill`, not a direct `papers/*.md` write
+7. confirm browser capture diagnostics round-trip through the session store, including `sha256`, `session_id`, `doi`, `assisted_download_possible` / `automated_attribution_ambiguous` when present, and any nested `diagnostics` fields added by the runtime
+8. if a browser download capture follows an automated strategy action, confirm the preceding `strategy_action_confirmed` event includes `automated=true`; if no automated confirmation exists or manual attention was requested first, confirm capture metadata marks the download as possibly assisted and attribution-ambiguous
+9. for a hidden/non-clickable publisher PDF link, confirm the trace records generic direct PDF navigation instead of only a failed click, and confirm capture succeeds without user clicks when publisher access permits it
+10. if automated capture cannot proceed, confirm the session records `manual_attention_requested` with an `attention_marker`, and the retained page title starts with `GRaDOS ACTION REQUIRED`
+11. if a challenge is surfaced, confirm the receipt or session trace includes `publisher_challenge`, `publisher_challenge_controlled_wait_started`, `manual_attention_requested`, `manual_interactive_wait_started`, and a retained page titled with `GRaDOS ACTION REQUIRED`
+12. during the bounded wait, complete publisher verification in the managed browser profile and open the publisher PDF tab
+13. confirm the same operation records `manual_user_opened_pdf_page` and either captures the PDF from response/download/CDP or records `capture_source="pdf_url_backfill_after_manual"`
+14. for ScienceDirect, confirm `View PDF` / `pdfft` popup or candidate-following paths continue after challenge completion and no longer fail with `'coroutine' object has no attribute 'on'`
+15. confirm a successful retained capture releases the profile lock, while an unresolved retained challenge keeps the manual page available for user action
+16. if a live doctor or browser fetch fails before capture, confirm the session record is finalized with `status="error"` or `status="failed"`, preserves `error_detail`, and does not remain `status="running"` with empty capture/events
+17. if the bounded wait expires before capture, confirm `Manual Browser Resume` includes host, URL/profile when available, `resume_browser=true` retry guidance, and exact-path recovery via `ingest_codex_downloaded_pdf(downloaded_file_path=...)` or `parse_pdf_file(file_path=..., doi=..., copy_to_library=true)`
+18. confirm no HTML challenge page is saved as a PDF and canonical `papers/*.md` is written only after PDF materialization plus parser/QA checks
 
 ### Local Import
 
@@ -106,7 +107,8 @@ Suggested checks:
 6. confirm the receipt metadata records `response_wait_total_seconds`, `per_attempt_wait_seconds`, `max_browser_wait_attempts`, and `auto_reattach_attempts`
 7. confirm the total configured wait budget is split across the initial wait and bounded reattach/capture attempts
 8. confirm final capture/save succeeds, or a pending receipt points to `get_operation_status(operation_id=..., detail=true)` and manual copy fallback
-9. if the profile is intentionally logged out before submitting, confirm the consult fails with setup/doctor guidance rather than returning a recoverable pending receipt
+9. call `get_operation_status(operation_id=..., detail=true)` for an incomplete capture and confirm it runs a short no-resend recovery probe: if the assistant answer is present it saves `response.md`, `transcript.json`, and `assistant_snapshot.json`; if still generating, it returns pending with the same recovery handle and no prompt resend
+10. if the profile is intentionally logged out before submitting, confirm the consult fails with setup/doctor guidance rather than returning a recoverable pending receipt
 
 ## Update Rule
 

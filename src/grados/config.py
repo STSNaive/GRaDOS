@@ -75,6 +75,10 @@ class GRaDOSPaths:
         return self.root / "downloads"
 
     @property
+    def browser_inbox(self) -> Path:
+        return self.root / "browser_inbox"
+
+    @property
     def database_root(self) -> Path:
         return self.root / "database"
 
@@ -152,6 +156,7 @@ class GRaDOSPaths:
             self.root,
             self.papers,
             self.downloads,
+            self.browser_inbox,
             self.database_root,
             self.research_checkpoints,
             self.paper_summaries,
@@ -167,6 +172,7 @@ class GRaDOSPaths:
             ("配置文件", self.config_file),
             ("论文目录", self.papers),
             ("下载目录", self.downloads),
+            ("浏览器下载 inbox", self.browser_inbox),
             ("状态数据库", self.database_state),
             ("研究 checkpoint", self.research_checkpoints),
             ("论文 summary", self.paper_summaries),
@@ -275,6 +281,8 @@ class HeadlessBrowserConfig(BaseModel):
     prefer_managed_browser: bool = True
     auto_install_managed_browser: bool = True
     use_persistent_profile: bool = True
+    disable_pdf_viewer: bool = True
+    download_inbox: str = "browser_inbox"
     executable_path: str = ""
     reuse_interactive_window: bool = True
     keep_interactive_window_open: bool = True
@@ -780,6 +788,14 @@ def generate_default_config(paths: GRaDOSPaths) -> dict[str, Any]:
     )
     data["extract"]["headless_browser"]["_comment_use_persistent_profile"] = (
         "Use GRADOS_HOME/browser/profile as a persistent browser profile to reduce repeated publisher checks."
+    )
+    data["extract"]["headless_browser"]["_comment_disable_pdf_viewer"] = (
+        "When true, GRaDOS writes Chrome profile prefs so PDF URLs download to the browser inbox "
+        "instead of opening in Chrome's PDF viewer."
+    )
+    data["extract"]["headless_browser"]["_comment_download_inbox"] = (
+        "Directory for raw browser downloads before DOI/session/hash QA. Relative paths resolve under GRADOS_HOME; "
+        "`downloads/` remains the canonical managed PDF archive."
     )
     data["extract"]["headless_browser"]["_comment_executable_path"] = (
         "Optional absolute browser executable override used after the managed browser when prefer_managed_browser=true."

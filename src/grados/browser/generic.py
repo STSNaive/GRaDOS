@@ -204,7 +204,11 @@ async def fetch_with_browser(
                 session_record_path=session_record.record_path,
             )
 
-        state = BrowserFetchState(max_capture_bytes=max_capture_bytes)
+        state = BrowserFetchState(
+            max_capture_bytes=max_capture_bytes,
+            doi=doi,
+            session_id=session_record.session_id,
+        )
         state.record_event(
             "session_start",
             url=start_url,
@@ -213,6 +217,8 @@ async def fetch_with_browser(
                 "target_url": target_url,
                 "resume": bool(resume),
                 "browser_label": runtime.browser_label,
+                "download_inbox": runtime.download_dir,
+                "disable_pdf_viewer": config.disable_pdf_viewer,
             },
         )
         listeners = BrowserListenerRegistry(runtime.context, state)

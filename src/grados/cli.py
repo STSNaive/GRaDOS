@@ -339,6 +339,7 @@ def _setup_browser(paths: GRaDOSPaths) -> None:
     console.print("  下载 Chrome for Testing...", end=" ")
     paths.browser_chromium.mkdir(parents=True, exist_ok=True)
     paths.browser_profile.mkdir(parents=True, exist_ok=True)
+    paths.browser_inbox.mkdir(parents=True, exist_ok=True)
     paths.browser_pdf_sessions.mkdir(parents=True, exist_ok=True)
     paths.chatgpt_browser_profile.mkdir(parents=True, exist_ok=True)
     paths.chatgpt_browser_sessions.mkdir(parents=True, exist_ok=True)
@@ -642,6 +643,7 @@ def _browser_status_payload() -> dict[str, object]:
         "config_file": str(paths.config_file),
         "config_exists": paths.config_file.is_file(),
         "browser_profile": str(paths.browser_profile),
+        "browser_inbox": str(paths.browser_inbox),
         "browser_profile_status": browser_profile_status(paths.browser_profile),
         "browser_pdf_sessions": str(paths.browser_pdf_sessions),
         "browser_lock": lock,
@@ -674,6 +676,7 @@ def browser_status(as_json: bool) -> None:
     console.print(f"  Executable: {executable.get('executable_path') or 'not found'}")
     console.print(f"  Source: {executable.get('source') or 'n/a'}")
     console.print(f"  Publisher profile: {payload['browser_profile']}")
+    console.print(f"  Browser inbox: {payload['browser_inbox']}")
     console.print(f"  Profile initialized: {'yes' if profile.get('initialized') else 'no'}")
     console.print(f"  PDF sessions: {payload['browser_pdf_sessions']}")
     console.print(f"  Active lock: {'yes' if payload['browser_lock'] else 'no'}")

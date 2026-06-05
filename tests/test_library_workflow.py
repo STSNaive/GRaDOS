@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from grados.config import GRaDOSPaths, IndexingConfig
 from grados.extract.parse import ParsePipelineResult
 from grados.publisher.common import safe_doi_filename
+from grados.server_tools.library_tools import _pdf_materialization_conflict_receipt
 from grados.storage.frontmatter import read_frontmatter_metadata
 from grados.storage.remote_metadata import RemoteMetadataRecord
 from grados.workflows.library import (
@@ -95,6 +96,39 @@ def test_materialize_library_pdf_reuses_renames_copies_and_conflicts(tmp_path: P
     assert Path(conflict.conflict_candidate_path).is_file()
     assert Path(conflict.conflict_existing_path).read_bytes() == b"%PDF-1.4\n%same"
     assert conflict_input.read_bytes() == b"%PDF-1.4\n%different"
+    receipt = _pdf_materialization_conflict_receipt(
+        doi,
+        conflict,
+        fetch_source=SimpleNamespace(
+            session_id="pdf-session-1",
+            capture={"source": "download"},
+            via="browser",
+            source="Browser",
+        ),
+    )
+    assert "- **Existing Canonical PDF Size:** " in receipt
+    assert "- **Existing Canonical PDF Mtime:** " in receipt
+    assert "- **Candidate PDF Size:** " in receipt
+    assert "- **Candidate PDF Mtime:** " in receipt
+    assert "- **Source Session:** pdf-session-1" in receipt
+    assert "- **Capture Source:** download" in receipt
+    trace_receipt = _pdf_materialization_conflict_receipt(
+        doi,
+        conflict,
+        fetch_source=SimpleNamespace(
+            trace=[
+                {
+                    "browser_session_id": "pdf-session-2",
+                    "capture": {"source": "cdp_response_body", "session_id": "pdf-session-2"},
+                }
+            ],
+            capture={},
+            via="browser",
+            source="Browser",
+        ),
+    )
+    assert "- **Source Session:** pdf-session-2" in trace_receipt
+    assert "- **Capture Source:** cdp_response_body" in trace_receipt
 
     paths2 = GRaDOSPaths(tmp_path / "grados-home-2")
     paths2.ensure_directories()

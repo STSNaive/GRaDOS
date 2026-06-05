@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
 import re
 import time
@@ -85,10 +86,17 @@ class BrowserFetchState:
     capture_url: str = ""
     capture_content_type: str = ""
     capture_bytes: int = 0
+    capture_sha256: str = ""
     capture_assisted_download_possible: bool = False
+    capture_automated_attribution_ambiguous: bool = False
     manual_interactive_wait_started: bool = False
     manual_pdf_page_urls: set[str] = field(default_factory=set)
     manual_attention_keys: set[str] = field(default_factory=set)
+    challenge_attention_marker: dict[str, str] = field(default_factory=dict)
+    doi: str = ""
+    session_id: str = ""
+    session_started_at: str = field(default_factory=_now_iso)
+    session_started_at_epoch: float = field(default_factory=time.time)
 
     def pdf_captured(self) -> bool:
         return self.pdf_buffer is not None
@@ -116,6 +124,7 @@ class BrowserFetchState:
         *,
         source_kind: str = "capture",
         assisted_download_possible: bool = False,
+        automated_attribution_ambiguous: bool = False,
     ) -> bool:
         label = f"Browser PDF capture from {source_url}" if source_url else "Browser PDF capture"
         try:
@@ -130,19 +139,29 @@ class BrowserFetchState:
             return False
         check = classify_pdf_content(data, content_type)
         if check["is_pdf"]:
+            pdf_hash = hashlib.sha256(data).hexdigest()
             self.pdf_buffer = data
             self.capture_source = source_kind
             self.capture_url = source_url
             self.capture_content_type = content_type
             self.capture_bytes = len(data)
+            self.capture_sha256 = pdf_hash
             self.capture_assisted_download_possible = assisted_download_possible
+            self.capture_automated_attribution_ambiguous = automated_attribution_ambiguous
             details: dict[str, Any] = {
                 "source": source_kind,
                 "content_type": content_type,
                 "bytes": len(data),
+                "sha256": pdf_hash,
             }
+            if self.doi:
+                details["doi"] = self.doi
+            if self.session_id:
+                details["session_id"] = self.session_id
             if assisted_download_possible:
                 details["assisted_download_possible"] = True
+            if automated_attribution_ambiguous:
+                details["automated_attribution_ambiguous"] = True
             self.record_event(
                 "pdf_capture_success",
                 url=source_url,
@@ -177,6 +196,7 @@ class BrowserFetchState:
                 self.challenge_reason,
                 title=title,
             )
+            self.challenge_attention_marker = dict(attention_marker)
             self.record_event(
                 "publisher_challenge",
                 url=url,
@@ -254,9 +274,28 @@ class BrowserFetchState:
             "content_type": self.capture_content_type,
             "bytes": self.capture_bytes,
         }
+        if self.capture_sha256:
+            payload["sha256"] = self.capture_sha256
+        if self.doi:
+            payload["doi"] = self.doi
+        if self.session_id:
+            payload["session_id"] = self.session_id
         if self.capture_assisted_download_possible:
             payload["assisted_download_possible"] = True
+        if self.capture_automated_attribution_ambiguous:
+            payload["automated_attribution_ambiguous"] = True
         return payload
+
+    def manual_intervention_before_capture(self) -> bool:
+        if self.manual_interactive_wait_started or self.manual_pdf_page_urls:
+            return True
+        return any(
+            str(event.get("name") or "") in {"manual_attention_requested", "manual_user_opened_pdf_page"}
+            for event in self.events
+        )
+
+    def download_attribution_ambiguous(self) -> bool:
+        return self.manual_intervention_before_capture() or not self.recently_confirmed_automated_download_action()
 
     def recently_confirmed_automated_download_action(self) -> bool:
         for event in reversed(self.events[-15:]):
@@ -335,23 +374,45 @@ class BrowserListenerRegistry:
             dl_path = await download.path()
             if dl_path:
                 path = Path(dl_path)
+                stat = path.stat()
+                if stat.st_mtime + 1.0 < self.state.session_started_at_epoch:
+                    self.state.record_event(
+                        "download_rejected",
+                        url=download.url,
+                        details={
+                            "reason": "before_session_start",
+                            "path": str(path),
+                            "mtime": stat.st_mtime,
+                            "session_started_at": self.state.session_started_at,
+                        },
+                    )
+                    return
                 self.state.record_event(
                     "download_candidate",
                     url=download.url,
-                    details={"path": str(path), "bytes": path.stat().st_size},
+                    details={
+                        "path": str(path),
+                        "bytes": stat.st_size,
+                        "mtime": stat.st_mtime,
+                        "session_started_at": self.state.session_started_at,
+                        "session_id": self.state.session_id,
+                        "doi": self.state.doi,
+                    },
                 )
                 ensure_byte_limit(
-                    path.stat().st_size,
+                    stat.st_size,
                     max_bytes=self.state.max_capture_bytes,
                     label=f"Browser PDF download from {download.url}",
                 )
                 body = path.read_bytes()
+                attribution_ambiguous = self.state.download_attribution_ambiguous()
                 self.state.try_capture(
                     body,
                     "application/pdf",
                     download.url,
                     source_kind="download",
-                    assisted_download_possible=not self.state.recently_confirmed_automated_download_action(),
+                    assisted_download_possible=attribution_ambiguous,
+                    automated_attribution_ambiguous=attribution_ambiguous,
                 )
         except SizeLimitError as exc:
             self.state.report_warning(str(exc))
@@ -549,7 +610,17 @@ async def run_browser_polling_loop(
         source_kind = str(kwargs.get("source_kind") or "capture")
         if state.challenge_seen and source_kind == "backfill":
             source_kind = "pdf_url_backfill_after_manual"
-        return state.try_capture(data, content_type, source_url, source_kind=source_kind)
+        attribution_ambiguous = (
+            source_kind == "pdf_url_backfill_after_manual" or state.manual_intervention_before_capture()
+        )
+        return state.try_capture(
+            data,
+            content_type,
+            source_url,
+            source_kind=source_kind,
+            assisted_download_possible=attribution_ambiguous,
+            automated_attribution_ambiguous=attribution_ambiguous,
+        )
 
     while time.monotonic() < deadline and not state.pdf_captured():
         track_context_pages()
@@ -628,10 +699,21 @@ async def run_browser_polling_loop(
         if saw_open_page and state.challenge_seen and not saw_actionable_page:
             if not state.manual_interactive_wait_started:
                 state.manual_interactive_wait_started = True
+                wait_details: dict[str, Any] = {
+                    "reason": state.challenge_reason or "publisher_challenge",
+                    "controlled_wait": True,
+                }
+                if state.challenge_attention_marker:
+                    wait_details["attention_marker"] = dict(state.challenge_attention_marker)
+                state.record_event(
+                    "publisher_challenge_controlled_wait_started",
+                    url=state.final_url,
+                    details=wait_details,
+                )
                 state.record_event(
                     "manual_interactive_wait_started",
                     url=state.final_url,
-                    details={"reason": state.challenge_reason or "publisher_challenge"},
+                    details=wait_details,
                 )
 
         await asyncio.sleep(current_sleep)

@@ -55,6 +55,7 @@ def test_setup_version_paths_and_status_commands(tmp_path: Path) -> None:
     browser_payload = json.loads(browser_result.output)
     assert browser_payload["protocol"] == "pdf-browser-v1"
     assert browser_payload["browser_profile"] == str(home / "browser" / "profile")
+    assert browser_payload["browser_inbox"] == str(home / "browser_inbox")
     assert browser_payload["browser_pdf_sessions"] == str(home / "browser" / "pdf-sessions")
     assert isinstance(browser_payload["browser_executable"]["found"], bool)
     assert browser_payload["browser_executable"]["profile_directory"] == str(home / "browser" / "profile")

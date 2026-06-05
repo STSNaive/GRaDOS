@@ -24,8 +24,17 @@ class BrowserRuntime:
     root_page: Any
     session_id: str = ""
     profile_dir: str = ""
+    download_dir: str = ""
     profile_lock: Any | None = None
     job_page_owned: bool = False
+
+
+def resolve_browser_download_inbox(config: HeadlessBrowserConfig, paths: GRaDOSPaths) -> Path:
+    raw = str(config.download_inbox or "").strip() or "browser_inbox"
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = paths.root / candidate
+    return candidate
 
 
 async def acquire_browser_runtime(
@@ -51,6 +60,8 @@ async def acquire_browser_runtime(
     retain = config.reuse_interactive_window and config.keep_interactive_window_open
     viewport = random_viewport()
     profile_lock = None
+    download_dir = resolve_browser_download_inbox(config, paths)
+    download_dir.mkdir(parents=True, exist_ok=True)
 
     if resolution.profile_directory:
         profile_lock = browser_profile_lock(
@@ -69,6 +80,8 @@ async def acquire_browser_runtime(
                 user_data_dir=resolution.profile_directory,
                 extra_args=extra_args,
                 session_id=session_id,
+                download_dir=download_dir,
+                disable_pdf_viewer=config.disable_pdf_viewer,
             )
         else:
             session = await launch_browser_session(
@@ -78,6 +91,8 @@ async def acquire_browser_runtime(
                 headless=False,
                 extra_args=extra_args,
                 session_id=session_id,
+                download_dir=download_dir,
+                disable_pdf_viewer=config.disable_pdf_viewer,
             )
     except Exception:
         if profile_lock is not None:
@@ -105,6 +120,7 @@ async def acquire_browser_runtime(
         root_page=root_page,
         session_id=session_id or getattr(session, "session_id", ""),
         profile_dir=resolution.profile_directory or "",
+        download_dir=str(download_dir),
         profile_lock=profile_lock,
         job_page_owned=job_page_owned,
     )

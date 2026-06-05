@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import random
@@ -167,7 +168,76 @@ class BrowserSession:
     user_data_dir: str | None = None
     extra_args: list[str] = field(default_factory=list)
     session_id: str = ""
+    download_dir: str = ""
+    disable_pdf_viewer: bool = False
     profile_lock: Any | None = None
+
+
+def _merge_preference_updates(target: dict[str, Any], updates: dict[str, Any]) -> None:
+    for key, value in updates.items():
+        if isinstance(value, dict):
+            child = target.get(key)
+            if not isinstance(child, dict):
+                child = {}
+                target[key] = child
+            _merge_preference_updates(child, value)
+        else:
+            target[key] = value
+
+
+def configure_chrome_profile_preferences(
+    user_data_dir: str | Path,
+    *,
+    download_dir: str | Path | None = None,
+    disable_pdf_viewer: bool = False,
+) -> Path:
+    """Write the minimal Chrome profile prefs GRaDOS needs for browser PDF capture."""
+    profile_dir = Path(user_data_dir) / "Default"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    preferences_path = profile_dir / "Preferences"
+    preferences: dict[str, Any] = {}
+    if preferences_path.is_file():
+        try:
+            loaded = json.loads(preferences_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                preferences = loaded
+        except Exception:
+            preferences = {}
+
+    updates: dict[str, Any] = {}
+    if download_dir is not None:
+        resolved_download_dir = Path(download_dir)
+        resolved_download_dir.mkdir(parents=True, exist_ok=True)
+        updates["download"] = {
+            "default_directory": str(resolved_download_dir),
+            "directory_upgrade": True,
+            "prompt_for_download": False,
+        }
+    updates["plugins"] = {"always_open_pdf_externally": bool(disable_pdf_viewer)}
+
+    if updates:
+        _merge_preference_updates(preferences, updates)
+        tmp_path = preferences_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(preferences, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(preferences_path)
+    return preferences_path
+
+
+async def _set_download_behavior(context: Any, root_page: Any, download_dir: str | Path | None) -> None:
+    if download_dir is None or not hasattr(context, "new_cdp_session"):
+        return
+    try:
+        cdp = await context.new_cdp_session(root_page)
+        await cdp.send(
+            "Browser.setDownloadBehavior",
+            {
+                "behavior": "allow",
+                "downloadPath": str(download_dir),
+                "eventsEnabled": True,
+            },
+        )
+    except Exception:
+        return
 
 
 async def launch_browser_session(
@@ -177,6 +247,8 @@ async def launch_browser_session(
     headless: bool = False,
     extra_args: list[str] | None = None,
     session_id: str = "",
+    download_dir: str | Path | None = None,
+    disable_pdf_viewer: bool = False,
 ) -> BrowserSession:
     """Launch a Patchright browser session (persistent or ephemeral)."""
     from patchright.async_api import async_playwright
@@ -185,10 +257,18 @@ async def launch_browser_session(
     args = ["--disable-blink-features=AutomationControlled", "--new-window"]
     if extra_args:
         args = list(dict.fromkeys([*args, *extra_args]))
+    download_path = Path(download_dir).expanduser() if download_dir is not None else None
+    if download_path is not None:
+        download_path.mkdir(parents=True, exist_ok=True)
 
     try:
         if user_data_dir:
             Path(user_data_dir).mkdir(parents=True, exist_ok=True)
+            configure_chrome_profile_preferences(
+                user_data_dir,
+                download_dir=download_path,
+                disable_pdf_viewer=disable_pdf_viewer,
+            )
             context = await pw.chromium.launch_persistent_context(
                 user_data_dir,
                 executable_path=executable_path,
@@ -196,8 +276,10 @@ async def launch_browser_session(
                 args=args,
                 viewport=viewport,  # type: ignore[arg-type]
                 accept_downloads=True,
+                downloads_path=download_path,
             )
             root_page = context.pages[0] if context.pages else await context.new_page()
+            await _set_download_behavior(context, root_page, download_path)
 
             async def cleanup() -> None:
                 await context.close()
@@ -213,15 +295,19 @@ async def launch_browser_session(
                 user_data_dir=user_data_dir,
                 extra_args=args,
                 session_id=session_id,
+                download_dir=str(download_path or ""),
+                disable_pdf_viewer=disable_pdf_viewer,
             )
         else:
             browser = await pw.chromium.launch(
                 executable_path=executable_path,
                 headless=headless,
                 args=args,
+                downloads_path=download_path,
             )
             context = await browser.new_context(viewport=viewport, accept_downloads=True)  # type: ignore[arg-type]
             root_page = await context.new_page()
+            await _set_download_behavior(context, root_page, download_path)
 
             async def cleanup() -> None:
                 await context.close()
@@ -238,6 +324,8 @@ async def launch_browser_session(
                 user_data_dir=user_data_dir,
                 extra_args=args,
                 session_id=session_id,
+                download_dir=str(download_path or ""),
+                disable_pdf_viewer=disable_pdf_viewer,
             )
     except Exception:
         await pw.stop()
@@ -268,15 +356,20 @@ async def get_or_create_reusable_session(
     user_data_dir: str | None = None,
     extra_args: list[str] | None = None,
     session_id: str = "",
+    download_dir: str | Path | None = None,
+    disable_pdf_viewer: bool = False,
 ) -> BrowserSession:
     """Return a live reusable session or create a new one."""
     global _reusable_session
+    normalized_download_dir = str(Path(download_dir).expanduser()) if download_dir is not None else ""
 
     if (
         _reusable_session
         and _is_session_alive(_reusable_session)
         and _reusable_session.executable_path == executable_path
         and _reusable_session.user_data_dir == user_data_dir
+        and _reusable_session.download_dir == normalized_download_dir
+        and _reusable_session.disable_pdf_viewer == disable_pdf_viewer
     ):
         s = _reusable_session
         if s.root_page.is_closed():
@@ -308,6 +401,8 @@ async def get_or_create_reusable_session(
         headless=False,
         extra_args=extra_args,
         session_id=session_id,
+        download_dir=download_dir,
+        disable_pdf_viewer=disable_pdf_viewer,
     )
     if carry_profile_lock is not None:
         session.profile_lock = carry_profile_lock

@@ -56,6 +56,7 @@ EXTERNAL_CONSULT_PROTOCOL_VERSION = "external-consult-v1"
 CHATGPT_PRO_CONSULT_PROTOCOL_VERSION = "chatgpt-pro-consult-v1"
 DEFAULT_EXTERNAL_CONSULT_FOREGROUND_WAIT_SECONDS = 75.0
 DEFAULT_CHATGPT_PRO_CONSULT_REATTACH_SETTLE_SECONDS = 2.0
+DEFAULT_CHATGPT_PRO_STATUS_RECOVERY_PROBE_SECONDS = 30.0
 
 ExternalConsultMode = Literal["review", "synthesize"]
 ChatGPTProConsultMode = Literal["ask", "review", "synthesize", "critique"]
@@ -106,6 +107,24 @@ def _resolve_chatgpt_pro_consult_wait_settings(
         max_browser_wait_attempts=max_browser_attempts,
         initial_wait_seconds=per_attempt_seconds,
         max_reattach_after_initial=max(0, max_browser_attempts - 1),
+    )
+
+
+def _status_recovery_probe_wait_settings(
+    wait_settings: _ChatGPTProConsultWaitSettings,
+) -> _ChatGPTProConsultWaitSettings:
+    probe_seconds = min(
+        wait_settings.response_wait_total_seconds,
+        wait_settings.per_attempt_wait_seconds,
+        DEFAULT_CHATGPT_PRO_STATUS_RECOVERY_PROBE_SECONDS,
+    )
+    probe_seconds = max(1.0, probe_seconds)
+    return _ChatGPTProConsultWaitSettings(
+        response_wait_total_seconds=probe_seconds,
+        per_attempt_wait_seconds=probe_seconds,
+        max_browser_wait_attempts=1,
+        initial_wait_seconds=probe_seconds,
+        max_reattach_after_initial=0,
     )
 
 
@@ -654,6 +673,24 @@ def _external_recovery_metadata(
     return payload
 
 
+def _external_operation_error_message(error: str, record: dict[str, Any]) -> str:
+    if not error:
+        return ""
+    if error in {"assistant_timeout", "capture_failed"}:
+        return (
+            "The ChatGPT prompt was submitted once, but capture is incomplete after a bounded browser wait. "
+            "This usually reflects host timeout/context compression interacting with durable recovery, not a "
+            "single ChatGPT Pro route failure. Retry get_operation_status(detail=true) later; use manual_response "
+            "only if the answer is visible and automatic capture still cannot save it."
+        )
+    if error == "conversation_url_missing_or_not_recoverable":
+        return "Saved ChatGPT browser session has no recoverable /c/ conversation URL."
+    record_error = record.get("error")
+    if isinstance(record_error, dict):
+        return str(record_error.get("message") or "")
+    return ""
+
+
 def _operation_lookup_sha256(operation_id: str) -> str:
     value = operation_id.strip()
     if not value:
@@ -810,6 +847,7 @@ def _external_operation_status_payload(
         "recovery_metadata": recovery_metadata,
         "auto_reattach_attempts": list(record.get("auto_reattach_attempts") or []),
         "error": error,
+        "error_message": _external_operation_error_message(error, record),
     }
 
 
@@ -1568,20 +1606,26 @@ async def get_external_consult_operation_status(
     conversation_url = _recoverable_conversation_url(record.get("conversation_url"))
     if detail and conversation_url:
         wait_settings = _resolve_chatgpt_pro_consult_wait_settings(external_consult_config)
+        probe_wait_settings = _status_recovery_probe_wait_settings(wait_settings)
         record_metadata_value = record.get("metadata")
         record_metadata: dict[str, Any] = record_metadata_value if isinstance(record_metadata_value, dict) else {}
         browser_result, reattach_attempts = await _auto_reattach_chatgpt_session(
             paths,
             browser_config or HeadlessBrowserConfig(),
-            deadline=time.monotonic() + wait_settings.response_wait_total_seconds,
-            wait_settings=wait_settings,
-            max_reattach_attempts=wait_settings.max_browser_wait_attempts,
+            deadline=time.monotonic() + probe_wait_settings.response_wait_total_seconds,
+            wait_settings=probe_wait_settings,
+            max_reattach_attempts=probe_wait_settings.max_browser_wait_attempts,
             session_id=operation_id,
             pack_id=str(record.get("pack_id") or ""),
             packet_artifact_id=str(record.get("packet_artifact_id") or ""),
             prompt_hash=prompt_hash,
             mode=str(record.get("mode") or "review"),
-            metadata={**record_metadata, "recovery_source": "get_operation_status_detail_true"},
+            metadata={
+                **record_metadata,
+                "recovery_source": "get_operation_status_detail_true",
+                "recovery_probe": "short_no_prompt_resend",
+                "configured_response_wait_total_seconds": wait_settings.response_wait_total_seconds,
+            },
             model_strategy=_normalize_model_strategy(str(record_metadata.get("model_strategy") or "select")),
             thinking_strategy=_normalize_thinking_strategy(str(record_metadata.get("thinking_strategy") or "highest")),
         )

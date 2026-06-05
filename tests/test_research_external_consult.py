@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import grados.research.evidence_pack as evidence_pack_module
 from grados.browser.chatgpt.session_store import ChatGPTSessionStore, new_session_id
 from grados.browser.chatgpt.types import (
@@ -1363,11 +1365,14 @@ def test_external_consult_operation_status_recovers_without_resubmitting_prompt(
     assert seen["recover_session_id"] == session_id
     assert seen["packet_artifact_id"] == str(packet["artifact_id"])
     assert seen["prompt_hash"] == str(packet["prompt_hash"])
+    assert seen["assistant_timeout_seconds"] == pytest.approx(30.0, abs=0.01)
+    assert seen["metadata"]["recovery_probe"] == "short_no_prompt_resend"
     assert result["status"] == "pending"
     assert result["error"] == "assistant_timeout"
+    assert "prompt was submitted once" in result["error_message"]
 
 
-def test_operation_status_detail_auto_reattaches_until_capture(
+def test_operation_status_detail_uses_one_short_recovery_probe(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1453,11 +1458,87 @@ def test_operation_status_detail_auto_reattaches_until_capture(
         detail=True,
     )
 
+    assert result["status"] == "pending"
+    assert result["error"] == "assistant_timeout"
+    assert len(calls) == 1
+    assert {call["prompt"] for call in calls} == {""}
+    assert calls[0]["assistant_timeout_seconds"] == pytest.approx(30.0, abs=0.01)
+    assert calls[0]["metadata"]["recovery_probe"] == "short_no_prompt_resend"
+    assert saved_results["count"] == 0
+
+
+def test_operation_status_detail_saves_when_short_probe_captures(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = GRaDOSPaths(tmp_path)
+    store = ChatGPTSessionStore(paths.chatgpt_browser_sessions)
+    session_id = new_session_id()
+    store.create(
+        session_id=session_id,
+        pack_id="",
+        packet_artifact_id="",
+        prompt_hash="hash",
+        prompt="Plain consult prompt",
+        mode="ask",
+        metadata={
+            "tool_name": "consult_chatgpt_pro",
+            "context_manifest": {},
+            "model_strategy": "ignore",
+            "thinking_strategy": "ignore",
+        },
+    )
+    store.update(
+        session_id,
+        status="incomplete_capture",
+        conversation_url="https://chatgpt.com/c/recover-success",
+        min_turn_index=4,
+    )
+    calls: list[dict[str, object]] = []
+
+    async def fake_browser_session(paths_arg, browser_config, **kwargs):  # noqa: ANN001
+        _ = (paths_arg, browser_config)
+        calls.append(dict(kwargs))
+        store.update(
+            session_id,
+            status="captured",
+            conversation_url="https://chatgpt.com/c/recover-success",
+            response_text="Recovered consult answer.",
+            response_path=str(tmp_path / "response.md"),
+            capture_method="fixture",
+            capture_warnings=[],
+        )
+        return ChatGPTBrowserResult(
+            ok=True,
+            status="captured",
+            session_id=session_id,
+            response_text="Recovered consult answer.",
+            conversation_url="https://chatgpt.com/c/recover-success",
+            capture=ChatGPTCapture(response_text="Recovered consult answer.", method="fixture"),
+            session_record_path=str(store.session_json(session_id)),
+            metadata={"prompt_hash": "hash", "response_path": str(tmp_path / "response.md")},
+        )
+
+    monkeypatch.setattr(
+        "grados.browser.chatgpt.runtime.run_chatgpt_browser_session",
+        fake_browser_session,
+    )
+
+    result = __import__("asyncio").run(
+        get_external_consult_operation_status(
+            _db_path(tmp_path),
+            _papers_dir(tmp_path),
+            paths,
+            operation_id=session_id,
+            detail=True,
+        )
+    )
+
     assert result["status"] == "completed"
     assert result["result_artifact_id"]
-    assert len(calls) == 3
-    assert {call["prompt"] for call in calls} == {""}
-    assert saved_results["count"] == 1
+    assert len(calls) == 1
+    assert calls[0]["prompt"] == ""
+    assert calls[0]["assistant_timeout_seconds"] == pytest.approx(30.0, abs=0.01)
 
 
 def test_external_consult_audit_uses_packet_reference_scope(
