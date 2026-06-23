@@ -11,6 +11,7 @@ from grados._retry import install_runtime_defaults
 from grados.browser.fetch_runtime import (
     BrowserFetchState,
     BrowserListenerRegistry,
+    install_public_http_route_guard,
     is_pdf_like_browser_response,
     run_browser_polling_loop,
     try_backfill_from_url,
@@ -619,7 +620,12 @@ def test_cdp_response_body_capture_records_source_metadata() -> None:
         "content_disposition": "",
     }
 
-    asyncio.run(registry._capture_cdp_response_body(cdp, {"requestId": "request-1"}))
+    asyncio.run(
+        registry._capture_cdp_response_body(
+            cdp,
+            {"requestId": "request-1", "encodedDataLength": len(b"%PDF-1.4\n%cdp")},
+        )
+    )
 
     assert state.pdf_buffer == b"%PDF-1.4\n%cdp"
     assert state.capture_payload() == {
@@ -629,6 +635,80 @@ def test_cdp_response_body_capture_records_source_metadata() -> None:
         "bytes": len(b"%PDF-1.4\n%cdp"),
         "sha256": hashlib.sha256(b"%PDF-1.4\n%cdp").hexdigest(),
     }
+
+
+def test_cdp_response_body_capture_skips_unknown_size_before_body_read() -> None:
+    class FakeContext:
+        pass
+
+    class FakeCdp:
+        async def send(self, command: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+            _ = (command, payload)
+            raise AssertionError("unknown-size CDP response body should not be read")
+
+    state = BrowserFetchState(max_capture_bytes=1024)
+    registry = BrowserListenerRegistry(FakeContext(), state)
+    cdp = FakeCdp()
+    registry.cdp_pdf_candidates[registry._cdp_request_key(cdp, "request-1")] = {
+        "url": "https://example.com/content/pdf/10.1234/demo",
+        "content_type": "application/pdf",
+        "content_disposition": "",
+    }
+
+    asyncio.run(registry._capture_cdp_response_body(cdp, {"requestId": "request-1"}))
+
+    assert state.pdf_buffer is None
+    assert state.events[-1]["name"] == "cdp_response_body_rejected"
+    assert state.events[-1]["details"]["reason"] == "size_limit"
+    assert any("missing encodedDataLength" in warning for warning in state.warnings)
+
+
+def test_cdp_response_candidate_rejects_private_url_before_body_capture() -> None:
+    class FakePage:
+        def on(self, event: str, callback: object) -> None:
+            _ = (event, callback)
+
+    class FakeCdp:
+        def __init__(self) -> None:
+            self.handlers: dict[str, object] = {}
+
+        async def send(self, command: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+            assert command == "Network.enable"
+            assert payload is None
+            return {}
+
+        def on(self, event: str, handler: object) -> None:
+            self.handlers[event] = handler
+
+    class FakeContext:
+        def __init__(self, cdp: FakeCdp) -> None:
+            self.cdp = cdp
+
+        async def new_cdp_session(self, page: FakePage) -> FakeCdp:
+            _ = page
+            return self.cdp
+
+    cdp = FakeCdp()
+    state = BrowserFetchState(max_capture_bytes=1024)
+    registry = BrowserListenerRegistry(FakeContext(cdp), state)
+    asyncio.run(registry._attach_cdp_response_capture(FakePage()))
+
+    handler = cdp.handlers["Network.responseReceived"]
+    assert callable(handler)
+    handler(
+        {
+            "requestId": "request-1",
+            "response": {
+                "url": "http://127.0.0.1/content/pdf/10.1234/demo",
+                "mimeType": "application/pdf",
+                "headers": {"content-type": "application/pdf"},
+            },
+        }
+    )
+
+    assert registry.cdp_pdf_candidates == {}
+    assert state.events[-1]["name"] == "cdp_response_pdf_rejected"
+    assert state.events[-1]["details"]["reason"] == "unsafe_url"
 
 
 def test_browser_fetch_state_rejects_oversized_pdf_capture() -> None:
@@ -668,6 +748,51 @@ def test_browser_fetch_state_records_success_capture_metadata() -> None:
         "sha256": hashlib.sha256(b"%PDF-1.4\n%stub").hexdigest(),
     }
     assert state.events[-1]["name"] == "pdf_capture_success"
+
+
+def test_browser_response_capture_skips_missing_content_length_before_body_read() -> None:
+    class FakeContext:
+        pass
+
+    class FakeResponse:
+        headers = {"content-type": "application/pdf"}
+        url = "https://example.com/paper.pdf"
+
+        async def body(self) -> bytes:
+            raise AssertionError("unknown-size browser response body should not be read")
+
+    state = BrowserFetchState(max_capture_bytes=1024)
+    registry = BrowserListenerRegistry(FakeContext(), state)
+
+    asyncio.run(registry._on_response(FakeResponse()))
+
+    assert state.pdf_buffer is None
+    assert state.events[-1]["name"] == "response_pdf_rejected"
+    assert state.events[-1]["details"]["reason"] == "size_limit"
+    assert any("missing Content-Length" in warning for warning in state.warnings)
+
+
+def test_browser_download_capture_rejects_private_url_before_file_read() -> None:
+    class FakeContext:
+        pass
+
+    class FakeDownload:
+        url = "http://127.0.0.1/private.pdf"
+
+        async def failure(self) -> str | None:
+            return None
+
+        async def path(self) -> str:
+            raise AssertionError("unsafe download path should not be inspected")
+
+    state = BrowserFetchState(max_capture_bytes=1024)
+    registry = BrowserListenerRegistry(FakeContext(), state)
+
+    asyncio.run(registry._on_download(FakeDownload()))
+
+    assert state.pdf_buffer is None
+    assert state.events[-1]["name"] == "download_rejected"
+    assert state.events[-1]["details"]["reason"] == "unsafe_url"
 
 
 def test_browser_fetch_state_marks_unattributed_download_capture() -> None:
@@ -777,8 +902,14 @@ def test_direct_pdf_backfill_rejects_oversized_content_length() -> None:
             raise AssertionError("oversized response body should not be read")
 
     class FakeRequest:
-        async def get(self, url: str, timeout: int | None = None) -> FakeResponse:
+        async def get(
+            self,
+            url: str,
+            timeout: int | None = None,
+            max_redirects: int | None = None,
+        ) -> FakeResponse:
             _ = (url, timeout)
+            assert max_redirects == 0
             return FakeResponse()
 
     class FakeContext:
@@ -804,7 +935,7 @@ def test_direct_pdf_backfill_rejects_oversized_content_length() -> None:
     )
 
 
-def test_direct_pdf_backfill_uses_runtime_timeout_config() -> None:
+def test_direct_pdf_backfill_skips_missing_content_length_before_body_read() -> None:
     class FakePage:
         url = "https://example.com/paper.pdf"
 
@@ -815,14 +946,186 @@ def test_direct_pdf_backfill_uses_runtime_timeout_config() -> None:
         headers = {"content-type": "application/pdf"}
 
         async def body(self) -> bytes:
+            raise AssertionError("unknown-size backfill body should not be read")
+
+    class FakeRequest:
+        async def get(
+            self,
+            url: str,
+            timeout: int | None = None,
+            max_redirects: int | None = None,
+        ) -> FakeResponse:
+            _ = (url, timeout)
+            assert max_redirects == 0
+            return FakeResponse()
+
+    class FakeContext:
+        request = FakeRequest()
+
+    warnings: list[str] = []
+    events: list[dict[str, object]] = []
+
+    def record_event(name: str, *, url: str = "", details: dict[str, object] | None = None) -> None:
+        events.append({"name": name, "url": url, "details": details or {}})
+
+    asyncio.run(
+        try_backfill_from_url(
+            FakePage(),
+            FakeContext(),
+            set(),
+            lambda *args: False,
+            lambda: False,
+            warnings.append,
+            max_capture_bytes=1024,
+            record_event=record_event,
+        )
+    )
+
+    assert any("missing Content-Length" in warning for warning in warnings)
+    assert events[-1]["name"] == "backfill_rejected"
+    assert events[-1]["details"]["reason"] == "size_limit"
+
+
+def test_direct_pdf_backfill_rejects_private_redirect_target() -> None:
+    class FakePage:
+        url = "https://example.com/paper.pdf"
+
+        def is_closed(self) -> bool:
+            return False
+
+    class FakeResponse:
+        status = 302
+        headers = {"location": "http://127.0.0.1/private.pdf"}
+        disposed = False
+
+        async def body(self) -> bytes:
+            raise AssertionError("redirect response body should not be read")
+
+        async def dispose(self) -> None:
+            self.disposed = True
+
+    class FakeRequest:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.response = FakeResponse()
+
+        async def get(
+            self,
+            url: str,
+            timeout: int | None = None,
+            max_redirects: int | None = None,
+        ) -> FakeResponse:
+            _ = timeout
+            assert max_redirects == 0
+            self.calls.append(url)
+            return self.response
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.request = FakeRequest()
+
+    context = FakeContext()
+    warnings: list[str] = []
+    events: list[dict[str, object]] = []
+
+    def record_event(name: str, *, url: str = "", details: dict[str, object] | None = None) -> None:
+        events.append({"name": name, "url": url, "details": details or {}})
+
+    asyncio.run(
+        try_backfill_from_url(
+            FakePage(),
+            context,
+            set(),
+            lambda *args: False,
+            lambda: False,
+            warnings.append,
+            max_capture_bytes=1024,
+            record_event=record_event,
+        )
+    )
+
+    assert context.request.calls == ["https://example.com/paper.pdf"]
+    assert context.request.response.disposed is True
+    assert any("non-public IP address" in warning for warning in warnings)
+    assert events[-1]["name"] == "backfill_rejected"
+    assert events[-1]["details"]["reason"] == "unsafe_url"
+
+
+def test_public_http_route_guard_blocks_private_browser_requests() -> None:
+    class FakeRequest:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+    class FakeRoute:
+        def __init__(self) -> None:
+            self.aborted = False
+            self.continued = False
+
+        async def abort(self) -> None:
+            self.aborted = True
+
+        async def continue_(self) -> None:
+            self.continued = True
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.guard = None
+            self.unrouted = False
+
+        async def route(self, pattern: str, handler) -> None:  # noqa: ANN001
+            assert pattern == "**/*"
+            self.guard = handler
+
+        async def unroute(self, pattern: str, handler) -> None:  # noqa: ANN001
+            assert pattern == "**/*"
+            assert handler is self.guard
+            self.unrouted = True
+
+    context = FakeContext()
+    state = BrowserFetchState()
+    cleanup = asyncio.run(install_public_http_route_guard(context, state))
+    assert context.guard is not None
+    assert cleanup is not None
+
+    blocked = FakeRoute()
+    asyncio.run(context.guard(blocked, FakeRequest("http://127.0.0.1/admin.pdf")))
+    assert blocked.aborted is True
+    assert blocked.continued is False
+    assert state.events[-1]["name"] == "browser_request_blocked"
+
+    allowed = FakeRoute()
+    asyncio.run(context.guard(allowed, FakeRequest("https://example.com/paper.pdf")))
+    assert allowed.aborted is False
+    assert allowed.continued is True
+    asyncio.run(cleanup())
+    assert context.unrouted is True
+
+
+def test_direct_pdf_backfill_uses_runtime_timeout_config() -> None:
+    class FakePage:
+        url = "https://example.com/paper.pdf"
+
+        def is_closed(self) -> bool:
+            return False
+
+    class FakeResponse:
+        headers = {"content-length": str(len(b"%PDF-1.4\n%ok")), "content-type": "application/pdf"}
+
+        async def body(self) -> bytes:
             return b"%PDF-1.4\n%ok"
 
     class FakeRequest:
         def __init__(self) -> None:
             self.timeout: int | None = None
 
-        async def get(self, url: str, timeout: int | None = None) -> FakeResponse:
+        async def get(
+            self,
+            url: str,
+            timeout: int | None = None,
+            max_redirects: int | None = None,
+        ) -> FakeResponse:
             _ = url
+            assert max_redirects == 0
             self.timeout = timeout
             return FakeResponse()
 
@@ -867,14 +1170,20 @@ def test_direct_pdf_backfill_records_attempt_and_success() -> None:
             return False
 
     class FakeResponse:
-        headers = {"content-type": "application/pdf"}
+        headers = {"content-length": str(len(b"%PDF-1.4\n%ok")), "content-type": "application/pdf"}
 
         async def body(self) -> bytes:
             return b"%PDF-1.4\n%ok"
 
     class FakeRequest:
-        async def get(self, url: str, timeout: int | None = None) -> FakeResponse:
+        async def get(
+            self,
+            url: str,
+            timeout: int | None = None,
+            max_redirects: int | None = None,
+        ) -> FakeResponse:
             _ = (url, timeout)
+            assert max_redirects == 0
             return FakeResponse()
 
     class FakeContext:
@@ -905,14 +1214,23 @@ def test_direct_pdf_backfill_records_attempt_and_success() -> None:
 
 def test_direct_pdf_backfill_records_html_challenge_rejection() -> None:
     class FakeResponse:
-        headers = {"content-type": "text/html"}
+        headers = {
+            "content-length": str(len(b"<html><body>captcha challenge</body></html>")),
+            "content-type": "text/html",
+        }
 
         async def body(self) -> bytes:
             return b"<html><body>captcha challenge</body></html>"
 
     class FakeRequest:
-        async def get(self, url: str, timeout: int | None = None) -> FakeResponse:
+        async def get(
+            self,
+            url: str,
+            timeout: int | None = None,
+            max_redirects: int | None = None,
+        ) -> FakeResponse:
             _ = timeout
+            assert max_redirects == 0
             assert url == "https://example.com/article.pdf?token=expired"
             return FakeResponse()
 
@@ -1398,8 +1716,13 @@ def test_fetch_with_browser_surfaces_sciencedirect_manual_fallback_warning(
             raise TimeoutError("no popup")
 
     class FakeRequest:
-        async def get(self, url: str, timeout: int | None = None):  # noqa: ANN201
-            _ = (url, timeout)
+        async def get(
+            self,
+            url: str,
+            timeout: int | None = None,
+            max_redirects: int | None = None,
+        ):  # noqa: ANN201
+            _ = (url, timeout, max_redirects)
             raise AssertionError("direct PDF backfill should not run in this scenario")
 
     class FakeContext:
@@ -1647,8 +1970,13 @@ def test_fetch_with_browser_returns_publisher_challenge_when_detected(
                 listeners.remove(callback)
 
     class FakeRequest:
-        async def get(self, url: str, timeout: int | None = None):  # noqa: ANN201
-            _ = (url, timeout)
+        async def get(
+            self,
+            url: str,
+            timeout: int | None = None,
+            max_redirects: int | None = None,
+        ):  # noqa: ANN201
+            _ = (url, timeout, max_redirects)
             raise AssertionError("challenge pages should not trigger direct PDF backfill")
 
     class FakeContext:
@@ -1747,14 +2075,23 @@ def test_browser_polling_captures_pdf_tab_opened_after_manual_challenge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeResponse:
-        headers = {"content-type": "application/pdf"}
+        headers = {
+            "content-length": str(len(b"%PDF-1.4\n%manual-tab\n")),
+            "content-type": "application/pdf",
+        }
 
         async def body(self) -> bytes:
             return b"%PDF-1.4\n%manual-tab\n"
 
     class FakeRequest:
-        async def get(self, url: str, timeout: int | None = None) -> FakeResponse:
+        async def get(
+            self,
+            url: str,
+            timeout: int | None = None,
+            max_redirects: int | None = None,
+        ) -> FakeResponse:
             _ = (url, timeout)
+            assert max_redirects == 0
             return FakeResponse()
 
     class FakePage:

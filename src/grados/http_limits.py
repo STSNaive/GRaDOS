@@ -62,6 +62,18 @@ def ensure_content_length_allowed(headers: Any, *, max_bytes: int, label: str) -
         ensure_byte_limit(length, max_bytes=max_bytes, label=label)
 
 
+def ensure_known_content_length_allowed(headers: Any, *, max_bytes: int, label: str) -> int:
+    """Require a declared Content-Length before a non-streaming body read."""
+    length = _content_length(headers)
+    if length is None:
+        raise SizeLimitError(
+            f"{label} is missing Content-Length; skipping body capture to enforce "
+            f"configured size limit ({format_byte_limit(max_bytes)})"
+        )
+    ensure_byte_limit(length, max_bytes=max_bytes, label=label)
+    return length
+
+
 def ensure_response_within_limit(response: Any, *, max_bytes: int, label: str) -> None:
     """Check a response's declared and already-buffered byte size."""
     ensure_content_length_allowed(getattr(response, "headers", {}), max_bytes=max_bytes, label=label)

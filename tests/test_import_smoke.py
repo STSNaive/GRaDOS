@@ -124,6 +124,7 @@ def test_import_local_pdf_library_surfaces_index_warning(tmp_path: Path, monkeyp
     assert result.imported == 1
     assert result.items[0].status == "imported_with_warnings"
     assert "index_warning" in result.items[0].detail
+    assert any("index refresh failed" in warning.lower() for warning in result.items[0].warnings)
     assert any("index refresh failed" in warning.lower() for warning in result.warnings)
     assert (paths.papers / f"{safe_doi_filename('10.1234/demo-a')}.md").is_file()
     assert isinstance(captured["indexing_config"], IndexingConfig)

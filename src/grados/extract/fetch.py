@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -38,10 +38,13 @@ from grados.publisher.common import (
 )
 from grados.publisher.elsevier import ElsevierFetchResult, fetch_elsevier_article
 from grados.publisher.springer import SpringerFetchResult, fetch_springer_article
+from grados.url_safety import UnsafeURLError, validate_public_http_url
 
 CODEX_CHROME_EXTENSION_DOCS_URL = "https://developers.openai.com/codex/app/chrome-extension"
 CODEX_CHROME_REQUIRED_HOST_PLUGIN = "@chrome"
 CODEX_CHROME_REQUIRED_BACKEND = "Codex Chrome plugin extension backend"
+HTTP_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+MAX_SAFE_REDIRECTS = 10
 
 
 @dataclass
@@ -721,10 +724,11 @@ def _as_unpaywall_locations(value: object) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _select_unpaywall_start_url(resolution: UnpaywallResolution) -> tuple[str, str]:
+def _select_unpaywall_start_url(resolution: UnpaywallResolution) -> tuple[str, str, list[str]]:
     best = resolution.best_oa_location
     locations = resolution.oa_locations
     candidates: list[tuple[str, str]] = []
+    warnings: list[str] = []
 
     if best.get("url_for_pdf"):
         candidates.append(("unpaywall.best_oa_location.url_for_pdf", str(best["url_for_pdf"])))
@@ -749,12 +753,47 @@ def _select_unpaywall_start_url(resolution: UnpaywallResolution) -> tuple[str, s
     for source, url in candidates:
         normalized = url.strip()
         if normalized:
-            return normalized, source
-    return "", ""
+            try:
+                return validate_public_http_url(normalized, source=source), source, warnings
+            except UnsafeURLError as exc:
+                warnings.append(f"Skipped unsafe Unpaywall URL from {source}: {exc}")
+    return "", "", warnings
 
 
 def _unpaywall_selected_url(resolution: UnpaywallResolution | None) -> str:
     return resolution.selected_url if resolution is not None else ""
+
+
+async def _safe_limited_async_get(
+    client: Any,
+    url: str,
+    *,
+    max_bytes: int,
+    label: str,
+    max_redirects: int = MAX_SAFE_REDIRECTS,
+    **kwargs: Any,
+) -> httpx.Response:
+    request_url = validate_public_http_url(url, source=label)
+    request_kwargs = dict(kwargs)
+    request_kwargs["follow_redirects"] = False
+    for _ in range(max_redirects + 1):
+        response = cast(
+            httpx.Response,
+            await limited_async_get(
+                client,
+                request_url,
+                max_bytes=max_bytes,
+                label=label,
+                **request_kwargs,
+            ),
+        )
+        if response.status_code not in HTTP_REDIRECT_STATUS_CODES:
+            return response
+        location = response.headers.get("location")
+        if not location:
+            return response
+        request_url = validate_public_http_url(location, source=f"{label} redirect", base_url=str(response.url))
+    raise httpx.TooManyRedirects(f"{label} exceeded {max_redirects} redirects")
 
 
 async def _resolve_unpaywall_locations(
@@ -782,12 +821,14 @@ async def _resolve_unpaywall_locations(
             best_oa_location=best_oa_location,
             oa_locations=oa_locations,
         )
-        selected_url, selected_url_source = _select_unpaywall_start_url(resolution)
+        selected_url, selected_url_source, url_warnings = _select_unpaywall_start_url(resolution)
+        warnings.extend(url_warnings)
         return UnpaywallResolution(
             best_oa_location=best_oa_location,
             oa_locations=oa_locations,
             selected_url=selected_url,
             selected_url_source=selected_url_source,
+            warnings=warnings,
         )
     except Exception as exc:
         warnings.append(_format_fetch_warning("Unpaywall lookup failed", exc))
@@ -801,16 +842,12 @@ async def _download_pdf(
     *,
     max_bytes: int = DEFAULT_MAX_REMOTE_PDF_BYTES,
 ) -> httpx.Response:
-    resp = cast(
-        httpx.Response,
-        await limited_async_get(
-            client,
-            url,
-            timeout=current_pdf_timeout(),
-            follow_redirects=True,
-            max_bytes=max_bytes,
-            label="Remote PDF response",
-        ),
+    resp = await _safe_limited_async_get(
+        client,
+        url,
+        timeout=current_pdf_timeout(),
+        max_bytes=max_bytes,
+        label="Remote PDF response",
     )
     if resp.status_code >= 500 or resp.status_code == 429:
         resp.raise_for_status()
@@ -1274,7 +1311,9 @@ def _extract_scihub_pdf_url(html: str, base_url: str) -> str | None:
                 value = tag.get(attr)
                 if not value or (attr == "href" and not _looks_like_scihub_pdf_reference(str(value))):
                     continue
-                return _normalize_scihub_url(str(value), base_url)
+                normalized = _normalize_scihub_url(str(value), base_url)
+                if normalized:
+                    return normalized
 
     for tag in soup.find_all(attrs={"onclick": True}):
         match = re.search(
@@ -1283,7 +1322,9 @@ def _extract_scihub_pdf_url(html: str, base_url: str) -> str | None:
             flags=re.IGNORECASE,
         )
         if match:
-            return _normalize_scihub_url(match.group(1), base_url)
+            normalized = _normalize_scihub_url(match.group(1), base_url)
+            if normalized:
+                return normalized
 
     match = re.search(
         r"""((?:https?:)?//[^\s"'<>]+\.pdf[^\s"'<>]*|/[^\s"'<>]+\.pdf[^\s"'<>]*)""",
@@ -1291,7 +1332,9 @@ def _extract_scihub_pdf_url(html: str, base_url: str) -> str | None:
         flags=re.IGNORECASE,
     )
     if match:
-        return _normalize_scihub_url(match.group(1), base_url)
+        normalized = _normalize_scihub_url(match.group(1), base_url)
+        if normalized:
+            return normalized
 
     return None
 
@@ -1301,5 +1344,8 @@ def _looks_like_scihub_pdf_reference(url: str) -> bool:
     return ".pdf" in lowered or "download" in lowered
 
 
-def _normalize_scihub_url(url: str, base_url: str) -> str:
-    return urljoin(base_url, url.strip())
+def _normalize_scihub_url(url: str, base_url: str) -> str | None:
+    try:
+        return validate_public_http_url(url, source="Sci-Hub PDF URL", base_url=base_url)
+    except UnsafeURLError:
+        return None

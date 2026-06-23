@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import inspect
 import logging
 import re
 import time
@@ -20,11 +21,14 @@ from grados.http_limits import (
     SizeLimitError,
     ensure_byte_limit,
     ensure_bytes_within_limit,
-    ensure_content_length_allowed,
+    ensure_known_content_length_allowed,
 )
 from grados.publisher.common import classify_pdf_content, detect_bot_challenge
+from grados.url_safety import UnsafeURLError, validate_public_http_url
 
 logger = logging.getLogger(__name__)
+BROWSER_BACKFILL_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+MAX_BROWSER_BACKFILL_REDIRECTS = 10
 
 
 def is_pdf_like_browser_response(url: str, content_type: str = "", content_disposition: str = "") -> bool:
@@ -41,6 +45,60 @@ def is_pdf_like_browser_response(url: str, content_type: str = "", content_dispo
         or "application/pdf" in lowered_cd
         or ("filename=" in lowered_cd and "pdf" in lowered_cd)
     )
+
+
+async def install_public_http_route_guard(
+    context: Any, state: BrowserFetchState
+) -> Callable[[], Awaitable[None]] | None:
+    """Abort browser requests whose target URL points at a local or private resource."""
+    route_method = getattr(context, "route", None)
+    if not callable(route_method):
+        return None
+
+    async def guard(route: Any, request: Any) -> None:
+        url = str(getattr(request, "url", "") or "")
+        if url.lower().startswith(("http://", "https://")):
+            try:
+                validate_public_http_url(url, source="Browser request URL")
+            except UnsafeURLError as exc:
+                state.report_warning(str(exc))
+                state.record_event(
+                    "browser_request_blocked",
+                    url=url,
+                    details={"reason": "unsafe_url", "message": str(exc)},
+                )
+                abort = getattr(route, "abort", None)
+                if callable(abort):
+                    aborted = abort()
+                    if inspect.isawaitable(aborted):
+                        await aborted
+                return
+        continue_ = getattr(route, "continue_", None)
+        if callable(continue_):
+            continued = continue_()
+            if inspect.isawaitable(continued):
+                await continued
+
+    try:
+        installed = route_method("**/*", guard)
+        if inspect.isawaitable(installed):
+            await installed
+    except Exception as exc:
+        logger.debug("Browser URL safety route guard install failed: %s", exc)
+        return None
+
+    async def cleanup() -> None:
+        unroute = getattr(context, "unroute", None)
+        if not callable(unroute):
+            return
+        try:
+            removed = unroute("**/*", guard)
+            if inspect.isawaitable(removed):
+                await removed
+        except Exception as exc:
+            logger.debug("Browser URL safety route guard cleanup failed: %s", exc)
+
+    return cleanup
 
 
 def next_browser_poll_delay(current: float, poll_min: float, poll_max: float) -> float:
@@ -339,13 +397,23 @@ class BrowserListenerRegistry:
         url = response.url
         if not is_pdf_like_browser_response(url, ct, cd):
             return
+        try:
+            validate_public_http_url(url, source="Browser PDF response URL")
+        except UnsafeURLError as exc:
+            self.state.report_warning(str(exc))
+            self.state.record_event(
+                "response_pdf_rejected",
+                url=url,
+                details={"reason": "unsafe_url", "message": str(exc)},
+            )
+            return
         self.state.record_event(
             "response_pdf_candidate",
             url=url,
             details={"content_type": ct, "content_disposition": cd},
         )
         try:
-            ensure_content_length_allowed(
+            ensure_known_content_length_allowed(
                 headers,
                 max_bytes=self.state.max_capture_bytes,
                 label=f"Browser PDF response from {url}",
@@ -371,6 +439,18 @@ class BrowserListenerRegistry:
             failure = await download.failure()
             if failure:
                 return
+            download_url = str(getattr(download, "url", "") or "")
+            if download_url.lower().startswith(("http://", "https://")):
+                try:
+                    validate_public_http_url(download_url, source="Browser PDF download URL")
+                except UnsafeURLError as exc:
+                    self.state.report_warning(str(exc))
+                    self.state.record_event(
+                        "download_rejected",
+                        url=download_url,
+                        details={"reason": "unsafe_url", "message": str(exc)},
+                    )
+                    return
             dl_path = await download.path()
             if dl_path:
                 path = Path(dl_path)
@@ -468,6 +548,16 @@ class BrowserListenerRegistry:
             url = str(response.get("url") or "")
             if not is_pdf_like_browser_response(url, ct, cd):
                 return
+            try:
+                validate_public_http_url(url, source="Browser CDP PDF response URL")
+            except UnsafeURLError as exc:
+                self.state.report_warning(str(exc))
+                self.state.record_event(
+                    "cdp_response_pdf_rejected",
+                    url=url,
+                    details={"reason": "unsafe_url", "message": str(exc)},
+                )
+                return
             request_id = str(event.get("requestId") or "")
             if not request_id:
                 return
@@ -507,6 +597,18 @@ class BrowserListenerRegistry:
         url = candidate.get("url", "")
         ct = candidate.get("content_type", "")
         try:
+            encoded_length = event.get("encodedDataLength")
+            if isinstance(encoded_length, int | float):
+                ensure_byte_limit(
+                    int(encoded_length),
+                    max_bytes=self.state.max_capture_bytes,
+                    label=f"Browser CDP PDF response from {url}",
+                )
+            else:
+                raise SizeLimitError(
+                    f"Browser CDP PDF response from {url} is missing encodedDataLength; "
+                    "skipping body capture to enforce configured size limit"
+                )
             payload = await cdp.send("Network.getResponseBody", {"requestId": request_id})
             raw_body = payload.get("body", "") if isinstance(payload, dict) else ""
             if isinstance(payload, dict) and bool(payload.get("base64Encoded")):
@@ -514,6 +616,13 @@ class BrowserListenerRegistry:
             else:
                 body = str(raw_body).encode("utf-8", errors="replace")
             self.state.try_capture(body, ct, url, source_kind="cdp_response_body")
+        except SizeLimitError as exc:
+            self.state.report_warning(str(exc))
+            self.state.record_event(
+                "cdp_response_body_rejected",
+                url=url,
+                details={"reason": "size_limit", "message": str(exc)},
+            )
         except Exception as exc:
             logger.debug("CDP response body capture failed for %s: %s", url, exc)
             self.state.record_event(
@@ -751,32 +860,51 @@ async def try_backfill_from_url(
     if record_event is not None:
         record_event("backfill_attempt", url=url)
     try:
-        response = await context.request.get(
+        validate_public_http_url(url, source="Browser PDF backfill URL")
+    except UnsafeURLError as exc:
+        report_warning(str(exc))
+        if record_event is not None:
+            record_event("backfill_rejected", url=url, details={"reason": "unsafe_url", "message": str(exc)})
+        return
+    try:
+        response, response_url = await _get_browser_backfill_response(
+            context.request,
             url,
             timeout=backfill_timeout_ms or current_browser_pdf_backfill_timeout_ms(),
         )
-        headers = response.headers
-        ensure_content_length_allowed(
-            headers,
-            max_bytes=max_capture_bytes,
-            label=f"Browser PDF backfill from {url}",
-        )
-        ct = str(headers.get("content-type", ""))
-        body = await response.body()
         try:
-            captured = bool(try_capture(body, ct, url, source_kind="backfill"))
-        except TypeError:
-            captured = bool(try_capture(body, ct, url))
-        if record_event is not None:
-            record_event(
-                "backfill_success" if captured else "backfill_rejected",
-                url=url,
-                details={"content_type": ct, "bytes": len(body)},
+            headers = response.headers
+            ensure_known_content_length_allowed(
+                headers,
+                max_bytes=max_capture_bytes,
+                label=f"Browser PDF backfill from {response_url}",
             )
+            ct = str(headers.get("content-type", ""))
+            body = await response.body()
+            try:
+                captured = bool(try_capture(body, ct, response_url, source_kind="backfill"))
+            except TypeError:
+                captured = bool(try_capture(body, ct, response_url))
+            if record_event is not None:
+                record_event(
+                    "backfill_success" if captured else "backfill_rejected",
+                    url=response_url,
+                    details={"content_type": ct, "bytes": len(body)},
+                )
+        finally:
+            dispose = getattr(response, "dispose", None)
+            if callable(dispose):
+                disposed = dispose()
+                if inspect.isawaitable(disposed):
+                    await disposed
     except SizeLimitError as exc:
         report_warning(str(exc))
         if record_event is not None:
             record_event("backfill_rejected", url=url, details={"reason": "size_limit", "message": str(exc)})
+    except UnsafeURLError as exc:
+        report_warning(str(exc))
+        if record_event is not None:
+            record_event("backfill_rejected", url=url, details={"reason": "unsafe_url", "message": str(exc)})
     except Exception as exc:
         report_warning(f"Direct PDF backfill failed for {url}: {exc.__class__.__name__}: {exc}")
         if record_event is not None:
@@ -785,3 +913,30 @@ async def try_backfill_from_url(
                 url=url,
                 details={"error": f"{exc.__class__.__name__}: {exc}"},
             )
+
+
+async def _get_browser_backfill_response(request: Any, url: str, *, timeout: int | None) -> tuple[Any, str]:
+    request_url = url
+    for _ in range(MAX_BROWSER_BACKFILL_REDIRECTS + 1):
+        response = await request.get(request_url, timeout=timeout, max_redirects=0)
+        status = int(getattr(response, "status", getattr(response, "status_code", 0)) or 0)
+        if status not in BROWSER_BACKFILL_REDIRECT_STATUS_CODES:
+            return response, request_url
+        location = response.headers.get("location")
+        if not location:
+            return response, request_url
+        await _dispose_browser_backfill_response(response)
+        request_url = validate_public_http_url(
+            str(location),
+            source="Browser PDF backfill redirect URL",
+            base_url=request_url,
+        )
+    raise RuntimeError(f"Browser PDF backfill exceeded {MAX_BROWSER_BACKFILL_REDIRECTS} redirects")
+
+
+async def _dispose_browser_backfill_response(response: Any) -> None:
+    dispose = getattr(response, "dispose", None)
+    if callable(dispose):
+        disposed = dispose()
+        if inspect.isawaitable(disposed):
+            await disposed

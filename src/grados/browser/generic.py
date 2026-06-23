@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -15,6 +16,7 @@ from grados.browser.constants import PDF_BROWSER_CHROME_FLAGS
 from grados.browser.fetch_runtime import (
     BrowserFetchState,
     BrowserListenerRegistry,
+    install_public_http_route_guard,
     navigate_to_doi_target,
     run_browser_polling_loop,
 )
@@ -44,6 +46,7 @@ from grados.browser.session_runtime import (
 from grados.browser.strategies import BrowserPageStrategyContext, build_browser_page_strategies
 from grados.config import GRaDOSPaths, HeadlessBrowserConfig
 from grados.http_limits import DEFAULT_MAX_BROWSER_CAPTURE_BYTES
+from grados.url_safety import UnsafeURLError, validate_public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +114,17 @@ async def fetch_with_browser(
     """Fetch a paper PDF using browser automation."""
     runtime = None
     listeners = None
+    route_guard_cleanup: Callable[[], Awaitable[None]] | None = None
     state: BrowserFetchState | None = None
     start_url = (resume or {}).get("url", "") or target_url or f"https://doi.org/{doi}"
+    try:
+        start_url = validate_public_http_url(start_url, source="Browser start URL")
+    except UnsafeURLError as exc:
+        return BrowserFetchResult(
+            outcome="failed",
+            state="unsafe_url",
+            warnings=[str(exc)],
+        )
     session_record = create_pdf_browser_session(
         paths.browser_pdf_sessions,
         doi=doi,
@@ -223,11 +235,12 @@ async def fetch_with_browser(
         )
         listeners = BrowserListenerRegistry(runtime.context, state)
         listeners.register(runtime.root_page, track_context_pages=True)
+        route_guard_cleanup = await install_public_http_route_guard(runtime.context, state)
 
         await navigate_to_doi_target(
             runtime.root_page,
             doi=doi,
-            target_url=(resume or {}).get("url", "") or target_url,
+            target_url=start_url,
             state=state,
             networkidle_timeout_ms=current_browser_networkidle_timeout_ms(),
             logger=logger,
@@ -347,5 +360,7 @@ async def fetch_with_browser(
             capture=state.capture_payload() if state is not None else {},
         )
     finally:
+        if route_guard_cleanup is not None:
+            await route_guard_cleanup()
         if listeners is not None:
             listeners.detach()

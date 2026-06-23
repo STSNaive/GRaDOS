@@ -23,6 +23,7 @@ from grados.publisher.elsevier import (
     fetch_elsevier_article,
 )
 from grados.publisher.springer import SpringerFetchResult
+from grados.url_safety import UnsafeURLError
 
 
 def test_fetch_tdm_respects_order_and_enabled_publishers(monkeypatch) -> None:
@@ -547,6 +548,39 @@ def test_unpaywall_resolver_falls_back_to_landing_page() -> None:
     assert result.selected_url_source == "unpaywall.best_oa_location.url_for_landing_page"
 
 
+def test_unpaywall_resolver_skips_unsafe_candidate_urls() -> None:
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "best_oa_location": {
+                    "host_type": "repository",
+                    "url_for_pdf": "http://127.0.0.1:8000/private.pdf",
+                },
+                "oa_locations": [
+                    {
+                        "host_type": "publisher",
+                        "url_for_pdf": "https://example.com/public.pdf",
+                    }
+                ],
+            }
+
+    class FakeClient:
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            _ = (url, kwargs)
+            return FakeResponse()
+
+    result = asyncio.run(
+        _resolve_unpaywall_locations("10.1234/demo", "test@example.com", FakeClient())  # type: ignore[arg-type]
+    )
+
+    assert result.selected_url == "https://example.com/public.pdf"
+    assert result.selected_url_source == "unpaywall.oa_locations[0].url_for_pdf"
+    assert any("Skipped unsafe Unpaywall URL" in warning for warning in result.warnings)
+
+
 def test_unpaywall_resolver_rejects_oversized_response() -> None:
     class FakeResponse:
         status_code = 200
@@ -775,6 +809,24 @@ def test_extract_scihub_pdf_url_handles_common_mirror_markup() -> None:
     )
 
 
+def test_extract_scihub_pdf_url_skips_private_candidates() -> None:
+    from grados.extract.fetch import _extract_scihub_pdf_url
+
+    base_url = "https://sci-hub.se/10.1234/demo"
+
+    assert (
+        _extract_scihub_pdf_url(
+            """
+            <iframe id="pdf" src="http://127.0.0.1:8000/private.pdf"></iframe>
+            <embed type="application/pdf" src="/downloads/public.pdf">
+            """,
+            base_url,
+        )
+        == "https://sci-hub.se/downloads/public.pdf"
+    )
+    assert _extract_scihub_pdf_url('<iframe id="pdf" src="file:///etc/passwd"></iframe>', base_url) is None
+
+
 def test_fetch_scihub_uses_fallback_endpoint_when_primary_unreachable() -> None:
     from grados.extract.fetch import _fetch_scihub
 
@@ -955,6 +1007,29 @@ def test_download_pdf_rejects_oversized_content_length() -> None:
 
     with pytest.raises(SizeLimitError, match="Remote PDF response exceeds configured size limit"):
         asyncio.run(_download_pdf(FakeClient(), "https://example.com/paper.pdf", max_bytes=1024))  # type: ignore[arg-type]
+
+
+def test_download_pdf_rejects_private_redirect_target() -> None:
+    from grados.extract.fetch import _download_pdf
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            self.calls.append(url)
+            assert kwargs["follow_redirects"] is False
+            return httpx.Response(
+                302,
+                headers={"location": "http://127.0.0.1:8000/private.pdf"},
+                request=httpx.Request("GET", url),
+            )
+
+    client = FakeClient()
+    with pytest.raises(UnsafeURLError, match="non-public IP address"):
+        asyncio.run(_download_pdf(client, "https://example.com/paper.pdf", max_bytes=1024))  # type: ignore[arg-type]
+
+    assert client.calls == ["https://example.com/paper.pdf"]
 
 
 def test_elsevier_xml_is_parsed_deterministically_into_markdown() -> None:
