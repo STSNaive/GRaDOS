@@ -368,7 +368,7 @@ cp -R skills/grados "<skills-root>/"
 
 ### 尺寸保护
 
-- `extract.security`：远端 PDF、远端文本/XML/HTML、本地 PDF、浏览器 PDF 捕获、MinerU 结果 zip、MinerU `full.md` 的字节上限。默认值刻意保守地放宽到正常论文 PDF 足够使用；只有可信的大文件才需要调高。
+- `extract.security`：远端 PDF、远端文本/XML/HTML、本地 PDF、浏览器 PDF 捕获、MinerU 结果 zip、MinerU `full.md` 的字节上限。外部提供的抓取 URL 和重定向目标会在 body 捕获或缓冲前限制为 public HTTP(S) 目标。默认值刻意保守地放宽到正常论文 PDF 足够使用；只有可信的大文件才需要调高。
 - `extract.assets`：控制 `papers/_assets/{safe_doi}/` 下的 parser asset bundle（`mode=all|referenced|none`）、Docling 图片缩放、单文件/总资产尺寸、内联图片上限和最大资产数量。资产二进制与 canonical Markdown 绑定保存，通过 `read_paper_asset` 按需读取，不进入 Chroma 索引。
 
 ### 命令 🧰

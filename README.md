@@ -368,7 +368,7 @@ Keep [grados-config.example.json](./grados-config.example.json) as the commented
 
 ### Size Guards
 
-- `extract.security`: byte ceilings for remote PDFs, remote text/XML/HTML responses, local PDFs, browser PDF captures, MinerU result zips, and MinerU `full.md`. Defaults are intentionally generous for normal paper PDFs; raise them only for trusted oversized inputs.
+- `extract.security`: byte ceilings for remote PDFs, remote text/XML/HTML responses, local PDFs, browser PDF captures, MinerU result zips, and MinerU `full.md`. Externally supplied fetch URLs and redirects are limited to public HTTP(S) targets before body capture or buffering. Defaults are intentionally generous for normal paper PDFs; raise them only for trusted oversized inputs.
 - `extract.assets`: controls parser asset bundles under `papers/_assets/{safe_doi}/` (`mode=all|referenced|none`), Docling image scale, per-file/total asset size ceilings, inline image ceiling, and max asset count. Asset bytes are stored beside canonical Markdown and are fetched with `read_paper_asset`, not indexed into Chroma.
 
 ### Commands 🧰

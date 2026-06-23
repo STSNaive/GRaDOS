@@ -7,6 +7,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ## [Unreleased]
 
 ### Security
+- Added public-HTTP URL safety checks for externally supplied PDF fetch entrypoints, including Unpaywall candidates, Sci-Hub extracted PDF links, browser start URLs, browser response/CDP/download/backfill captures, and redirect targets; localhost, private/link-local IPs, credentials, non-HTTP schemes, and unsafe redirects are rejected before body capture or buffering.
 - Redacted `manage_failure_cases` context before persistence and again on read, so failure-memory rows cannot store or return API keys, bearer tokens, session IDs, or auth headers.
 - Removed the bundled Marker parser dependency from the published extras graph because the latest `marker-pdf` release still pins vulnerable `Pillow<11` and `transformers<5` ranges; `grados[marker]` and `grados[full]` are now compatibility aliases, and the locked graph upgrades to safe parser-adjacent versions.
 - Updated the locked Python dependency graph for vulnerable networking, XML, auth, multipart, and parser-adjacent packages, including `authlib`, `cryptography`, `lxml`, `python-multipart`, `urllib3`, and Docling parser dependencies.
